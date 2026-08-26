@@ -21,6 +21,7 @@ names in a mixed statement are kept in place.
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 
 import libcst as cst
@@ -335,4 +336,20 @@ def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> FixOutcom
         )
     if not fixer.plan.fixed or new_source == rec.source:
         return FixOutcome("clean", rec.source)
+
+    try:
+        ast.parse(new_source)
+    except SyntaxError as exc:
+        # Never hand back source we cannot compile. Keep the original.
+        return FixOutcome(
+            "error",
+            rec.source,
+            [
+                Finding(
+                    rec.path, exc.lineno or 0, 0, "?", "?", Status.SKIPPED,
+                    "internal error: the rewrite did not parse; reverted",
+                )
+            ],
+        )
+
     return FixOutcome("fixed", new_source, [], fixer.plan.fixed)

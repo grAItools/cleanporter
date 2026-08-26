@@ -247,3 +247,23 @@ def test_two_imports_of_the_same_name_both_get_blocked():
     assert result.source == src
     assert len(result.blockers) == 2
     assert all("rebound" in b.detail for b in result.blockers)
+
+
+def test_unparseable_rewrite_is_reverted_and_reported(monkeypatch):
+    import cleanporter.rewrite as rewrite_mod
+
+    def boom(source):
+        raise SyntaxError("simulated bad output")
+
+    monkeypatch.setattr(rewrite_mod.ast, "parse", boom)
+
+    src = "from pkg.sub.mod import Thing\nx = Thing()\n"
+    result = outcome(src)
+    assert result.status == "error"
+    assert result.source == src, "the original must be handed back untouched"
+    assert result.blockers and "did not parse" in result.blockers[0].detail
+
+
+def test_valid_rewrite_passes_verification():
+    result = outcome("from pkg.sub.mod import Thing\nx = Thing()\n")
+    assert result.status == "fixed"

@@ -147,3 +147,22 @@ def test_strict_exits_1_for_unanchorable_relative_import(project, capsys):
 def test_non_utf8_source_exits_2(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_bytes(b"\xff\xfe# not utf-8\n")
     assert main([str(project / "src")]) == 2
+
+
+def test_internal_rewrite_error_does_not_write_a_broken_file(project, monkeypatch):
+    from cleanporter.model import Finding, Status
+    from cleanporter.rewrite import FixOutcome
+
+    target = project / "src" / "demo" / "consumer.py"
+    before = target.read_text(encoding="utf-8")
+
+    def fake(rec, resolver, config):
+        return FixOutcome(
+            "error", rec.source,
+            [Finding(rec.path, 1, 0, "?", "?", Status.SKIPPED, "internal error")],
+        )
+
+    # cli imports fix_record by name, so patch it there.
+    monkeypatch.setattr("cleanporter.cli.fix_record", fake)
+    assert main(["--fix", str(project / "src")]) == 1
+    assert target.read_text(encoding="utf-8") == before
