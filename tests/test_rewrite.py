@@ -284,3 +284,57 @@ def test_parse_error_with_valueerror_is_handled(monkeypatch):
     assert result.status == "error"
     assert result.source == src, "the original must be handed back untouched"
     assert result.blockers and "did not parse" in result.blockers[0].detail
+
+
+def test_trailing_comment_is_preserved():
+    src = "from pkg.sub.mod import Thing  # keep me\nx = Thing()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == "from pkg.sub import mod  # keep me\nx = mod.Thing()\n"
+
+
+def test_leading_comments_and_blank_lines_are_preserved():
+    src = (
+        "# leading comment block\n"
+        "# second line\n"
+        "\n"
+        "from pkg.sub.mod import Thing\n"
+        "\n"
+        "use = Thing\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "# leading comment block\n"
+        "# second line\n"
+        "\n"
+        "from pkg.sub import mod\n"
+        "\n"
+        "use = mod.Thing\n"
+    )
+
+
+def test_trailing_comment_lands_on_the_last_replacement_line():
+    src = "from pkg.sub.mod import Thing, go  # both\nx = Thing() + go()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source.splitlines()[0].endswith("# both")
+
+
+def test_deleting_a_commented_line_blocks_instead_of_dropping_the_comment():
+    src = (
+        "from pkg.sub import mod\n"
+        "from pkg.sub.mod import Thing  # why this exists\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert "comment" in result.blockers[0].detail
+
+
+def test_deleting_an_uncommented_line_is_fine():
+    src = "from pkg.sub import mod\nfrom pkg.sub.mod import Thing\nx = Thing()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"

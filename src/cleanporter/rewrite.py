@@ -244,12 +244,35 @@ class _Fixer(cst.CSTTransformer):
             self.plan.fixed += 1
 
         # carry the original line's leading comments/blank lines onto the first
-        # replacement line (if any); an empty list means the line is removed
-        # entirely because the module is already imported and nothing is kept.
+        # replacement line, and its trailing comment onto the last (if any);
+        # an empty list means the line is removed entirely because the module
+        # is already imported and nothing is kept.
+        has_trailing_comment = line.trailing_whitespace.comment is not None
         if new_lines:
             first = new_lines[0]
             if isinstance(first, cst.SimpleStatementLine):
                 new_lines[0] = first.with_changes(leading_lines=line.leading_lines)
+            # Read new_lines[-1] after the [0] reassignment above: for a
+            # single-statement replacement they are the same element, and
+            # this lookup must see the already-updated node so both
+            # leading_lines and trailing_whitespace land on it.
+            last = new_lines[-1]
+            if isinstance(last, cst.SimpleStatementLine):
+                new_lines[-1] = last.with_changes(
+                    trailing_whitespace=line.trailing_whitespace
+                )
+        elif has_trailing_comment:
+            # The line disappears entirely (the module is already bound and
+            # nothing is kept), so there is nowhere to put the author's
+            # trailing comment. Silently discarding it is worse than
+            # declining to fix the file, so block instead.
+            self.blockers.append(
+                (
+                    self._line_of(line),
+                    "removing this import would discard its trailing comment",
+                )
+            )
+            return
         self.plan.line_repl[id(line)] = new_lines
 
     def _binding_for(self, parent: str) -> str | None:
