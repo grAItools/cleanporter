@@ -47,3 +47,12 @@ def test_warm_batches_and_matches_individual_lookups(tmp_path):
     pairs = [("amb", "mod"), ("collections", "OrderedDict"), ("os", "path")]
     r.warm(pairs)
     assert [r.is_module(p, n) for p, n in pairs] == [True, False, True]
+
+
+def test_warm_then_reason_agree_for_an_ambiguous_pair(tmp_path):
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text('mod = "shadow"\n', encoding="utf-8")
+    r = Resolver(ModuleMap([root]))
+    r.warm([("amb", "mod")])
+    assert r.is_module("amb", "mod") is None
+    assert "both a submodule" in r.reason("amb", "mod")

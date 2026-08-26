@@ -71,3 +71,43 @@ def test_init_importing_its_own_submodule_is_not_ambiguous(tmp_path):
     (root / "amb" / "__init__.py").write_text("from . import mod\n", encoding="utf-8")
     mm = ModuleMap([root])
     assert mm.classify("amb", "mod") is Kind.MODULE
+
+
+def test_for_loop_binding_that_shadows_a_submodule_is_ambiguous(tmp_path):
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text(
+        'for mod in ["placeholder"]:\n    pass\n', encoding="utf-8"
+    )
+    mm = ModuleMap([root])
+    assert mm.classify("amb", "mod") is Kind.AMBIGUOUS
+
+
+def test_grandparent_relative_import_that_shadows_a_submodule_is_ambiguous(tmp_path):
+    root = tmp_path / "src"
+    (root / "pkg" / "sub").mkdir(parents=True)
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pkg" / "sub" / "__init__.py").write_text(
+        "from .. import Y\n", encoding="utf-8"
+    )
+    (root / "pkg" / "sub" / "Y.py").write_text("Q = 1\n", encoding="utf-8")
+    mm = ModuleMap([root])
+    assert mm.classify("pkg.sub", "Y") is Kind.AMBIGUOUS
+
+
+def test_aliased_self_import_that_shadows_a_real_submodule_is_ambiguous(tmp_path):
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text(
+        "from . import mod as m\n", encoding="utf-8"
+    )
+    (root / "amb" / "m.py").write_text("Q = 1\n", encoding="utf-8")
+    mm = ModuleMap([root])
+    assert mm.classify("amb", "m") is Kind.AMBIGUOUS
+
+
+def test_bare_annotation_does_not_bind_and_is_not_ambiguous(tmp_path):
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text(
+        "from types import ModuleType\nmod: ModuleType\n", encoding="utf-8"
+    )
+    mm = ModuleMap([root])
+    assert mm.classify("amb", "mod") is Kind.MODULE
