@@ -24,7 +24,7 @@ def _make_config(python: str | None, exempt: list[str], root: list[str]) -> Conf
     return Config(
         exempt_modules=DEFAULT_EXEMPT_MODULES | frozenset(exempt),
         python=python,
-        extra_roots=tuple(root),
+        source_roots=tuple(root),
     )
 
 

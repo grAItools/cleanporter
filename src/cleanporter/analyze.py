@@ -135,7 +135,7 @@ def build(paths: list[Path], config: Config) -> tuple[list[FileRecord], Resolver
     Returns the parsed records, the resolver, and any parse-error findings.
     """
     files = expand(paths)
-    roots = [Path(r) for r in config.extra_roots]
+    roots = [config.root / r for r in config.source_roots]
     module_map = ModuleMap.from_paths(files + roots)
     resolver = Resolver(module_map, python=config.python)
 

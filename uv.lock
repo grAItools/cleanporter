@@ -22,6 +22,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "libcst" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typer" },
 ]
 
@@ -33,6 +34,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "libcst", specifier = ">=1.1" },
+    { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.12" },
 ]
 
