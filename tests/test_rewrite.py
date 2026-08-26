@@ -380,3 +380,61 @@ def test_deleting_a_line_preceded_only_by_a_blank_line_is_still_fixed():
     result = outcome(src)
     assert result.status == "fixed"
     assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"
+
+
+def test_function_scope_import_is_fixed_in_place():
+    src = "def f():\n    from pkg.sub.mod import Thing\n    return Thing()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "def f():\n    from pkg.sub import mod\n    return mod.Thing()\n"
+    )
+
+
+def test_each_function_gets_its_own_import():
+    src = (
+        "def f():\n"
+        "    from pkg.sub.mod import Thing\n"
+        "    return Thing()\n"
+        "def g():\n"
+        "    from pkg.sub.mod import Thing\n"
+        "    return Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source.count("from pkg.sub import mod") == 2
+
+
+def test_function_scope_reuses_a_module_level_binding():
+    src = (
+        "from pkg.sub import mod\n"
+        "def f():\n"
+        "    from pkg.sub.mod import Thing\n"
+        "    return Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\ndef f():\n    return mod.Thing()\n"
+    )
+
+
+def test_function_scope_avoids_colliding_with_a_local():
+    src = (
+        "def f():\n"
+        "    mod = 'a local'\n"
+        "    from pkg.sub.mod import Thing\n"
+        "    return mod, Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "mod_2" in result.source
+    assert "mod = 'a local'" in result.source
+
+
+def test_class_body_import_is_fixed():
+    src = "class C:\n    from pkg.sub.mod import Thing\n    x = Thing\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "from pkg.sub import mod" in result.source
+    assert "x = mod.Thing" in result.source

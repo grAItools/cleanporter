@@ -6,10 +6,13 @@ Uses libCST scope metadata so that:
   variable that shadows the name in some function is left untouched), and
 * colliding module tokens get a deterministic alias.
 
+Imports inside functions/classes are fixed in place too: each scope that
+imports a module gets its own binding, tracked independently of any
+module-level import of the same module.
+
 Safety boundary (these are reported by ``check`` but deliberately NOT auto-fixed
 because a mechanical rewrite could change runtime behaviour):
 
-* imports that are not at module scope (inside functions/classes),
 * imports inside an ``if TYPE_CHECKING:`` block (rewriting could break runtime
   annotations),
 * ``from x import *`` and unresolved/unknown names,
@@ -98,9 +101,10 @@ class _Fixer(cst.CSTTransformer):
         self._config = config
         self.plan = _Plan()
         self.blockers: list[Hit] = []
-        self._module_binding: dict[str, str] = {}  # parent -> bound token
+        self._module_binding: dict[tuple[int, str], str] = {}  # (id(scope), parent) -> bound token
         self._existing: dict[str, str] = {}  # already-imported module -> its name
-        self._used_names: set[str] = set()
+        self._global_names: set[str] = set()
+        self._scope_names: dict[int, set[str]] = {}
         self._tc_ids: set[int] = set()
         #: Local names this run would rewrite -- the input to every guard.
         self._fixed_locals: set[str] = set()
@@ -112,7 +116,8 @@ class _Fixer(cst.CSTTransformer):
         for _line, imp in self._import_lines(node):
             scope = self.get_metadata(ScopeProvider, imp, None)
             if isinstance(scope, GlobalScope):
-                self._used_names.update(a.name for a in scope.assignments)
+                self._global_names = {a.name for a in scope.assignments}
+                break
         self._build_existing(node)
         for line, imp in self._import_lines(node):
             self._plan_line(line, imp)
@@ -179,8 +184,8 @@ class _Fixer(cst.CSTTransformer):
         if _imports.is_star(imp) or id(imp) in self._tc_ids:
             return
         scope = self.get_metadata(ScopeProvider, imp, None)
-        if not isinstance(scope, GlobalScope):
-            return  # only module-level imports are auto-fixed
+        if scope is None:
+            return
         parent = _imports.resolve_parent(imp, self._rec.base_pkg)
         if parent is None:
             return
@@ -202,10 +207,10 @@ class _Fixer(cst.CSTTransformer):
 
         # new statements: one module import per (deduped) parent, plus kept names
         new_lines: list[cst.BaseStatement] = []
-        bind = self._binding_for(parent)
+        bind = self._binding_for(scope, parent)
         if bind is not None:  # None => module already bound earlier in file
             new_lines.append(self._module_import_stmt(parent, bind))
-        bind = self._module_binding[parent]
+        bind = self._module_binding[(id(scope), parent)]
 
         if keep:
             prefix = "." * _imports.relative_level(imp)
@@ -292,28 +297,46 @@ class _Fixer(cst.CSTTransformer):
             return
         self.plan.line_repl[id(line)] = new_lines
 
-    def _binding_for(self, parent: str) -> str | None:
-        """Resolve the binding token for ``parent``.
+    def _local_names(self, scope: object) -> set[str]:
+        """Names assigned directly in *scope*, ignoring enclosing scopes."""
+        return {a.name for a in scope.assignments}  # type: ignore[attr-defined]
 
-        Returns the token of a *new* import to emit, or ``None`` when the module
-        is already bound (either earlier in this fix run, or by a pre-existing
-        import in the file) so no new import is needed.
+    def _names_in_scope(self, scope: object) -> set[str]:
+        """Names a new binding in *scope* must not collide with."""
+        key = id(scope)
+        if key not in self._scope_names:
+            names = self._local_names(scope)
+            if not isinstance(scope, GlobalScope):
+                names = names | self._global_names
+            self._scope_names[key] = names
+        return self._scope_names[key]
+
+    def _binding_for(self, scope: object, parent: str) -> str | None:
+        """Token to qualify through, or ``None`` when one already exists.
+
+        Returns the token of a *new* import to emit. ``None`` means *parent*
+        is already bound in a way this scope can see, so no import is needed.
         """
-        if parent in self._module_binding:
+        key = (id(scope), parent)
+        if key in self._module_binding:
             return None
-        # Reuse a module that the file already imports (avoids a duplicate).
         existing = self._existing.get(parent)
         if existing is not None:
-            self._module_binding[parent] = existing
-            return None
+            # A module-level import is visible from nested scopes unless the
+            # scope assigns that name itself.
+            shadowed = not isinstance(scope, GlobalScope) and existing in self._local_names(scope)
+            if not shadowed:
+                self._module_binding[key] = existing
+                return None
         token = parent.rsplit(".", 1)[-1]
+        taken = self._names_in_scope(scope)
         bind = token
-        i = 2
-        while bind in self._used_names:
-            bind = f"{token}_{i}"
-            i += 1
-        self._used_names.add(bind)
-        self._module_binding[parent] = bind
+        counter = 2
+        while bind in taken:
+            bind = f"{token}_{counter}"
+            counter += 1
+        taken.add(bind)
+        self._module_binding[key] = bind
         return bind
 
     def _module_import_stmt(self, parent: str, bind: str) -> cst.SimpleStatementLine:
