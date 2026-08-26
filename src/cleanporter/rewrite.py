@@ -24,12 +24,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import libcst as cst
-from libcst.metadata import GlobalScope, ScopeProvider
+from libcst.metadata import GlobalScope, PositionProvider, ScopeProvider
 
-from . import _imports
+from . import _imports, guards
 from .analyze import FileRecord
 from .config import Config
-from .model import Finding
+from .guards import Hit
+from .model import Finding, Status
 from .resolver import Resolver
 
 
@@ -87,18 +88,21 @@ def _collect_imports(node: cst.CSTNode) -> list[cst.Import]:
 
 
 class _Fixer(cst.CSTTransformer):
-    METADATA_DEPENDENCIES = (ScopeProvider,)
+    METADATA_DEPENDENCIES = (ScopeProvider, PositionProvider)
 
     def __init__(self, rec: FileRecord, resolver: Resolver, config: Config) -> None:
         super().__init__()
         self._rec = rec
         self._resolver = resolver
         self._config = config
-        self._plan = _Plan()
+        self.plan = _Plan()
+        self.blockers: list[Hit] = []
         self._module_binding: dict[str, str] = {}  # parent -> bound token
         self._existing: dict[str, str] = {}  # already-imported module -> its name
         self._used_names: set[str] = set()
         self._tc_ids: set[int] = set()
+        #: Local names this run would rewrite -- the input to every guard.
+        self._fixed_locals: set[str] = set()
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
@@ -111,6 +115,18 @@ class _Fixer(cst.CSTTransformer):
         self._build_existing(node)
         for line, imp in self._import_lines(node):
             self._plan_line(line, imp)
+        self._run_guards(node)
+
+    def _line_of(self, node: cst.CSTNode) -> int:
+        position = self.get_metadata(PositionProvider, node, None)
+        return position.start.line if position is not None else 0
+
+    def _run_guards(self, node: cst.Module) -> None:
+        if not self._fixed_locals:
+            return
+        self.blockers.extend(
+            guards.find_string_mentions(node, self._fixed_locals, self._line_of)
+        )
 
     def _build_existing(self, node: cst.Module) -> None:
         """Map already-imported modules to the simple name they are bound to."""
@@ -173,6 +189,7 @@ class _Fixer(cst.CSTTransformer):
                 fix.append((name, asname))
         if not fix:
             return
+        self._fixed_locals.update(asname or name for name, asname in fix)
 
         # new statements: one module import per (deduped) parent, plus kept names
         new_lines: list[cst.BaseStatement] = []
@@ -197,10 +214,10 @@ class _Fixer(cst.CSTTransformer):
             for assignment in scope[bound]:
                 if getattr(assignment, "node", None) is imp:
                     for ref in assignment.references:
-                        self._plan.name_repl[id(ref.node)] = cst.Attribute(
+                        self.plan.name_repl[id(ref.node)] = cst.Attribute(
                             value=cst.Name(bind), attr=cst.Name(name)
                         )
-            self._plan.fixed += 1
+            self.plan.fixed += 1
 
         # carry the original line's leading comments/blank lines onto the first
         # replacement line (if any); an empty list means the line is removed
@@ -209,7 +226,7 @@ class _Fixer(cst.CSTTransformer):
             first = new_lines[0]
             if isinstance(first, cst.SimpleStatementLine):
                 new_lines[0] = first.with_changes(leading_lines=line.leading_lines)
-        self._plan.line_repl[id(line)] = new_lines
+        self.plan.line_repl[id(line)] = new_lines
 
     def _binding_for(self, parent: str) -> str | None:
         """Resolve the binding token for ``parent``.
@@ -248,14 +265,19 @@ class _Fixer(cst.CSTTransformer):
 
     # -- application -------------------------------------------------------
     def leave_SimpleStatementLine(self, original: cst.SimpleStatementLine, updated: cst.SimpleStatementLine):
-        repl = self._plan.line_repl.get(id(original))
+        repl = self.plan.line_repl.get(id(original))
         if repl is not None:
             return cst.FlattenSentinel(repl) if repl else cst.RemovalSentinel.REMOVE
         return updated
 
     def leave_Name(self, original: cst.Name, updated: cst.Name):
-        repl = self._plan.name_repl.get(id(original))
+        repl = self.plan.name_repl.get(id(original))
         return repl if repl is not None else updated
+
+    def leave_Module(self, original: cst.Module, updated: cst.Module) -> cst.Module:
+        # All-or-nothing. libcst hands us the pristine original tree, so
+        # returning it discards every edit made to the children.
+        return original if self.blockers else updated
 
 
 @dataclass
@@ -274,9 +296,20 @@ class FixOutcome:
 
 
 def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> FixOutcome:
-    """Attempt to fix one file, returning a :class:`FixOutcome`."""
+    """Rewrite one file, or leave it exactly as it was and say why."""
     wrapper = cst.MetadataWrapper(rec.tree, unsafe_skip_copy=True)
     fixer = _Fixer(rec, resolver, config)
     new_source = wrapper.visit(fixer).code
-    status = "fixed" if new_source != rec.source and fixer._plan.fixed else "clean"
-    return FixOutcome(status, new_source, [], fixer._plan.fixed)
+
+    if fixer.blockers:
+        return FixOutcome(
+            "skipped",
+            rec.source,
+            [
+                Finding(rec.path, line, 0, "?", "?", Status.SKIPPED, reason)
+                for line, reason in sorted(set(fixer.blockers))
+            ],
+        )
+    if not fixer.plan.fixed or new_source == rec.source:
+        return FixOutcome("clean", rec.source)
+    return FixOutcome("fixed", new_source, [], fixer.plan.fixed)
