@@ -114,6 +114,8 @@ def analyze_record(rec: FileRecord, resolver: Resolver, config: Config) -> list[
             continue
         if config.is_exempt(unit.parent, unit.name):
             continue
+        if config.scope == "first-party" and not resolver.is_first_party(unit.parent):
+            continue
 
         verdict = resolver.is_module(unit.parent, unit.name)
         if verdict is True:

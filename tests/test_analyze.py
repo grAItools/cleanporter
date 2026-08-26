@@ -136,3 +136,30 @@ def test_type_checking_import_not_fixed():
     )
     out = _fix(src, FIXTURES / "pkg" / "a.py")
     assert "from functools import partial" in out  # left untouched
+
+
+# -- scope ------------------------------------------------------------------
+def test_scope_first_party_ignores_stdlib():
+    src = "from functools import partial\nfrom pkg.sub.mod import Thing\n"
+    findings = _analyze_with(src, Config(scope="first-party"))
+    assert [f.parent for f in findings] == ["pkg.sub.mod"]
+
+
+def test_scope_all_reports_both():
+    src = "from functools import partial\nfrom pkg.sub.mod import Thing\n"
+    findings = _analyze_with(src, Config(scope="all"))
+    assert sorted(f.parent for f in findings) == ["functools", "pkg.sub.mod"]
+
+
+def test_scope_first_party_still_reports_unanchorable_relative_imports():
+    findings = _analyze_with("from ..... import nothing\n", Config(scope="first-party"))
+    assert [f.status for f in findings] == [Status.UNRESOLVED]
+
+
+def _analyze_with(source: str, config: Config):
+    path = FIXTURES / "pkg" / "a.py"
+    mm = ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = Resolver(mm)
+    rec = _record(source, path, mm)
+    resolver.warm([(u.parent, u.name) for u in rec.units if u.parent and not u.star])
+    return analyze_record(rec, resolver, config)

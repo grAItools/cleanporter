@@ -65,6 +65,10 @@ class Resolver:
         self._cache[key] = result
         return result
 
+    def is_first_party(self, dotted: str) -> bool:
+        """True when *dotted* lives under one of the analysis roots."""
+        return self._map.is_first_party(dotted)
+
     def reason(self, parent: str, name: str) -> str:
         """Human explanation for an unresolved (``None``) verdict."""
         key = (parent, name)
