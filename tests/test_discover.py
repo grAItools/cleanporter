@@ -89,10 +89,17 @@ def test_absolute_exclude_pattern_matches(tmp_path):
     assert files == []
 
 
-def test_walk_outside_config_root_still_honours_absolute_excludes(tmp_path):
+def test_walk_outside_config_root_still_honours_absolute_excludes(tmp_path, monkeypatch):
+    # The path handed to iter_python_files must be genuinely unresolved and
+    # contain a ".." segment -- this is what distinguishes the fixed
+    # resolve()-based abs_posix arm from the pre-fix raw-path fallback,
+    # which would see "../outside/src/pkg/mod.py" and never match an
+    # absolute exclude pattern.
     outside = _tree(tmp_path / "outside")
     proj = tmp_path / "proj"
+    proj.mkdir()
     excluded_file = (outside / "src" / "pkg" / "mod.py").resolve().as_posix()
     cfg = Config(root=proj, exclude=(excluded_file,))
-    files, _ = iter_python_files([outside], cfg)
+    monkeypatch.chdir(proj)
+    files, _ = iter_python_files([Path("../outside")], cfg)
     assert _names(files) == ["__init__.py", "skipme.py"]

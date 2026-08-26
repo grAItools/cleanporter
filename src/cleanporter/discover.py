@@ -29,9 +29,10 @@ def _is_skipped_dir(name: str) -> bool:
 
 
 def _excluded(path: Path, config: Config) -> bool:
-    abs_posix = path.resolve().as_posix()
+    resolved = path.resolve()
+    abs_posix = resolved.as_posix()
     try:
-        rel = path.resolve().relative_to(config.root.resolve()).as_posix()
+        rel = resolved.relative_to(config.root.resolve()).as_posix()
     except ValueError:
         rel = path.as_posix()
     for pattern in config.exclude:
