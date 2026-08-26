@@ -111,3 +111,39 @@ def test_strict_promotes_unresolved_to_failure(project, capsys):
     )
     assert main([str(project / "src")]) == 0
     assert main(["--strict", str(project / "src")]) == 1
+
+
+def test_summary_counts_match_the_printed_lines(project, capsys):
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from demo.helpers import THING\n"
+        "from definitely_missing_pkg_xyz import other\n",
+        encoding="utf-8",
+    )
+    main([str(project / "src")])
+    out = capsys.readouterr().out
+    assert out.count("CP001") == 1
+    assert out.count("CP002") == 1
+    assert "1 violation(s)" in out
+    assert "1 unresolved" in out
+
+
+def test_unanchorable_relative_import_is_counted(project, capsys):
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from ..... import nothing\n", encoding="utf-8"
+    )
+    main([str(project / "src")])
+    out = capsys.readouterr().out
+    assert "CP002" in out
+    assert "0 unresolved" not in out
+
+
+def test_strict_exits_1_for_unanchorable_relative_import(project, capsys):
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from ..... import nothing\n", encoding="utf-8"
+    )
+    assert main(["--strict", str(project / "src")]) == 1
+
+
+def test_non_utf8_source_exits_2(project, capsys):
+    (project / "src" / "demo" / "consumer.py").write_bytes(b"\xff\xfe# not utf-8\n")
+    assert main([str(project / "src")]) == 2
