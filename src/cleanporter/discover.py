@@ -29,12 +29,13 @@ def _is_skipped_dir(name: str) -> bool:
 
 
 def _excluded(path: Path, config: Config) -> bool:
+    abs_posix = path.resolve().as_posix()
     try:
         rel = path.resolve().relative_to(config.root.resolve()).as_posix()
     except ValueError:
         rel = path.as_posix()
     for pattern in config.exclude:
-        if fnmatch.fnmatch(rel, pattern):
+        if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(abs_posix, pattern):
             return True
         if any(ch in pattern for ch in "*?["):
             continue

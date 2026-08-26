@@ -79,3 +79,20 @@ def test_missing_path_is_a_warning_not_a_crash(tmp_path):
     files, warnings = iter_python_files([root / "nope"], Config(root=root))
     assert files == []
     assert len(warnings) == 1 and "does not exist" in warnings[0]
+
+
+def test_absolute_exclude_pattern_matches(tmp_path):
+    root = _tree(tmp_path)
+    pattern = (root / "src" / "pkg" / "*.py").resolve().as_posix()
+    cfg = Config(root=root, exclude=(pattern,))
+    files, _ = iter_python_files([root], cfg)
+    assert files == []
+
+
+def test_walk_outside_config_root_still_honours_absolute_excludes(tmp_path):
+    outside = _tree(tmp_path / "outside")
+    proj = tmp_path / "proj"
+    excluded_file = (outside / "src" / "pkg" / "mod.py").resolve().as_posix()
+    cfg = Config(root=proj, exclude=(excluded_file,))
+    files, _ = iter_python_files([outside], cfg)
+    assert _names(files) == ["__init__.py", "skipme.py"]
