@@ -120,8 +120,8 @@ def analyze_record(rec: FileRecord, resolver: Resolver, config: Config) -> list[
             continue  # importing a module -> compliant
         if verdict is None:
             findings.append(
-                Finding(rec.path, line, col, unit.parent, unit.name, Status.UNRESOLVED,
-                        f"'{unit.parent}' is not importable in the target interpreter")
+                Finding(rec.path, line, col, unit.parent, unit.name,
+                        Status.UNRESOLVED, resolver.reason(unit.parent, unit.name))
             )
             continue
         findings.append(

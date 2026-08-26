@@ -7,6 +7,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+class Kind(enum.Enum):
+    """What ``PARENT.NAME`` resolves to, as far as the filesystem can tell."""
+
+    MODULE = "module"
+    OBJECT = "object"
+    #: Both a submodule on disk and a top-level binding in the parent's
+    #: ``__init__``. The binding wins at import time, so this cannot be
+    #: decided statically -- report it, never guess.
+    AMBIGUOUS = "ambiguous"
+
+
 class Status(enum.Enum):
     #: ``NAME`` is an object imported by name -> fixable violation.
     VIOLATION = "violation"

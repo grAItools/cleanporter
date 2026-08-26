@@ -24,6 +24,10 @@ from pathlib import Path
 
 from . import _probe
 from .firstparty import ModuleMap
+from .model import Kind
+
+_AMBIGUOUS = "'{name}' is both a submodule of '{parent}' and bound in its __init__"
+_NOT_IMPORTABLE = "'{parent}' is not importable in the target interpreter"
 
 
 class Resolver:
@@ -32,7 +36,18 @@ class Resolver:
         self._python = python or sys.executable
         self._in_process = Path(self._python).resolve() == Path(sys.executable).resolve()
         self._cache: dict[tuple[str, str], bool | None] = {}
+        self._notes: dict[tuple[str, str], str] = {}
         self._probe_path = str(Path(_probe.__file__).resolve())
+
+    def _from_kind(self, key: tuple[str, str], kind: Kind) -> bool | None:
+        if kind is Kind.MODULE:
+            self._cache[key] = True
+        elif kind is Kind.OBJECT:
+            self._cache[key] = False
+        else:
+            self._cache[key] = None
+            self._notes[key] = _AMBIGUOUS.format(parent=key[0], name=key[1])
+        return self._cache[key]
 
     def is_module(self, parent: str, name: str) -> bool | None:
         """True if ``parent.name`` is a module, False if object, None if unknown."""
@@ -41,27 +56,31 @@ class Resolver:
             return self._cache[key]
 
         # 1. First-party filesystem answer is authoritative and side-effect free.
-        fp = self._map.classify(parent, name)
-        if fp is not None:
-            self._cache[key] = fp
-            return fp
+        kind = self._map.classify(parent, name)
+        if kind is not None:
+            return self._from_kind(key, kind)
 
         # 2. Interpreter probe for stdlib / third-party.
         result = self._probe([key]).get(key)
         self._cache[key] = result
         return result
 
+    def reason(self, parent: str, name: str) -> str:
+        """Human explanation for an unresolved (``None``) verdict."""
+        key = (parent, name)
+        return self._notes.get(key, _NOT_IMPORTABLE.format(parent=parent))
+
     def warm(self, pairs: list[tuple[str, str]]) -> None:
         """Classify a batch up front (one subprocess round-trip for the lot)."""
         pending: list[tuple[str, str]] = []
-        for parent, name in pairs:
-            if (parent, name) in self._cache:
+        for key in pairs:
+            if key in self._cache:
                 continue
-            fp = self._map.classify(parent, name)
-            if fp is not None:
-                self._cache[(parent, name)] = fp
+            kind = self._map.classify(*key)
+            if kind is not None:
+                self._from_kind(key, kind)
             else:
-                pending.append((parent, name))
+                pending.append(key)
         if pending:
             self._cache.update(self._probe(pending))
 

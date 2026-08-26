@@ -10,12 +10,16 @@ package or module. That lets us:
   ``from .a.b import Y``) can be resolved to an absolute ``PARENT``.
 
 Namespace packages (PEP 420, no ``__init__.py``) are treated as packages when a
-directory contains any Python submodules/subpackages.
+directory contains any Python submodules/subpackages, including extension
+modules.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+from ._bindings import top_level_bindings
+from .model import Kind
 
 #: Suffixes CPython will import as an extension module.
 EXTENSION_SUFFIXES = frozenset({".so", ".pyd"})
@@ -61,6 +65,7 @@ class ModuleMap:
         self.roots = [r.resolve() for r in roots]
         self._modules: set[str] = set()  # dotted names of .py modules
         self._packages: set[str] = set()  # dotted names of packages
+        self._inits: dict[str, Path] = {}  # dotted package -> its __init__.py
         for root in self.roots:
             self._scan(root, root)
 
@@ -76,7 +81,11 @@ class ModuleMap:
             if child.name == "__pycache__" or child.name.startswith("."):
                 continue
             if child.is_dir() and _is_pkg_dir(child):
-                self._packages.add(self._dotted(root, child))
+                dotted = self._dotted(root, child)
+                self._packages.add(dotted)
+                init = child / "__init__.py"
+                if init.is_file():
+                    self._inits[dotted] = init
                 self._scan(root, child)
             elif _is_importable_file(child):
                 stem = _module_stem(child)
@@ -94,18 +103,19 @@ class ModuleMap:
             (root / top).exists() or (root / f"{top}.py").exists() for root in self.roots
         )
 
-    def classify(self, parent: str, name: str) -> bool | None:
-        """First-party answer, or ``None`` if ``parent`` is not first-party.
-
-        ``True``  -> ``parent.name`` is a first-party module/package.
-        ``False`` -> ``parent`` is first-party but ``name`` is not a submodule
-                     (so it is an object).
-        ``None``  -> ``parent`` is not first-party; defer to the probe.
-        """
+    def classify(self, parent: str, name: str) -> Kind | None:
+        """First-party answer, or ``None`` if ``parent`` is not first-party."""
         if not self.is_first_party(parent):
             return None
         full = f"{parent}.{name}"
-        return full in self._packages or full in self._modules
+        on_disk = full in self._packages or full in self._modules
+        init = self._inits.get(parent)
+        shadowed = init is not None and name in top_level_bindings(str(init))
+        if on_disk and shadowed:
+            return Kind.AMBIGUOUS
+        if on_disk:
+            return Kind.MODULE
+        return Kind.OBJECT
 
     def qualname_for(self, path: Path) -> str | None:
         """Dotted module name for a source file, for relative-import resolution."""
