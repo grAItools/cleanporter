@@ -10,6 +10,7 @@ from libcst.metadata import MetadataWrapper, PositionProvider
 
 from . import _imports
 from .config import Config
+from .discover import iter_python_files
 from .firstparty import ModuleMap
 from .model import Finding, Status
 from .resolver import Resolver
@@ -129,12 +130,15 @@ def analyze_record(rec: FileRecord, resolver: Resolver, config: Config) -> list[
     return findings
 
 
-def build(paths: list[Path], config: Config) -> tuple[list[FileRecord], Resolver, list[Finding]]:
+def build(
+    paths: list[Path], config: Config
+) -> tuple[list[FileRecord], Resolver, list[Finding], list[str]]:
     """Expand paths, parse files, build the resolver and warm its cache.
 
-    Returns the parsed records, the resolver, and any parse-error findings.
+    Returns the parsed records, the resolver, any parse-error findings, and
+    any warnings produced while expanding ``paths`` (e.g. missing paths).
     """
-    files = expand(paths)
+    files, warnings = iter_python_files(paths, config)
     roots = [config.root / r for r in config.source_roots]
     module_map = ModuleMap.from_paths(files + roots)
     resolver = Resolver(module_map, python=config.python)
@@ -152,22 +156,4 @@ def build(paths: list[Path], config: Config) -> tuple[list[FileRecord], Resolver
         records.append(FileRecord(f, source, tree, package_of(f, module_map)))
 
     resolver.warm(collect_pairs(records))
-    return records, resolver, errors
-
-
-def expand(paths: list[Path]) -> list[Path]:
-    out: list[Path] = []
-    for p in paths:
-        p = p.resolve()
-        if p.is_dir():
-            out.extend(sorted(q for q in p.rglob("*.py") if "__pycache__" not in q.parts))
-        elif p.suffix == ".py":
-            out.append(p)
-    # de-dupe, keep order
-    seen: set[Path] = set()
-    uniq: list[Path] = []
-    for f in out:
-        if f not in seen:
-            seen.add(f)
-            uniq.append(f)
-    return uniq
+    return records, resolver, errors, warnings

@@ -38,7 +38,9 @@ def check(
 ) -> None:
     """Report imports of objects that should be module imports. Non-zero on violations."""
     config = _make_config(python, exempt, root)
-    records, resolver, errors = build(paths, config)
+    records, resolver, errors, warnings = build(paths, config)
+    for warning in warnings:
+        typer.echo(f"cleanporter: warning: {warning}", err=True)
 
     findings = list(errors)
     for rec in records:
@@ -70,7 +72,9 @@ def fix(
 ) -> None:
     """Rewrite object imports to module imports and qualify their uses."""
     config = _make_config(python, exempt, root)
-    records, resolver, errors = build(paths, config)
+    records, resolver, errors, warnings = build(paths, config)
+    for warning in warnings:
+        typer.echo(f"cleanporter: warning: {warning}", err=True)
 
     total_fixed = 0
     changed_files = 0
