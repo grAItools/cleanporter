@@ -25,8 +25,7 @@ def _fix(source: str, path: Path) -> str:
     resolver = Resolver(mm)
     rec = _record(source, path, mm)
     resolver.warm([(u.parent, u.name) for u in _units(rec)])
-    new_source, _ = fix_record(rec, resolver, Config())
-    return new_source
+    return fix_record(rec, resolver, Config()).source
 
 
 def _units(rec: FileRecord):

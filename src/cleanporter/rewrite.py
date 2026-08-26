@@ -29,6 +29,7 @@ from libcst.metadata import GlobalScope, ScopeProvider
 from . import _imports
 from .analyze import FileRecord
 from .config import Config
+from .model import Finding
 from .resolver import Resolver
 
 
@@ -257,9 +258,25 @@ class _Fixer(cst.CSTTransformer):
         return repl if repl is not None else updated
 
 
-def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> tuple[str, int]:
-    """Return ``(new_source, num_names_fixed)`` for one file."""
+@dataclass
+class FixOutcome:
+    """Result of attempting to fix one file.
+
+    ``source`` is always a string -- the resulting source when ``status`` is
+    ``"fixed"``, otherwise the unchanged input -- so callers never need to
+    branch on ``None``.
+    """
+
+    status: str  # "fixed" | "clean" | "skipped" | "error"
+    source: str
+    blockers: list[Finding] = field(default_factory=list)
+    fixed: int = 0
+
+
+def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> FixOutcome:
+    """Attempt to fix one file, returning a :class:`FixOutcome`."""
     wrapper = cst.MetadataWrapper(rec.tree, unsafe_skip_copy=True)
     fixer = _Fixer(rec, resolver, config)
-    new_tree = wrapper.visit(fixer)
-    return new_tree.code, fixer._plan.fixed
+    new_source = wrapper.visit(fixer).code
+    status = "fixed" if new_source != rec.source and fixer._plan.fixed else "clean"
+    return FixOutcome(status, new_source, [], fixer._plan.fixed)

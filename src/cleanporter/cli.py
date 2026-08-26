@@ -1,124 +1,144 @@
-"""Command-line interface: ``cleanporter check`` and ``cleanporter fix``."""
+"""Command-line interface: check, and optionally fix, from-imports."""
 
 from __future__ import annotations
 
+import argparse
 import difflib
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-import typer
-
-from .analyze import analyze_record, build
-from .config import DEFAULT_EXEMPT_MODULES, Config
-from .model import Status
+from . import __version__
+from .analyze import FileRecord, analyze_record, build
+from .config import Config, ConfigError, load_config
+from .model import Finding, Status
 from .rewrite import fix_record
 
-app = typer.Typer(
-    add_completion=False,
-    help="Enforce Google Python Style Guide 2.2: import modules, not their members.",
-    no_args_is_help=True,
-)
+_EXIT_OK = 0
+_EXIT_VIOLATIONS = 1
+_EXIT_ERROR = 2
 
 
-def _make_config(python: str | None, exempt: list[str], root: list[str]) -> Config:
-    return Config(
-        exempt_modules=DEFAULT_EXEMPT_MODULES | frozenset(exempt),
-        python=python,
-        source_roots=tuple(root),
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="cleanporter",
+        description=(
+            "Check that 'from ... import ...' statements import modules only "
+            "(Google Python Style Guide section 2.2) and optionally rewrite "
+            "violations."
+        ),
+        epilog=(
+            "examples:\n"
+            "  cleanporter src/\n"
+            "  cleanporter --diff src/\n"
+            "  cleanporter --fix src/\n\n"
+            "exit codes: 0 ok, 1 violations remain, 2 operational error.\n"
+            "configure under [tool.cleanporter] in pyproject.toml."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("paths", nargs="*", default=["."],
+                        help="files or directories to process")
+    parser.add_argument("--fix", action="store_true",
+                        help="rewrite violations in place where provably safe")
+    parser.add_argument("--diff", action="store_true",
+                        help="show the rewrite as a unified diff without writing")
+    parser.add_argument("--python", default=None,
+                        help="interpreter used to classify stdlib/third-party names")
+    parser.add_argument("--exempt", action="append", default=[], metavar="MODULE",
+                        help="additional module whose members may be imported by name")
+    parser.add_argument("--root", action="append", default=[], metavar="PATH",
+                        help="additional first-party import root")
+    parser.add_argument("--strict", action="store_true",
+                        help="also fail on imports that could not be classified")
+    parser.add_argument("--version", action="version",
+                        version=f"cleanporter {__version__}")
+    return parser
+
+
+def _apply_overrides(config: Config, args: argparse.Namespace) -> Config:
+    return replace(
+        config,
+        exempt_modules=config.exempt_modules | frozenset(args.exempt),
+        source_roots=config.source_roots + tuple(args.root),
+        python=args.python or config.python,
+        treat_unresolved_as_error=config.treat_unresolved_as_error or args.strict,
     )
 
 
-@app.command()
-def check(
-    paths: list[Path] = typer.Argument(..., help="Files or directories to scan."),
-    python: str = typer.Option(None, "--python", help="Interpreter for the module probe (default: current)."),
-    exempt: list[str] = typer.Option([], "--exempt", help="Extra module whose members may be imported."),
-    root: list[str] = typer.Option([], "--root", help="Extra first-party import root."),
-    strict: bool = typer.Option(False, "--strict", help="Also fail on undetermined imports."),
-) -> None:
-    """Report imports of objects that should be module imports. Non-zero on violations."""
-    config = _make_config(python, exempt, root)
-    records, resolver, errors, warnings = build(paths, config)
-    for warning in warnings:
-        typer.echo(f"cleanporter: warning: {warning}", err=True)
+def run(args: argparse.Namespace) -> int:
+    anchor = Path(args.paths[0]).resolve()
+    try:
+        config = _apply_overrides(load_config(anchor), args)
+    except ConfigError as exc:
+        print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
+        return _EXIT_ERROR
 
-    findings = list(errors)
+    paths = [Path(p) for p in args.paths]
+    records, resolver, parse_errors, warnings = build(paths, config)
+    for warning in warnings:
+        print(f"cleanporter: warning: {warning}")
+
+    findings: list[Finding] = list(parse_errors)
+    changed = 0
     for rec in records:
+        if args.fix or args.diff:
+            outcome = fix_record(rec, resolver, config)
+            if outcome.status == "fixed":
+                changed += 1
+                # Diff first: rec.source is still the original here.
+                sys.stdout.writelines(
+                    difflib.unified_diff(
+                        rec.source.splitlines(keepends=True),
+                        outcome.source.splitlines(keepends=True),
+                        fromfile=f"a/{rec.path}",
+                        tofile=f"b/{rec.path}",
+                    )
+                )
+                if args.fix:
+                    rec.path.write_text(outcome.source, encoding="utf-8")
+                    print(f"fixed: {rec.path}")
+                    # Report against what is now on disk.
+                    rec = _reparse(rec, outcome.source, config)
+            findings.extend(outcome.blockers)
         findings.extend(analyze_record(rec, resolver, config))
-    findings.sort(key=lambda f: (str(f.path), f.line, f.column))
 
-    for f in findings:
-        typer.echo(f.format())
+    findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
+    for finding in findings:
+        print(finding.format())
 
-    n_viol = sum(f.status is Status.VIOLATION for f in findings)
-    n_unfix = sum(f.status is Status.SKIPPED for f in findings)
-    n_unknown = sum(f.status is Status.UNRESOLVED for f in findings)
-    typer.echo(
-        f"\n{n_viol} violation(s), {n_unfix} unfixable, {n_unknown} undetermined "
-        f"across {len(records)} file(s).",
-        err=True,
+    violations = sum(f.status is Status.VIOLATION for f in findings)
+    skipped = sum(f.status is Status.SKIPPED for f in findings)
+    unresolved = sum(f.status is Status.UNRESOLVED and f.parent != "?" for f in findings)
+    print()
+    print(
+        f"checked {len(records)} file(s)"
+        + (f", fixed {changed}" if args.fix else "")
+        + f": {violations} violation(s), {skipped} not rewritten, "
+        f"{unresolved} unresolved"
     )
-    fail = n_viol or n_unfix or (strict and n_unknown)
-    raise typer.Exit(1 if fail else 0)
+
+    if parse_errors:
+        return _EXIT_ERROR
+    hard = violations + skipped + (unresolved if config.treat_unresolved_as_error else 0)
+    return _EXIT_VIOLATIONS if hard else _EXIT_OK
 
 
-@app.command()
-def fix(
-    paths: list[Path] = typer.Argument(..., help="Files or directories to fix."),
-    write: bool = typer.Option(False, "--write", "-w", help="Apply changes in place (default: show diff)."),
-    python: str = typer.Option(None, "--python", help="Interpreter for the module probe (default: current)."),
-    exempt: list[str] = typer.Option([], "--exempt", help="Extra module whose members may be imported."),
-    root: list[str] = typer.Option([], "--root", help="Extra first-party import root."),
-) -> None:
-    """Rewrite object imports to module imports and qualify their uses."""
-    config = _make_config(python, exempt, root)
-    records, resolver, errors, warnings = build(paths, config)
-    for warning in warnings:
-        typer.echo(f"cleanporter: warning: {warning}", err=True)
+def _reparse(rec: FileRecord, source: str, config: Config) -> FileRecord:
+    import libcst as cst
 
-    total_fixed = 0
-    changed_files = 0
-    for rec in records:
-        new_source, fixed = fix_record(rec, resolver, config)
-        if fixed == 0 or new_source == rec.source:
-            continue
-        total_fixed += fixed
-        changed_files += 1
-        if write:
-            rec.path.write_text(new_source, encoding="utf-8")
-            typer.echo(f"fixed {rec.path} ({fixed} import(s))", err=True)
-        else:
-            diff = difflib.unified_diff(
-                rec.source.splitlines(keepends=True),
-                new_source.splitlines(keepends=True),
-                fromfile=str(rec.path),
-                tofile=str(rec.path),
-            )
-            sys.stdout.writelines(diff)
-
-    # surface anything that could not be fixed automatically
-    remaining = []
-    for rec in records:
-        remaining.extend(
-            f for f in analyze_record(rec, resolver, config)
-            if f.status in (Status.SKIPPED, Status.UNRESOLVED)
-        )
-
-    verb = "fixed" if write else "would fix"
-    typer.echo(
-        f"\n{verb} {total_fixed} import(s) in {changed_files} file(s); "
-        f"{len(remaining)} left for manual review.",
-        err=True,
-    )
-    for f in remaining:
-        typer.echo(f.format(), err=True)
-    if not write:
-        typer.echo("\n(run again with --write to apply; then run isort/ruff to tidy imports)", err=True)
+    return FileRecord(rec.path, source, cst.parse_module(source), rec.base_pkg)
 
 
-def main() -> None:  # entry point
-    app()
+def main(argv: list[str] | None = None) -> int:
+    args = build_arg_parser().parse_args(argv)
+    if not args.paths:
+        args.paths = ["."]
+    try:
+        return run(args)
+    except KeyboardInterrupt:  # pragma: no cover
+        return _EXIT_ERROR
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

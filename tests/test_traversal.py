@@ -35,8 +35,7 @@ def _analyze(source: str):
 
 def _fix(source: str) -> str:
     rec, resolver = _prepare(source)
-    new_source, _ = fix_record(rec, resolver, Config())
-    return new_source
+    return fix_record(rec, resolver, Config()).source
 
 
 def test_elif_body_does_not_crash_and_is_reported():
