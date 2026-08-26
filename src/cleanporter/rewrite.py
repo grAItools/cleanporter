@@ -219,12 +219,26 @@ class _Fixer(cst.CSTTransformer):
         # qualify references for each fixed name
         for name, asname in fix:
             bound = asname or name
-            for assignment in scope[bound]:
-                if getattr(assignment, "node", None) is imp:
-                    for ref in assignment.references:
-                        self.plan.name_repl[id(ref.node)] = cst.Attribute(
-                            value=cst.Name(bind), attr=cst.Name(name)
-                        )
+            ours = [a for a in scope[bound] if getattr(a, "node", None) is imp]
+            others = [
+                a
+                for a in scope[bound]
+                if getattr(a, "node", None) is not imp
+                and type(a).__name__ != "BuiltinAssignment"
+            ]
+            if ours and others:
+                # libcst's scopes are not flow-sensitive, so accesses of a
+                # rebound name list both the import and the assignment as
+                # referents. There is no safe subset to rewrite.
+                self.blockers.append(
+                    (self._line_of(imp), f"local '{bound}' is rebound in the same scope")
+                )
+                continue
+            for assignment in ours:
+                for ref in assignment.references:
+                    self.plan.name_repl[id(ref.node)] = cst.Attribute(
+                        value=cst.Name(bind), attr=cst.Name(name)
+                    )
             self.plan.fixed += 1
 
         # carry the original line's leading comments/blank lines onto the first

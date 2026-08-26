@@ -161,4 +161,54 @@ def test_global_declaration_blocks_the_file():
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
-    assert "global" in result.blockers[0].detail
+    # Task 10 also flags this input (the `global` statement makes `Thing = 3`
+    # a sibling module-scope assignment to the import, a genuine rebinding),
+    # and its blocker sorts first by line. Check the whole set, not index 0.
+    assert any("global" in b.detail for b in result.blockers)
+
+
+def test_module_level_rebinding_blocks_the_file():
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "first = Thing\n"
+        "Thing = 5\n"
+        "second = Thing\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert "rebound" in result.blockers[0].detail
+
+
+def test_function_local_shadowing_is_safe_and_still_rewritten():
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "outer = Thing()\n"
+        "def f():\n"
+        "    Thing = 'shadow'\n"
+        "    return Thing\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\n"
+        "outer = mod.Thing()\n"
+        "def f():\n"
+        "    Thing = 'shadow'\n"
+        "    return Thing\n"
+    )
+
+
+def test_collision_with_the_new_module_token_is_aliased_not_broken():
+    src = "from pkg.sub.mod import Thing\nmod = 'a local string'\nx = Thing()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "import mod as mod_2" in result.source or "mod as mod_2" in result.source
+    assert "mod_2.Thing()" in result.source
+    assert "mod = 'a local string'" in result.source
+
+
+def test_import_never_referenced_is_still_removed():
+    result = outcome("from pkg.sub.mod import Thing\nx = 1\n")
+    assert result.status == "fixed"
+    assert "import Thing" not in result.source
