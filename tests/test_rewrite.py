@@ -267,3 +267,20 @@ def test_unparseable_rewrite_is_reverted_and_reported(monkeypatch):
 def test_valid_rewrite_passes_verification():
     result = outcome("from pkg.sub.mod import Thing\nx = Thing()\n")
     assert result.status == "fixed"
+
+
+def test_parse_error_with_valueerror_is_handled(monkeypatch):
+    # On CPython <3.12, ast.parse raises ValueError for embedded null bytes.
+    # This test covers that path regardless of the Python version running.
+    import cleanporter.rewrite as rewrite_mod
+
+    def boom(source):
+        raise ValueError("source code string cannot contain null bytes")
+
+    monkeypatch.setattr(rewrite_mod.ast, "parse", boom)
+
+    src = "from pkg.sub.mod import Thing\nx = Thing()\n"
+    result = outcome(src)
+    assert result.status == "error"
+    assert result.source == src, "the original must be handed back untouched"
+    assert result.blockers and "did not parse" in result.blockers[0].detail

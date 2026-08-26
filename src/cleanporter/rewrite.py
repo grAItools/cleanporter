@@ -339,14 +339,16 @@ def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> FixOutcom
 
     try:
         ast.parse(new_source)
-    except SyntaxError as exc:
+    except (SyntaxError, ValueError) as exc:
         # Never hand back source we cannot compile. Keep the original.
+        # On CPython <3.12, ValueError is raised for embedded null bytes;
+        # SyntaxError covers syntax errors. Both must be caught.
         return FixOutcome(
             "error",
             rec.source,
             [
                 Finding(
-                    rec.path, exc.lineno or 0, 0, "?", "?", Status.SKIPPED,
+                    rec.path, getattr(exc, "lineno", None) or 0, 0, "?", "?", Status.SKIPPED,
                     "internal error: the rewrite did not parse; reverted",
                 )
             ],
