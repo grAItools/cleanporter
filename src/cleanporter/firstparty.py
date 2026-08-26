@@ -17,13 +17,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
+#: Suffixes CPython will import as an extension module.
+EXTENSION_SUFFIXES = frozenset({".so", ".pyd"})
+
+
+def _module_stem(path: Path) -> str:
+    """``accel.cpython-314-x86_64-linux-gnu.so`` -> ``accel``."""
+    return path.name.split(".")[0]
+
+
+def _is_importable_file(path: Path) -> bool:
+    return path.suffix == ".py" or path.suffix in EXTENSION_SUFFIXES
+
 
 def _is_pkg_dir(d: Path) -> bool:
     if (d / "__init__.py").is_file():
         return True
     # PEP 420 namespace package: a directory that contributes submodules.
     return d.is_dir() and any(
-        c.suffix == ".py" or (c.is_dir() and c.name != "__pycache__") for c in d.iterdir()
+        _is_importable_file(c) or (c.is_dir() and c.name != "__pycache__")
+        for c in d.iterdir()
     )
 
 
@@ -65,8 +78,10 @@ class ModuleMap:
             if child.is_dir() and _is_pkg_dir(child):
                 self._packages.add(self._dotted(root, child))
                 self._scan(root, child)
-            elif child.suffix == ".py" and child.stem != "__init__":
-                self._modules.add(self._dotted(root, child.with_suffix("")))
+            elif _is_importable_file(child):
+                stem = _module_stem(child)
+                if stem and stem != "__init__":
+                    self._modules.add(self._dotted(root, child.with_name(stem)))
 
     @staticmethod
     def _dotted(root: Path, path: Path) -> str:
