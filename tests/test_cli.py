@@ -113,6 +113,26 @@ def test_strict_promotes_unresolved_to_failure(project, capsys):
     assert main(["--strict", str(project / "src")]) == 1
 
 
+def test_fix_still_reports_violations_it_declined(project, capsys):
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from demo.helpers import THING\n"
+        '__all__ = ["THING"]\n',
+        encoding="utf-8",
+    )
+    rc = main(["--fix", str(project / "src")])
+    out = capsys.readouterr().out
+    assert "CP003" in out, "the blocker must be explained"
+    assert "CP001" in out, "the unfixed violation must still be reported"
+    assert rc == 1
+
+
+def test_fix_reports_nothing_for_a_fully_fixed_file(project, capsys):
+    rc = main(["--fix", str(project / "src")])
+    out = capsys.readouterr().out
+    assert "CP001" not in out
+    assert rc == 0
+
+
 def test_summary_counts_match_the_printed_lines(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
         "from demo.helpers import THING\n"
