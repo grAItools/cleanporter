@@ -115,6 +115,11 @@ class _Fixer(cst.CSTTransformer):
         self._build_existing(node)
         for line, imp in self._import_lines(node):
             self._plan_line(line, imp)
+        # Guards run last, on the pristine node, before libcst descends into
+        # any children (visit_Module runs on the way down). Anything a guard
+        # needs to see -- e.g. Task 16's skip_ids for lazy annotations it
+        # rewrites itself -- must be computed/planned above, inside this
+        # method, not collected incrementally during the child traversal.
         self._run_guards(node)
 
     def _line_of(self, node: cst.CSTNode) -> int:
