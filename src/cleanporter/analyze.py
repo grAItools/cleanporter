@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import libcst as cst
@@ -31,6 +31,24 @@ class FileRecord:
     source: str
     tree: cst.Module
     base_pkg: str
+    _units: list[ImportUnit] | None = field(default=None, repr=False, compare=False)
+    _positions: object | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def units(self) -> list[ImportUnit]:
+        """Every ``from`` import in the file. Computed once."""
+        if self._units is None:
+            self._units = list(iter_units(self.tree, self.base_pkg))
+        return self._units
+
+    @property
+    def positions(self):  # type: ignore[no-untyped-def]
+        """``PositionProvider`` mapping for this tree. Resolved once."""
+        if self._positions is None:
+            self._positions = MetadataWrapper(
+                self.tree, unsafe_skip_copy=True
+            ).resolve(PositionProvider)
+        return self._positions
 
 
 def package_of(path: Path, module_map: ModuleMap) -> str:
@@ -68,16 +86,16 @@ def _walk_import_froms(tree: cst.Module) -> list[cst.ImportFrom]:
 def collect_pairs(records: list[FileRecord]) -> list[tuple[str, str]]:
     pairs: set[tuple[str, str]] = set()
     for rec in records:
-        for unit in iter_units(rec.tree, rec.base_pkg):
+        for unit in rec.units:
             if unit.parent and not unit.star:
                 pairs.add((unit.parent, unit.name))
     return sorted(pairs)
 
 
 def analyze_record(rec: FileRecord, resolver: Resolver, config: Config) -> list[Finding]:
-    positions = MetadataWrapper(rec.tree, unsafe_skip_copy=True).resolve(PositionProvider)
+    positions = rec.positions
     findings: list[Finding] = []
-    for unit in iter_units(rec.tree, rec.base_pkg):
+    for unit in rec.units:
         pos = positions[unit.node].start
         line, col = pos.line, pos.column
 
