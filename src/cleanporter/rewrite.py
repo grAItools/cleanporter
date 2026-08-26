@@ -248,6 +248,12 @@ class _Fixer(cst.CSTTransformer):
         # an empty list means the line is removed entirely because the module
         # is already imported and nothing is kept.
         has_trailing_comment = line.trailing_whitespace.comment is not None
+        # leading_lines holds both comment lines and plain blank lines
+        # (EmptyLine with comment=None); only a real comment should block --
+        # otherwise every import preceded by a blank line would block.
+        has_leading_comment = any(
+            empty_line.comment is not None for empty_line in line.leading_lines
+        )
         if new_lines:
             first = new_lines[0]
             if isinstance(first, cst.SimpleStatementLine):
@@ -261,17 +267,28 @@ class _Fixer(cst.CSTTransformer):
                 new_lines[-1] = last.with_changes(
                     trailing_whitespace=line.trailing_whitespace
                 )
-        elif has_trailing_comment:
+        elif has_trailing_comment or has_leading_comment:
             # The line disappears entirely (the module is already bound and
             # nothing is kept), so there is nowhere to put the author's
-            # trailing comment. Silently discarding it is worse than
-            # declining to fix the file, so block instead.
-            self.blockers.append(
-                (
-                    self._line_of(line),
-                    "removing this import would discard its trailing comment",
+            # comment -- leading or trailing. Silently discarding it is worse
+            # than declining to fix the file, so block instead. Anchored to
+            # the line itself (not the ``imp`` node used by the rebound-name
+            # blocker above) because the comment being lost belongs to the
+            # line, not to any one imported name.
+            if has_trailing_comment:
+                self.blockers.append(
+                    (
+                        self._line_of(line),
+                        "removing this import would discard its trailing comment",
+                    )
                 )
-            )
+            if has_leading_comment:
+                self.blockers.append(
+                    (
+                        self._line_of(line),
+                        "removing this import would discard its leading comment(s)",
+                    )
+                )
             return
         self.plan.line_repl[id(line)] = new_lines
 

@@ -315,10 +315,21 @@ def test_leading_comments_and_blank_lines_are_preserved():
 
 
 def test_trailing_comment_lands_on_the_last_replacement_line():
-    src = "from pkg.sub.mod import Thing, go  # both\nx = Thing() + go()\n"
-    result = outcome(src)
+    # A genuinely two-statement replacement: `go` is exempted so it is kept
+    # on a second "from ... import go" line, while `Thing` is rewritten to a
+    # module import. new_lines therefore has two elements, and the trailing
+    # comment must land on the *last* one (the kept-names import), not the
+    # first (the new module import).
+    src = "from pkg.sub.mod import Thing, go  # both\nx = Thing()\ny = go()\n"
+    config = Config(exempt_names=frozenset({"go"}))
+    result = outcome(src, config)
     assert result.status == "fixed"
-    assert result.source.splitlines()[0].endswith("# both")
+    assert result.source == (
+        "from pkg.sub import mod\n"
+        "from pkg.sub.mod import go  # both\n"
+        "x = mod.Thing()\n"
+        "y = go()\n"
+    )
 
 
 def test_deleting_a_commented_line_blocks_instead_of_dropping_the_comment():
@@ -335,6 +346,37 @@ def test_deleting_a_commented_line_blocks_instead_of_dropping_the_comment():
 
 def test_deleting_an_uncommented_line_is_fine():
     src = "from pkg.sub import mod\nfrom pkg.sub.mod import Thing\nx = Thing()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"
+
+
+def test_deleting_a_line_with_leading_comment_blocks_instead_of_dropping_it():
+    # Same rationale as the trailing-comment deletion case: when the module
+    # is already bound and the line disappears entirely, a *leading* comment
+    # has nowhere to go either. Silently discarding it is worse than
+    # declining to fix the file.
+    src = (
+        "from pkg.sub import mod\n"
+        "# why this exists\n"
+        "from pkg.sub.mod import Thing\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert "comment" in result.blockers[0].detail
+
+
+def test_deleting_a_line_preceded_only_by_a_blank_line_is_still_fixed():
+    # leading_lines also holds blank-line EmptyLine nodes with comment=None;
+    # those must not trigger the leading-comment block.
+    src = (
+        "from pkg.sub import mod\n"
+        "\n"
+        "from pkg.sub.mod import Thing\n"
+        "x = Thing()\n"
+    )
     result = outcome(src)
     assert result.status == "fixed"
     assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"
