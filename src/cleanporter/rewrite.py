@@ -220,12 +220,13 @@ class _Fixer(cst.CSTTransformer):
         for name, asname in fix:
             bound = asname or name
             ours = [a for a in scope[bound] if getattr(a, "node", None) is imp]
-            others = [
-                a
-                for a in scope[bound]
-                if getattr(a, "node", None) is not imp
-                and type(a).__name__ != "BuiltinAssignment"
-            ]
+            # No BuiltinAssignment filter needed here: libcst only ever puts
+            # BuiltinAssignment objects in a BuiltinScope's own assignments,
+            # never in a GlobalScope's. GlobalScope.__getitem__ returns its
+            # own assignments directly whenever the name is present there at
+            # all, and `ours` being non-empty means `bound` is already
+            # present -- so a builtin can never show up alongside our import.
+            others = [a for a in scope[bound] if getattr(a, "node", None) is not imp]
             if ours and others:
                 # libcst's scopes are not flow-sensitive, so accesses of a
                 # rebound name list both the import and the assignment as

@@ -163,8 +163,13 @@ def test_global_declaration_blocks_the_file():
     assert result.source == src
     # Task 10 also flags this input (the `global` statement makes `Thing = 3`
     # a sibling module-scope assignment to the import, a genuine rebinding),
-    # and its blocker sorts first by line. Check the whole set, not index 0.
-    assert any("global" in b.detail for b in result.blockers)
+    # and its blocker sorts first by line. Assert both guards' signatures are
+    # present so this test still provides signal about Task 10's behaviour
+    # (a bare "any 'global'" check would pass even if Task 10's guard were
+    # deleted, since Task 9's own guard already puts "global" in its detail).
+    details = [b.detail for b in result.blockers]
+    assert any("global" in d for d in details)
+    assert any("rebound" in d for d in details)
 
 
 def test_module_level_rebinding_blocks_the_file():
@@ -212,3 +217,33 @@ def test_import_never_referenced_is_still_removed():
     result = outcome("from pkg.sub.mod import Thing\nx = 1\n")
     assert result.status == "fixed"
     assert "import Thing" not in result.source
+
+
+# -- fix round 1 (rebinding guard hygiene) -----------------------------------
+
+
+def test_import_shadowing_a_builtin_is_still_rewritten():
+    # libcst never puts a BuiltinAssignment in GlobalScope alongside a name
+    # that is also bound there by an import, so the guard must not treat a
+    # builtin-shadowing import as a same-scope rebinding.
+    src = "from pkg.sub.mod import Thing as list\nx = list()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"
+
+
+def test_two_imports_of_the_same_name_both_get_blocked():
+    # Two ImportFrom statements binding the same module-level name produce
+    # two distinct ImportAssignment objects in scope['Thing']; each import
+    # sees the other as a sibling assignment it cannot distinguish itself
+    # from, so both are conservatively blocked.
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "from pkg.sub.mod import Thing\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert len(result.blockers) == 2
+    assert all("rebound" in b.detail for b in result.blockers)
