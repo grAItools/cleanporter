@@ -7,7 +7,7 @@ name = "cleanporter"
 version = "0.1.0"
 description = "Check that from-imports follow Google Python Style Guide section 2.2 (import modules only) and auto-fix violations."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Enrique Garcia" }]
 keywords = ["style", "imports", "lint", "codemod", "libcst"]
@@ -17,10 +17,10 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.10",
     "Topic :: Software Development :: Quality Assurance",
 ]
-dependencies = ["libcst>=1.4"]
+dependencies = ["libcst>=1.1", "typer>=0.12"]
 
 [project.scripts]
 cleanporter = "cleanporter.cli:main"
@@ -33,3 +33,18 @@ packages = ["src/cleanporter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/cleanporter/cli.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true

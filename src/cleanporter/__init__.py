@@ -1,3 +1,10 @@
-"""cleanporter: enforce Google Python Style Guide section 2.2 for imports."""
+"""cleanporter: enforce Google Python Style Guide 2.2 (import modules, not members)."""
 
-__version__ = "0.1.0"
+from __future__ import annotations
+
+__all__ = ["Config", "Resolver", "analyze_record", "build", "fix_record"]
+
+from .analyze import analyze_record, build
+from .config import Config
+from .resolver import Resolver
+from .rewrite import fix_record
