@@ -132,6 +132,9 @@ class _Fixer(cst.CSTTransformer):
         self.blockers.extend(
             guards.find_string_mentions(node, self._fixed_locals, self._line_of)
         )
+        self.blockers.extend(
+            guards.find_scope_declarations(node, self._fixed_locals, self._line_of)
+        )
 
     def _build_existing(self, node: cst.Module) -> None:
         """Map already-imported modules to the simple name they are bound to."""

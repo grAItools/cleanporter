@@ -92,3 +92,30 @@ def _walk(node):
     yield node
     for child in node.children:
         yield from _walk(child)
+
+
+def _decl_hits(source: str, names: set[str]):
+    tree = cst.parse_module(source)
+    return guards.find_scope_declarations(tree, names, _line_of(tree))
+
+
+def test_global_declaration_is_a_hit():
+    hits = _decl_hits("def f():\n    global THING\n    THING = 3\n", {"THING"})
+    assert len(hits) == 1
+    assert hits[0][0] == 2
+    assert "global" in hits[0][1]
+
+
+def test_nonlocal_declaration_is_a_hit():
+    src = "def outer():\n    Widget = 1\n    def inner():\n        nonlocal Widget\n"
+    hits = _decl_hits(src, {"Widget"})
+    assert len(hits) == 1 and "nonlocal" in hits[0][1]
+
+
+def test_declaration_of_an_unrelated_name_is_not_a_hit():
+    assert _decl_hits("def f():\n    global OTHER\n", {"THING"}) == []
+
+
+def test_multiple_names_in_one_declaration_are_reported_together():
+    hits = _decl_hits("def f():\n    global A, B\n", {"A", "B"})
+    assert len(hits) == 1 and "A/B" in hits[0][1]

@@ -106,3 +106,35 @@ def find_string_mentions(
 
     tree.visit(V())
     return hits
+
+
+def find_scope_declarations(
+    tree: cst.Module, names: Collection[str], line_of: LineOf
+) -> list[Hit]:
+    """``global`` / ``nonlocal`` declarations naming a rewritten local.
+
+    Such a declaration keeps a module-level name writable from another scope.
+    Qualifying the reads without also rewriting the writes would silently
+    decouple them, so the file is left alone.
+    """
+    hits: list[Hit] = []
+    if not names:
+        return hits
+    wanted = set(names)
+
+    class V(cst.CSTVisitor):
+        def visit_Global(self, node: cst.Global) -> None:
+            self._record(node, "global")
+
+        def visit_Nonlocal(self, node: cst.Nonlocal) -> None:
+            self._record(node, "nonlocal")
+
+        def _record(self, node: cst.CSTNode, keyword: str) -> None:
+            clashing = [i.name.value for i in node.names if i.name.value in wanted]
+            if clashing:
+                hits.append(
+                    (line_of(node), f"'{'/'.join(sorted(clashing))}' declared {keyword}")
+                )
+
+    tree.visit(V())
+    return hits

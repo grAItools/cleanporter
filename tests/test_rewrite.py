@@ -146,3 +146,19 @@ def test_two_mentions_of_the_same_name_on_one_line_dedup_to_one_blocker():
     result = outcome(src)
     assert result.status == "skipped"
     assert len(result.blockers) == 1
+
+
+# -- scope declarations guard (Task 9) ----------------------------------------
+
+
+def test_global_declaration_blocks_the_file():
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "def f():\n"
+        "    global Thing\n"
+        "    Thing = 3\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert "global" in result.blockers[0].detail
