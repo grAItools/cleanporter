@@ -1,3 +1,5 @@
+<img src="docs/assets/logo-mark.svg" width="80" align="right" alt="">
+
 # cleanporter
 
 [![CI](https://github.com/grAItools/cleanporter/actions/workflows/ci.yml/badge.svg)](https://github.com/grAItools/cleanporter/actions/workflows/ci.yml)

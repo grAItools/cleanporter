@@ -19,6 +19,12 @@ nav = [
 
 [project.theme]
 language = "en"
+# `logo.svg` is drawn with `currentColor`, so it follows the palette
+# toggle for free. `logo-mark.svg` bakes the accent in, for contexts
+# with no CSS to inherit from -- GitHub's README. favicon.svg is the
+# same mark again with a heavier stroke, tuned for 16px.
+logo = "assets/logo.svg"
+favicon = "assets/favicon.svg"
 features = [
   # An "Edit this page" pencil, backed by `edit_uri` above.
   "content.action.edit",
