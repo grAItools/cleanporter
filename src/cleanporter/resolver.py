@@ -26,6 +26,10 @@ from . import _probe
 from .firstparty import ModuleMap
 from .model import Kind
 
+#: Wall-clock budget for one out-of-process probe batch. A probe that
+#: outlives it is killed and its whole batch reported undetermined.
+_PROBE_TIMEOUT = 120
+
 _AMBIGUOUS = "'{name}' is both a submodule of '{parent}' and bound in its __init__"
 _NOT_IMPORTABLE = "'{parent}' is not importable in the target interpreter"
 
@@ -102,17 +106,31 @@ class Resolver:
         if self._in_process:
             flat = _probe.classify_many(pairs)
         else:
-            proc = subprocess.run(
-                [self._python, self._probe_path],
-                input=json.dumps(pairs),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if proc.returncode != 0:
-                # Whole-batch failure -> everything undetermined (never guess).
+            # Every failure mode of the bridge -- a non-zero exit, an
+            # interpreter that cannot be run at all, one that hangs past the
+            # timeout, or one that writes something that is not the expected
+            # JSON map -- reports the *whole batch* as undetermined. "Never
+            # guess" applies to the transport exactly as it does to the
+            # classification: reporting nothing is recoverable, guessing
+            # wrong in --fix mode is not.
+            try:
+                proc = subprocess.run(
+                    [self._python, self._probe_path],
+                    input=json.dumps(pairs),
+                    capture_output=True,
+                    text=True,
+                    timeout=_PROBE_TIMEOUT,
+                )
+            except (subprocess.SubprocessError, OSError):
                 return {p: None for p in pairs}
-            flat = json.loads(proc.stdout or "{}")
+            if proc.returncode != 0:
+                return {p: None for p in pairs}
+            try:
+                flat = json.loads(proc.stdout or "{}")
+            except ValueError:
+                return {p: None for p in pairs}
+            if not isinstance(flat, dict):
+                return {p: None for p in pairs}
         out: dict[tuple[str, str], bool | None] = {}
         for parent, name in pairs:
             out[(parent, name)] = flat.get(f"{parent}\x00{name}")
