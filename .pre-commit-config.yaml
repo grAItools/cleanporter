@@ -18,20 +18,18 @@ repos:
 
   - repo: local
     hooks:
-      # Both checkers read their configuration from pyproject.toml and check
-      # the whole package, so the changed filenames are not passed along --
-      # `types: [python]` is only there to keep them from firing on commits
-      # that touch no Python at all.
-      - id: mypy
-        name: mypy --strict
-        entry: uv run mypy --strict src/cleanporter
-        language: system
-        types: [python]
-        pass_filenames: false
-
-      - id: pyright
-        name: pyright
-        entry: uv run pyright
+      # Run the budget test rather than the raw checkers. mypy and pyright
+      # both exit non-zero on any diagnostic, and this project accepts a
+      # pinned budget of libcst-induced errors -- invoking them directly here
+      # would block every single commit. The test invokes both and compares
+      # their counts to the budget, so this hook fails only on real new debt.
+      #
+      # `types: [python]` keeps it from firing on commits that touch no
+      # Python; filenames are not passed because both checkers read their
+      # scope from pyproject.toml.
+      - id: typecheck
+        name: mypy and pyright (pinned budget)
+        entry: uv run pytest -m typecheck
         language: system
         types: [python]
         pass_filenames: false

@@ -58,6 +58,7 @@ def _pyright_error_count(output: str) -> int:
     )
 
 
+@pytest.mark.typecheck
 @pytest.mark.skipif(importlib.util.find_spec("mypy") is None, reason="mypy is not installed")
 def test_mypy_stays_within_budget() -> None:
     proc = _run([sys.executable, "-m", "mypy", "--strict", TARGET])
@@ -68,6 +69,7 @@ def test_mypy_stays_within_budget() -> None:
     )
 
 
+@pytest.mark.typecheck
 @pytest.mark.skipif(importlib.util.find_spec("pyright") is None, reason="pyright is not installed")
 def test_pyright_stays_within_budget() -> None:
     proc = _run([sys.executable, "-m", "pyright", "--outputjson"])

@@ -37,8 +37,9 @@ group pins because it is faster.
 | Lint with autofix | `uv run ruff check --fix` |
 | Format | `uv run ruff format` |
 | Check formatting only | `uv run ruff format --check` |
-| Type check (blocking) | `uv run mypy --strict src/cleanporter` |
-| Type check (blocking) | `uv run pyright` |
+| Type check against the budget | `uv run pytest -m typecheck` |
+| Type check, raw output | `uv run mypy --strict src/cleanporter` |
+| Type check, raw output | `uv run pyright` |
 | Type check (optional) | `uv sync --group zuban && uv run --group zuban zuban mypy --strict src/cleanporter` |
 | All local hooks | `uv run prek run --all-files` |
 | Preview the docs | `uv run --group docs zensical serve` |
@@ -92,6 +93,11 @@ If your change adds an error, the fix is to type your code correctly — not to
 edit the budget upward. If you genuinely believe you have hit a new unavoidable
 libcst shape, say so explicitly in the PR description and expect to be asked to
 prove it.
+
+Run `uv run pytest -m typecheck` to check yourself against it. Note that
+invoking `mypy` or `pyright` directly always exits non-zero here, because both
+report the accepted errors — that is expected, and it is why CI and the git
+hooks run the budget test rather than the raw tools.
 
 The source of truth for the current numbers is
 `tests/test_typecheck_baseline.py`. This document deliberately does not repeat
@@ -197,9 +203,8 @@ Before you open a PR:
 - [ ] `uv run pytest` passes.
 - [ ] `uv run ruff check` is clean.
 - [ ] `uv run ruff format --check` is clean (or you ran `uv run ruff format`).
-- [ ] `uv run mypy --strict src/cleanporter` and `uv run pyright` do not exceed
-      the pinned budget — and if you fixed an accepted error, you lowered the
-      budget in the same commit.
+- [ ] `uv run pytest -m typecheck` passes — and if you fixed an accepted
+      error, you lowered the budget in the same commit.
 - [ ] `uv run prek run --all-files` is clean.
 - [ ] New or changed CLI flags, config keys and finding codes are documented in
       `docs/` (the anti-drift tests will tell you if they are not).

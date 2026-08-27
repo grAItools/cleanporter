@@ -56,6 +56,9 @@ packages = ["src/cleanporter"]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config"]
 xfail_strict = true
+markers = [
+    "typecheck: shells out to an external type checker and compares its error count to the pinned budget",
+]
 
 # ---------------------------------------------------------------------------
 # Ruff is the only linter and formatter in this project. Everything it can

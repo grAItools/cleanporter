@@ -39,13 +39,17 @@ jobs:
       - name: ruff format --check
         run: uv run ruff format --check
 
-      - name: mypy --strict
-        run: uv run mypy --strict src/cleanporter
-
+      # mypy and pyright both exit non-zero on *any* diagnostic, and this
+      # project accepts a small pinned budget of errors that all originate in
+      # libcst's partially-typed surface. Running the raw tools here would
+      # therefore fail forever. tests/test_typecheck_baseline.py is the single
+      # definition of what is acceptable, so run that instead -- it invokes
+      # both checkers and compares their counts to the budget.
+      #
       # The pyright PyPI wrapper fetches its own Node runtime on first use.
       # That works on GitHub-hosted runners; it just costs a few seconds.
-      - name: pyright
-        run: uv run pyright
+      - name: mypy and pyright, against the pinned budget
+        run: uv run pytest -m typecheck -v
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -67,8 +71,11 @@ jobs:
       - name: Sync the locked environment
         run: uv sync --locked
 
+      # `-m "not typecheck"` leaves the type-checker budget tests to the lint
+      # job, which runs once. They are not per-Python-version checks, and
+      # pyright would fetch its Node runtime again in every matrix leg.
       - name: pytest
-        run: uv run pytest
+        run: uv run pytest -m "not typecheck"
 
   # Informational only. zuban is a second, independent type checker; its
   # findings are a cross-check on mypy and pyright, never a merge gate.

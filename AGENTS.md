@@ -56,8 +56,9 @@ uv run prek install                       # local git hooks (.pre-commit-config.
 uv run pytest                             # tests
 uv run ruff check                         # lint (the only linter)
 uv run ruff format                        # format (the only formatter, 100 cols)
-uv run mypy --strict src/cleanporter      # blocking type check
-uv run pyright                            # blocking type check (fetches Node on first run)
+uv run pytest -m typecheck                # mypy + pyright vs the pinned budget
+uv run mypy --strict src/cleanporter      # raw output (always exits 1: see budget)
+uv run pyright                            # raw output (fetches Node on first run)
 uv run prek run --all-files               # all local hooks
 uv run --group docs zensical serve        # docs preview
 uv run --group docs zensical build        # docs build
