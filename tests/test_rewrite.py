@@ -438,3 +438,105 @@ def test_class_body_import_is_fixed():
     assert result.status == "fixed"
     assert "from pkg.sub import mod" in result.source
     assert "x = mod.Thing" in result.source
+
+
+# -- Task 15 fix-round-1 regressions ---------------------------------------
+#
+# The three tests below each pin down a collision-model defect the first
+# implementation missed. Each is only reachable now that non-global-scope
+# imports are rewritten at all (Task 15's headline change); before that,
+# these imports were reported but left untouched.
+
+
+def test_critical_1_global_names_populated_without_a_module_level_import():
+    # `_global_names` must come from *any* scope's view of the module, not
+    # only from a GlobalScope-scoped import line -- this file's only import
+    # is function-local, so a naive "only look at GlobalScope-scoped
+    # imports" collection leaves `_global_names` empty and the new binding
+    # wrongly reuses (and shadows) the module-level `mod` string.
+    src = (
+        "mod = 'a module-level string'\n"
+        "def f():\n"
+        "    from pkg.sub.mod import Thing\n"
+        "    return mod, Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "mod = 'a module-level string'\n"
+        "def f():\n"
+        "    from pkg.sub import mod as mod_2\n"
+        "    return mod, mod_2.Thing()\n"
+    )
+
+
+def test_critical_2_a_module_level_token_allocation_is_visible_to_later_functions():
+    # `mod` is allocated for the module-level import first; the function's
+    # own import resolves to a *different* parent that happens to share the
+    # same trailing token ("mod"). The function-scope allocation must see
+    # the module-level allocation that just happened and alias around it --
+    # a frozen locals|globals snapshot taken before planning began would
+    # miss it and collide both bindings on the same name.
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "def f():\n"
+        "    from pkg.other.mod import Other\n"
+        "    return Thing(), Other()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\n"
+        "def f():\n"
+        "    from pkg.other import mod as mod_2\n"
+        "    return mod.Thing(), mod_2.Other()\n"
+    )
+
+
+def test_critical_3_enclosing_function_scope_local_blocks_a_new_binding():
+    # `inner`'s import must not bind `mod` -- that name is a local of the
+    # *enclosing* function `outer`, not of `inner` itself, so a collision
+    # check that only inspects `inner`'s own local names misses it and
+    # silently kills the closure variable.
+    src = (
+        "def outer():\n"
+        "    mod = 'closure string'\n"
+        "    def inner():\n"
+        "        from pkg.sub.mod import Thing\n"
+        "        return mod, Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "def outer():\n"
+        "    mod = 'closure string'\n"
+        "    def inner():\n"
+        "        from pkg.sub import mod as mod_2\n"
+        "        return mod, mod_2.Thing()\n"
+    )
+
+
+def test_critical_3_enclosing_function_scope_local_blocks_reusing_an_existing_import():
+    # Same root cause as the previous test, but hitting the *other* code
+    # path: reusing an existing module-level import instead of allocating a
+    # fresh one. `outer`'s local `mod` must still block `inner` from
+    # reusing the module-level `from pkg.sub import mod`, or `inner`
+    # silently reads `outer`'s string instead of the module.
+    src = (
+        "from pkg.sub import mod\n"
+        "def outer():\n"
+        "    mod = 'shadow'\n"
+        "    def inner():\n"
+        "        from pkg.sub.mod import Thing\n"
+        "        return Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\n"
+        "def outer():\n"
+        "    mod = 'shadow'\n"
+        "    def inner():\n"
+        "        from pkg.sub import mod as mod_2\n"
+        "        return mod_2.Thing()\n"
+    )

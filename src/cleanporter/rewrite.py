@@ -28,7 +28,7 @@ import ast
 from dataclasses import dataclass, field
 
 import libcst as cst
-from libcst.metadata import GlobalScope, PositionProvider, ScopeProvider
+from libcst.metadata import GlobalScope, PositionProvider, Scope, ScopeProvider
 
 from . import _imports, guards
 from .analyze import FileRecord
@@ -101,10 +101,15 @@ class _Fixer(cst.CSTTransformer):
         self._config = config
         self.plan = _Plan()
         self.blockers: list[Hit] = []
-        self._module_binding: dict[tuple[int, str], str] = {}  # (id(scope), parent) -> bound token
+        self._module_binding: dict[tuple[Scope, str], str] = {}  # (scope, parent) -> bound token
         self._existing: dict[str, str] = {}  # already-imported module -> its name
+        #: Names bound at module scope. Kept *live*: grows as `_binding_for`
+        #: allocates new module-level tokens, so a later function scope's
+        #: collision check sees them (fix-round-1 Critical 2).
         self._global_names: set[str] = set()
-        self._scope_names: dict[int, set[str]] = {}
+        #: Per-scope cache of `_local_names`, mutated in place by
+        #: `_binding_for` for the same reason `_global_names` is live.
+        self._scope_locals: dict[Scope, set[str]] = {}
         self._tc_ids: set[int] = set()
         #: Local names this run would rewrite -- the input to every guard.
         self._fixed_locals: set[str] = set()
@@ -112,11 +117,15 @@ class _Fixer(cst.CSTTransformer):
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
         self._tc_ids = _type_checking_import_ids(node)
-        # names already bound at module scope, to avoid collisions
+        # Names already bound at module scope, seen from *any* scope's
+        # `.globals` -- not gated on the import itself being GlobalScope-
+        # scoped. A file whose only import is function-local has no
+        # GlobalScope-scoped import line at all, and gating on one would
+        # silently leave `_global_names` empty (fix-round-1 Critical 1).
         for _line, imp in self._import_lines(node):
             scope = self.get_metadata(ScopeProvider, imp, None)
-            if isinstance(scope, GlobalScope):
-                self._global_names = {a.name for a in scope.assignments}
+            if scope is not None:
+                self._global_names = {a.name for a in scope.globals.assignments}
                 break
         self._build_existing(node)
         for line, imp in self._import_lines(node):
@@ -210,7 +219,7 @@ class _Fixer(cst.CSTTransformer):
         bind = self._binding_for(scope, parent)
         if bind is not None:  # None => module already bound earlier in file
             new_lines.append(self._module_import_stmt(parent, bind))
-        bind = self._module_binding[(id(scope), parent)]
+        bind = self._module_binding[(scope, parent)]
 
         if keep:
             prefix = "." * _imports.relative_level(imp)
@@ -228,10 +237,15 @@ class _Fixer(cst.CSTTransformer):
             ours = [a for a in scope[bound] if getattr(a, "node", None) is imp]
             # No BuiltinAssignment filter needed here: libcst only ever puts
             # BuiltinAssignment objects in a BuiltinScope's own assignments,
-            # never in a GlobalScope's. GlobalScope.__getitem__ returns its
+            # never in a GlobalScope's or a LocalScope's (FunctionScope /
+            # ClassScope, now that non-module scopes are fixed too).
+            # GlobalScope.__getitem__ and LocalScope's (via
+            # LocalScope._resolve_scope_for_access) both return the scope's
             # own assignments directly whenever the name is present there at
             # all, and `ours` being non-empty means `bound` is already
-            # present -- so a builtin can never show up alongside our import.
+            # present in *this* scope's own assignments -- so a builtin can
+            # never show up alongside our import, regardless of whether
+            # `scope` is global, a function, or a class body.
             others = [a for a in scope[bound] if getattr(a, "node", None) is not imp]
             if ours and others:
                 # libcst's scopes are not flow-sensitive, so accesses of a
@@ -297,34 +311,59 @@ class _Fixer(cst.CSTTransformer):
             return
         self.plan.line_repl[id(line)] = new_lines
 
-    def _local_names(self, scope: object) -> set[str]:
-        """Names assigned directly in *scope*, ignoring enclosing scopes."""
-        return {a.name for a in scope.assignments}  # type: ignore[attr-defined]
+    def _local_names(self, scope: Scope) -> set[str]:
+        """Names assigned directly in *scope*, ignoring enclosing scopes.
 
-    def _names_in_scope(self, scope: object) -> set[str]:
-        """Names a new binding in *scope* must not collide with."""
-        key = id(scope)
-        if key not in self._scope_names:
-            names = self._local_names(scope)
-            if not isinstance(scope, GlobalScope):
-                names = names | self._global_names
-            self._scope_names[key] = names
-        return self._scope_names[key]
+        Cached and mutated in place: `_binding_for` adds each token it
+        allocates in *scope* here, so a later lookup in the same scope sees
+        it immediately, without waiting for a real AST assignment to back
+        it (fix-round-1 Critical 2).
+        """
+        if scope not in self._scope_locals:
+            self._scope_locals[scope] = {a.name for a in scope.assignments}
+        return self._scope_locals[scope]
 
-    def _binding_for(self, scope: object, parent: str) -> str | None:
+    def _ancestor_local_names(self, scope: Scope) -> set[str]:
+        """Names assigned in *scope* or any enclosing function/class scope.
+
+        Walks ``scope.parent`` upward, unioning `_local_names` at each
+        level, and stops at (and excludes) the module scope -- those names
+        live in `_global_names` instead, which is kept live as
+        `_binding_for` allocates module-level tokens. Never continues past
+        the module scope into `BuiltinScope`: avoiding a builtin's name
+        would alias unnecessarily. `ClassScope` levels are included like
+        any other -- harmless over-conservatism (fix-round-1 Critical 3).
+        """
+        names: set[str] = set()
+        current = scope
+        while not isinstance(current, GlobalScope):
+            names |= self._local_names(current)
+            current = current.parent
+        return names
+
+    def _names_in_scope(self, scope: Scope) -> set[str]:
+        """Names a new binding in *scope* must not collide with: names
+        assigned in *scope* itself, in any enclosing function/class scope,
+        or at module scope.
+        """
+        return self._ancestor_local_names(scope) | self._global_names
+
+    def _binding_for(self, scope: Scope, parent: str) -> str | None:
         """Token to qualify through, or ``None`` when one already exists.
 
         Returns the token of a *new* import to emit. ``None`` means *parent*
         is already bound in a way this scope can see, so no import is needed.
         """
-        key = (id(scope), parent)
+        key = (scope, parent)
         if key in self._module_binding:
             return None
         existing = self._existing.get(parent)
         if existing is not None:
-            # A module-level import is visible from nested scopes unless the
-            # scope assigns that name itself.
-            shadowed = not isinstance(scope, GlobalScope) and existing in self._local_names(scope)
+            # A module-level import is visible from nested scopes unless
+            # *this* scope or an enclosing function/class scope assigns
+            # that name itself -- a closure variable shadows it just as
+            # surely as a same-scope local does (fix-round-1 Critical 3).
+            shadowed = not isinstance(scope, GlobalScope) and existing in self._ancestor_local_names(scope)
             if not shadowed:
                 self._module_binding[key] = existing
                 return None
@@ -335,7 +374,14 @@ class _Fixer(cst.CSTTransformer):
         while bind in taken:
             bind = f"{token}_{counter}"
             counter += 1
-        taken.add(bind)
+        # Record the allocation where a later lookup will actually see it.
+        # `_names_in_scope` recomputes its union fresh on every call now
+        # (fix-round-1 Critical 2), so mutating `taken` itself would be a
+        # no-op -- the mutation has to land in the live set(s) that feed it.
+        if isinstance(scope, GlobalScope):
+            self._global_names.add(bind)
+        else:
+            self._local_names(scope).add(bind)
         self._module_binding[key] = bind
         return bind
 
