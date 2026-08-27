@@ -540,3 +540,66 @@ def test_critical_3_enclosing_function_scope_local_blocks_reusing_an_existing_im
         "        from pkg.sub import mod as mod_2\n"
         "        return mod_2.Thing()\n"
     )
+
+
+# -- Task 15 fix-round-2 regressions ---------------------------------------
+#
+# Round 1 fixed the collision model's *upward* walk (a binding must avoid
+# names an enclosing scope assigns). It missed the mirror case: a binding
+# must also avoid names assigned in a scope *below* it, if that scope is
+# where one of the binding's own references actually lives -- otherwise the
+# reference resolves to the local, not the import.
+
+
+def test_downward_shadowing_at_module_scope_aliases_around_the_local():
+    # `Thing()` is read from inside `f`, where `mod` is a plain local. The
+    # module-level import must not bind `mod` -- it must alias to `mod_2`,
+    # or `mod.Thing()` inside `f` would resolve `mod` to the integer `1`.
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "def f():\n"
+        "    mod = 1\n"
+        "    return mod, Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod as mod_2\n"
+        "def f():\n"
+        "    mod = 1\n"
+        "    return mod, mod_2.Thing()\n"
+    )
+
+
+def test_downward_shadowing_one_level_deeper_through_a_closure():
+    # Same defect, one scope further down: the import lives in `outer`, and
+    # the shadowing local and the read both live in the nested `inner`.
+    src = (
+        "def outer():\n"
+        "    from pkg.sub.mod import Thing\n"
+        "    def inner():\n"
+        "        mod = 1\n"
+        "        return mod, Thing()\n"
+        "    return inner\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "def outer():\n"
+        "    from pkg.sub import mod as mod_2\n"
+        "    def inner():\n"
+        "        mod = 1\n"
+        "        return mod, mod_2.Thing()\n"
+        "    return inner\n"
+    )
+
+
+def test_no_spurious_alias_when_all_references_are_at_the_import_s_own_scope():
+    # Regression lock: the downward-shadowing check must not fire when
+    # every reference is at the same scope as the import itself (the
+    # overwhelmingly common case) -- no local anywhere below to protect
+    # against, so the plain, unaliased import is still expected.
+    src = "from pkg.sub.mod import Thing\nx = Thing()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"

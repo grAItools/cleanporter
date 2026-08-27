@@ -28,7 +28,13 @@ import ast
 from dataclasses import dataclass, field
 
 import libcst as cst
-from libcst.metadata import GlobalScope, PositionProvider, Scope, ScopeProvider
+from libcst.metadata import (
+    BaseAssignment,
+    GlobalScope,
+    PositionProvider,
+    Scope,
+    ScopeProvider,
+)
 
 from . import _imports, guards
 from .analyze import FileRecord
@@ -214,24 +220,15 @@ class _Fixer(cst.CSTTransformer):
             return
         self._fixed_locals.update(asname or name for name, asname in fix)
 
-        # new statements: one module import per (deduped) parent, plus kept names
-        new_lines: list[cst.BaseStatement] = []
-        bind = self._binding_for(scope, parent)
-        if bind is not None:  # None => module already bound earlier in file
-            new_lines.append(self._module_import_stmt(parent, bind))
-        bind = self._module_binding[(scope, parent)]
-
-        if keep:
-            prefix = "." * _imports.relative_level(imp)
-            mod = _imports.dotted(imp.module)
-            new_lines.append(
-                cst.ensure_type(
-                    cst.parse_statement(f"from {prefix}{mod} import {', '.join(keep)}"),
-                    cst.SimpleStatementLine,
-                )
-            )
-
-        # qualify references for each fixed name
+        # Resolve each fixed name's rebinding status, and collect the
+        # accesses that will actually be qualified, *before* choosing a
+        # token: a nested scope that shadows the bound name at one of those
+        # access sites must be avoided too, or the qualified reference
+        # would silently resolve to the local instead of the new import
+        # (fix-round-2 downward shadowing -- the mirror of fix-round-1's
+        # ancestor check, but for scopes *below* where the binding lands).
+        rewrites: list[tuple[str, list[BaseAssignment]]] = []
+        extra_avoid: set[str] = set()
         for name, asname in fix:
             bound = asname or name
             ours = [a for a in scope[bound] if getattr(a, "node", None) is imp]
@@ -255,6 +252,32 @@ class _Fixer(cst.CSTTransformer):
                     (self._line_of(imp), f"local '{bound}' is rebound in the same scope")
                 )
                 continue
+            rewrites.append((name, ours))
+            for assignment in ours:
+                for ref in assignment.references:
+                    access_scope: Scope = ref.scope
+                    if access_scope is not scope:
+                        extra_avoid |= self._shadow_names_between(access_scope, scope)
+
+        # new statements: one module import per (deduped) parent, plus kept names
+        new_lines: list[cst.BaseStatement] = []
+        bind = self._binding_for(scope, parent, extra_avoid)
+        if bind is not None:  # None => module already bound earlier in file
+            new_lines.append(self._module_import_stmt(parent, bind))
+        bind = self._module_binding[(scope, parent)]
+
+        if keep:
+            prefix = "." * _imports.relative_level(imp)
+            mod = _imports.dotted(imp.module)
+            new_lines.append(
+                cst.ensure_type(
+                    cst.parse_statement(f"from {prefix}{mod} import {', '.join(keep)}"),
+                    cst.SimpleStatementLine,
+                )
+            )
+
+        # qualify references for each fixed name
+        for name, ours in rewrites:
             for assignment in ours:
                 for ref in assignment.references:
                     self.plan.name_repl[id(ref.node)] = cst.Attribute(
@@ -348,11 +371,40 @@ class _Fixer(cst.CSTTransformer):
         """
         return self._ancestor_local_names(scope) | self._global_names
 
-    def _binding_for(self, scope: Scope, parent: str) -> str | None:
+    def _shadow_names_between(self, access_scope: Scope, upper_scope: Scope) -> set[str]:
+        """Names assigned in *access_scope*, or in any scope strictly
+        between it and *upper_scope*, walking ``.parent`` upward.
+
+        *upper_scope* itself is excluded -- its own names are handled by
+        the ordinary collision check (`_names_in_scope`) at the point the
+        binding is allocated there. This answers a different question: a
+        binding placed in *upper_scope* is also read from *access_scope*
+        (a nested function/class body), and any name that scope -- or one
+        between it and *upper_scope* -- assigns for itself would silently
+        shadow the qualified reference at that access site (fix-round-2
+        downward shadowing, the mirror of `_ancestor_local_names`'s upward
+        walk). `access_scope` is always *upper_scope* or a descendant of
+        it, because an access can only resolve to an assignment that is
+        visible to it, i.e. in its own scope or an enclosing one -- so this
+        walk is guaranteed to reach *upper_scope*. The `GlobalScope` check
+        is a defensive backstop only, in case that invariant is ever wrong.
+        """
+        names: set[str] = set()
+        current = access_scope
+        while current is not upper_scope and not isinstance(current, GlobalScope):
+            names |= self._local_names(current)
+            current = current.parent
+        return names
+
+    def _binding_for(self, scope: Scope, parent: str, extra_avoid: set[str]) -> str | None:
         """Token to qualify through, or ``None`` when one already exists.
 
         Returns the token of a *new* import to emit. ``None`` means *parent*
         is already bound in a way this scope can see, so no import is needed.
+        *extra_avoid* is the set of names (from `_shadow_names_between`)
+        that a scope nested below *scope* would resolve to a local instead
+        of this binding -- avoided or reuse-blocked exactly like any other
+        collision (fix-round-2 downward shadowing).
         """
         key = (scope, parent)
         if key in self._module_binding:
@@ -363,12 +415,18 @@ class _Fixer(cst.CSTTransformer):
             # *this* scope or an enclosing function/class scope assigns
             # that name itself -- a closure variable shadows it just as
             # surely as a same-scope local does (fix-round-1 Critical 3).
-            shadowed = not isinstance(scope, GlobalScope) and existing in self._ancestor_local_names(scope)
+            # It is equally unusable if a scope *below* this one, where one
+            # of this import's references actually lives, assigns that name
+            # itself (fix-round-2): that check applies regardless of
+            # `scope`'s own kind, unlike the ancestor check above.
+            shadowed = existing in extra_avoid or (
+                not isinstance(scope, GlobalScope) and existing in self._ancestor_local_names(scope)
+            )
             if not shadowed:
                 self._module_binding[key] = existing
                 return None
         token = parent.rsplit(".", 1)[-1]
-        taken = self._names_in_scope(scope)
+        taken = self._names_in_scope(scope) | extra_avoid
         bind = token
         counter = 2
         while bind in taken:
