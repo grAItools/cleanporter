@@ -1,0 +1,49 @@
+# Git hooks for cleanporter, run by prek (a Rust drop-in replacement for
+# pre-commit that reads this same file format). Install them with:
+#
+#     uv run prek install
+#
+# Deliberately small: ruff is the only linter and formatter in this project,
+# and the two blocking type checkers run through `uv run` so they use the
+# versions pinned in uv.lock rather than a second, drifting copy.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Keep in step with the `ruff` pin in uv.lock.
+    rev: v0.16.4
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      # Both checkers read their configuration from pyproject.toml and check
+      # the whole package, so the changed filenames are not passed along --
+      # `types: [python]` is only there to keep them from firing on commits
+      # that touch no Python at all.
+      - id: mypy
+        name: mypy --strict
+        entry: uv run mypy --strict src/cleanporter
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      # zuban is an informational second opinion, not a gate: it lives in the
+      # `manual` stage only, so it never runs on commit. Run it on demand with:
+      #
+      #     prek run --hook-stage manual zuban
+      - id: zuban
+        name: zuban (informational)
+        entry: uv run --group zuban zuban mypy --strict src/cleanporter
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [manual]

@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: nothing here writes to the repository or to any package
+# registry, it only needs to read the checked-out code.
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR makes the older run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and type check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # `--locked` fails the job if uv.lock is out of date with respect to
+      # pyproject.toml, rather than quietly updating it.
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: ruff check
+        run: uv run ruff check
+
+      - name: ruff format --check
+        run: uv run ruff format --check
+
+      - name: mypy --strict
+        run: uv run mypy --strict src/cleanporter
+
+      # The pyright PyPI wrapper fetches its own Node runtime on first use.
+      # That works on GitHub-hosted runners; it just costs a few seconds.
+      - name: pyright
+        run: uv run pyright
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: ${{ matrix.python-version }}
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: pytest
+        run: uv run pytest
+
+  # Informational only. zuban is a second, independent type checker; its
+  # findings are a cross-check on mypy and pyright, never a merge gate.
+  # `continue-on-error` keeps a red X here from failing the workflow.
+  zuban:
+    name: zuban (informational, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync the locked environment with the zuban group
+        run: uv sync --locked --group zuban
+
+      - name: zuban mypy --strict (informational)
+        run: uv run --group zuban zuban mypy --strict src/cleanporter
