@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+import importlib.metadata
+
+try:
+    __version__ = importlib.metadata.version("cleanporter")
+except importlib.metadata.PackageNotFoundError:  # pragma: no cover
+    # Running from a source tree that was never installed.
+    __version__ = "0.0.0+unknown"
 
 __all__ = ["Config", "Resolver", "__version__", "analyze_record", "build", "fix_record"]
 

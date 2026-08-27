@@ -9,7 +9,7 @@ It is deliberately dependency-free so that it can be executed *inside the
 target project's own interpreter* -- either in-process (when the tool runs in
 the same venv as the code under analysis) or via a subprocess when a different
 ``--python`` is supplied. Keeping it stdlib-only means the heavy tool
-dependencies (libCST, Typer) never need to be installed next to a project's
+dependency (libCST) never needs to be installed next to a project's
 scientific / GPU stack.
 
 Classification contract (``classify``):
