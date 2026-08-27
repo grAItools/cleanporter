@@ -242,8 +242,10 @@ def test_fix_with_no_path_arguments_keeps_the_package_importable(src_layout, mon
 def test_check_on_a_src_layout_names_the_module_without_the_src_prefix(src_layout, monkeypatch, capsys):
     monkeypatch.chdir(src_layout)
     main([])
-    out = capsys.readouterr().out + capsys.readouterr().err
-    assert "src.mypkg" not in out
+    # One readouterr() call drains the buffers; a second always returns
+    # empty, so both streams must come from the same capture.
+    captured = capsys.readouterr()
+    assert "src.mypkg" not in captured.out + captured.err
 
 # -- output streams (final review, Important 5) -----------------------------
 
@@ -388,3 +390,35 @@ def test_a_namespace_subpackage_reuses_its_existing_relative_import(tmp_path, mo
     assert "CP002" not in captured.out + captured.err
     proc = _runs(tmp_path, "pkg.sub.mod", tmp_path)
     assert proc.returncode == 0, proc.stderr
+
+
+# -- the cross-file limitation note -----------------------------------------
+
+
+_NOTE = "cleanporter: note: --fix cannot see dotted references from other files"
+
+
+def test_fix_notes_the_cross_file_limitation_on_stderr(project, monkeypatch, capsys):
+    monkeypatch.chdir(project)
+    main(["--fix", "src"])
+    captured = capsys.readouterr()
+    assert _NOTE in captured.err
+    assert "re-run your tests" in captured.err
+    # stdout still carries only the patch.
+    assert "note:" not in captured.out
+
+
+def test_no_note_when_fix_writes_nothing(project, monkeypatch, capsys):
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project)
+    main(["--fix", "src"])
+    assert _NOTE not in capsys.readouterr().err
+
+
+def test_no_note_for_a_preview_that_writes_nothing(project, monkeypatch, capsys):
+    monkeypatch.chdir(project)
+    main(["--diff", "src"])
+    captured = capsys.readouterr()
+    assert _NOTE not in captured.err + captured.out

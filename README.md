@@ -292,7 +292,8 @@ works. Plain check mode produces no patch and reports on stdout as usual.
   a reference stale even though the rewritten file itself is correct. (Found by
   running cleanporter over its own source: one test patched
   `cleanporter.cli.fix_record`, a name the compliant rewrite no longer binds
-  there.) Re-run your test suite after a `--fix` sweep.
+  there.) Re-run your test suite after a `--fix` sweep — `--fix` prints a note
+  to stderr saying so whenever it writes a file.
 - One-liner suites and semicolon-joined imports are reported as `CP001`
   only; no `CP003` explains that `--fix` skipped them. The fixer never plans
   such a line at all, and turning that into a blocker would make the *whole

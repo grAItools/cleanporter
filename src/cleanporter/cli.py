@@ -17,6 +17,12 @@ from .config import Config, ConfigError, load_config
 from .model import Finding, Status
 from .rewrite import fix_record
 
+#: Printed to stderr after `--fix` writes anything (see `run`).
+_CROSS_FILE_NOTE = (
+    "cleanporter: note: --fix cannot see dotted references from other files; "
+    "re-run your tests"
+)
+
 _EXIT_OK = 0
 _EXIT_VIOLATIONS = 1
 _EXIT_ERROR = 2
@@ -130,6 +136,15 @@ def run(args: argparse.Namespace) -> int:
                     rec = _reparse(rec, outcome.source)
             findings.extend(outcome.blockers)
         findings.extend(analyze_record(rec, resolver, config))
+
+    if args.fix and changed:
+        # The one place the tool changes something it cannot fully check: a
+        # dotted reference living in *another* file (`monkeypatch.setattr(
+        # "pkg.mod.name", ...)`, an entry point, an importlib lookup) is
+        # invisible to a per-file guard. Documented in the README, but a user
+        # who only ever reads --help would never see it. stderr, so a piped
+        # patch on stdout stays a patch.
+        print(_CROSS_FILE_NOTE, file=sys.stderr)
 
     findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
     for finding in findings:
