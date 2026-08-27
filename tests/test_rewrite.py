@@ -595,11 +595,90 @@ def test_downward_shadowing_one_level_deeper_through_a_closure():
 
 
 def test_no_spurious_alias_when_all_references_are_at_the_import_s_own_scope():
-    # Regression lock: the downward-shadowing check must not fire when
-    # every reference is at the same scope as the import itself (the
-    # overwhelmingly common case) -- no local anywhere below to protect
-    # against, so the plain, unaliased import is still expected.
-    src = "from pkg.sub.mod import Thing\nx = Thing()\n"
+    # Regression lock, strengthened per fix-round-3: an *unrelated* function
+    # `g` has a local `mod = 1`, but nothing inside `g` references `Thing`
+    # -- every actual reference to the import lives at the import's own
+    # (module) scope. The forbidden "naive fix" the collision model was
+    # explicitly built to avoid -- unioning in *all* descendant locals,
+    # anywhere in the file -- would wrongly alias here regardless; only the
+    # precise, access-site-driven implementation leaves this unaliased. A
+    # version with no function locals at all (the original round-2 form of
+    # this test) cannot tell the two implementations apart.
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "x = Thing()\n"
+        "def g():\n"
+        "    mod = 1\n"
+        "    return mod\n"
+    )
     result = outcome(src)
     assert result.status == "fixed"
-    assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"
+    assert result.source == (
+        "from pkg.sub import mod\n"
+        "x = mod.Thing()\n"
+        "def g():\n"
+        "    mod = 1\n"
+        "    return mod\n"
+    )
+
+
+def test_downward_shadowing_split_across_two_import_lines_reallocates_not_blocks():
+    # `pkg.sub.mod` is imported on two separate lines sharing one scope.
+    # Only the second line's reference (`go()`, read from inside `f`, where
+    # `mod = 1`) is downward-shadowed; the first line's reference (`Thing()`
+    # at module scope) is not. `_binding_for` memoizes one token per
+    # (scope, parent), so a naive dedup-by-key early return would let the
+    # first line's unshadowed token choice ("mod") silently leak into the
+    # second line too -- the single-statement form
+    # `from pkg.sub.mod import Thing, go` already handles this correctly
+    # (it computes one `extra_avoid` covering both names' accesses before
+    # picking a token at all); splitting the import across two lines must
+    # not regress that (fix-round-3 Critical). The fix reallocates a fresh
+    # token for the second line instead of reusing the shadowed one or
+    # blocking -- two imports of one module under different aliases is
+    # semantically fine.
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "from pkg.sub.mod import go\n"
+        "x = Thing()\n"
+        "def f():\n"
+        "    mod = 1\n"
+        "    return mod, go()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\n"
+        "from pkg.sub import mod as mod_2\n"
+        "x = mod.Thing()\n"
+        "def f():\n"
+        "    mod = 1\n"
+        "    return mod, mod_2.go()\n"
+    )
+
+
+def test_downward_shadowing_blocks_reusing_an_existing_import_too():
+    # Covers the *other* branch of `_binding_for`: reusing a pre-existing
+    # module-level import, not allocating a fresh token. `existing in
+    # extra_avoid` is the one new predicate in that branch that is
+    # unconditional -- it must fire for a `GlobalScope` binding too, unlike
+    # the ancestor-shadow check beside it, which is skipped for
+    # `GlobalScope`. Without it, `Thing`'s import would wrongly reuse the
+    # existing module-level `mod`, even though `f`'s local `mod = 1`
+    # shadows it exactly where `Thing()` is actually read.
+    src = (
+        "from pkg.sub import mod\n"
+        "from pkg.sub.mod import Thing\n"
+        "def f():\n"
+        "    mod = 1\n"
+        "    return mod, Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\n"
+        "from pkg.sub import mod as mod_2\n"
+        "def f():\n"
+        "    mod = 1\n"
+        "    return mod, mod_2.Thing()\n"
+    )

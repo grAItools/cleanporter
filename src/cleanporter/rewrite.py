@@ -261,10 +261,9 @@ class _Fixer(cst.CSTTransformer):
 
         # new statements: one module import per (deduped) parent, plus kept names
         new_lines: list[cst.BaseStatement] = []
-        bind = self._binding_for(scope, parent, extra_avoid)
-        if bind is not None:  # None => module already bound earlier in file
+        bind, need_new_line = self._binding_for(scope, parent, extra_avoid)
+        if need_new_line:
             new_lines.append(self._module_import_stmt(parent, bind))
-        bind = self._module_binding[(scope, parent)]
 
         if keep:
             prefix = "." * _imports.relative_level(imp)
@@ -396,19 +395,40 @@ class _Fixer(cst.CSTTransformer):
             current = current.parent
         return names
 
-    def _binding_for(self, scope: Scope, parent: str, extra_avoid: set[str]) -> str | None:
-        """Token to qualify through, or ``None`` when one already exists.
+    def _binding_for(self, scope: Scope, parent: str, extra_avoid: set[str]) -> tuple[str, bool]:
+        """Token to qualify *this line's* references through, and whether a
+        new import statement must be emitted for it.
 
-        Returns the token of a *new* import to emit. ``None`` means *parent*
-        is already bound in a way this scope can see, so no import is needed.
         *extra_avoid* is the set of names (from `_shadow_names_between`)
-        that a scope nested below *scope* would resolve to a local instead
-        of this binding -- avoided or reuse-blocked exactly like any other
-        collision (fix-round-2 downward shadowing).
+        that a scope nested below *scope* -- specifically, one containing
+        an access *this line* is about to qualify -- would resolve to a
+        local instead of this binding. It is per-**line**, not per
+        ``(scope, parent)``: two import lines sharing a parent can have
+        different accesses, and therefore different downward-shadow
+        requirements. `_module_binding` is memoized per ``(scope, parent)``
+        though, so that distinction has to be re-checked on every call, not
+        just the first (fix-round-3 -- the dedup early-return used to
+        bypass `extra_avoid` entirely for every line after the first).
+
+        Returns ``(bind, True)`` when this line needs its own new import
+        statement: either *parent* has never been bound in *scope* before,
+        or it has, but the memoized token collides with *this* line's
+        *extra_avoid*. In the latter case a *fresh* token is allocated for
+        this line alone -- not reused, not blocked -- since a second import
+        of the same module under a different alias is semantically fine;
+        the memoized token is left untouched so a later, non-colliding line
+        for the same ``(scope, parent)`` still reuses it.
+
+        Returns ``(bind, False)`` when the memoized token, or a
+        pre-existing import already in the file, can be reused as-is.
         """
         key = (scope, parent)
-        if key in self._module_binding:
-            return None
+        memoized = self._module_binding.get(key)
+        if memoized is not None:
+            if memoized not in extra_avoid:
+                return memoized, False
+            return self._allocate_token(scope, parent, extra_avoid), True
+
         existing = self._existing.get(parent)
         if existing is not None:
             # A module-level import is visible from nested scopes unless
@@ -424,7 +444,23 @@ class _Fixer(cst.CSTTransformer):
             )
             if not shadowed:
                 self._module_binding[key] = existing
-                return None
+                return existing, False
+
+        bind = self._allocate_token(scope, parent, extra_avoid)
+        self._module_binding[key] = bind
+        return bind, True
+
+    def _allocate_token(self, scope: Scope, parent: str, extra_avoid: set[str]) -> str:
+        """Pick a fresh, collision-free token for a new import of *parent*
+        in *scope*.
+
+        Records the choice in the live name set(s) `_names_in_scope` reads
+        (`_global_names` for `GlobalScope`, else `_local_names(scope)`), so
+        a later allocation in this scope -- or one that sees it as an
+        ancestor -- avoids it too. Does *not* touch `_module_binding`: that
+        is the caller's job, since a fix-round-3 collision reallocation
+        deliberately leaves the original memoized entry alone.
+        """
         token = parent.rsplit(".", 1)[-1]
         taken = self._names_in_scope(scope) | extra_avoid
         bind = token
@@ -432,15 +468,10 @@ class _Fixer(cst.CSTTransformer):
         while bind in taken:
             bind = f"{token}_{counter}"
             counter += 1
-        # Record the allocation where a later lookup will actually see it.
-        # `_names_in_scope` recomputes its union fresh on every call now
-        # (fix-round-1 Critical 2), so mutating `taken` itself would be a
-        # no-op -- the mutation has to land in the live set(s) that feed it.
         if isinstance(scope, GlobalScope):
             self._global_names.add(bind)
         else:
             self._local_names(scope).add(bind)
-        self._module_binding[key] = bind
         return bind
 
     def _module_import_stmt(self, parent: str, bind: str) -> cst.SimpleStatementLine:
