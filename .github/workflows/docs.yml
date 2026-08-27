@@ -45,14 +45,18 @@ jobs:
 
       # Everything above also runs on pull requests, which is the point: a
       # broken docs build fails the PR. Only pushes to main go on to publish.
-      # `enablement: true` turns Pages on for the repository the first time
-      # this runs, instead of failing with "Get Pages site failed" until
-      # somebody flips it by hand in Settings. Keeps a fresh clone or fork
-      # self-contained.
+      # One-time setup, per repository: Pages must already be enabled with
+      # "GitHub Actions" as the source, or this step fails with "Get Pages
+      # site failed". Settings > Pages, or:
+      #
+      #     gh api -X POST repos/OWNER/REPO/pages -f build_type=workflow
+      #
+      # `enablement: true` does NOT substitute for that: the default
+      # GITHUB_TOKEN cannot create a Pages site ("Resource not accessible by
+      # integration"), because that needs administration rights a workflow
+      # token is not granted.
       - uses: actions/configure-pages@v6
         if: github.event_name == 'push'
-        with:
-          enablement: true
 
       - uses: actions/upload-pages-artifact@v5
         if: github.event_name == 'push'
