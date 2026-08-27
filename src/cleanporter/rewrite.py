@@ -60,7 +60,7 @@ def _render_alias(name: str, asname: str | None) -> str:
 
 
 def _type_checking_import_ids(tree: cst.Module) -> set[int]:
-    """ids of ImportFrom nodes located inside an ``if TYPE_CHECKING:`` block."""
+    """Ids of ImportFrom nodes located inside an ``if TYPE_CHECKING:`` block."""
     ids: set[int] = set()
 
     class V(cst.CSTVisitor):
@@ -83,8 +83,8 @@ def _collect_import_froms(node: cst.CSTNode) -> list[cst.ImportFrom]:
     found: list[cst.ImportFrom] = []
 
     class V(cst.CSTVisitor):
-        def visit_ImportFrom(self, n: cst.ImportFrom) -> None:
-            found.append(n)
+        def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
+            found.append(node)
 
     node.visit(V())
     return found
@@ -138,7 +138,9 @@ def _interior_comments(node: cst.CSTNode) -> bool:
     found = False
 
     class V(cst.CSTVisitor):
-        def visit_Comment(self, comment: cst.Comment) -> None:
+        # libcst dispatches to this exact signature, so the node parameter
+        # has to stay even though only its existence matters here.
+        def visit_Comment(self, node: cst.Comment) -> None:  # noqa: ARG002
             nonlocal found
             found = True
 
@@ -150,8 +152,8 @@ def _collect_imports(node: cst.CSTNode) -> list[cst.Import]:
     found: list[cst.Import] = []
 
     class V(cst.CSTVisitor):
-        def visit_Import(self, n: cst.Import) -> None:
-            found.append(n)
+        def visit_Import(self, node: cst.Import) -> None:
+            found.append(node)
 
     node.visit(V())
     return found
@@ -229,15 +231,16 @@ def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
     return found
 
 
-class _UnrenderableAnnotation(Exception):
-    """A (possibly nested) forward-reference string cannot be safely
-    re-rendered -- either its content does not parse as an expression, or
-    the rewritten result, re-wrapped in the original prefix/quote, does not
-    round-trip back to exactly that result (fix-round-4: re-wrapping a
-    decoded, unescaped render raw in the original quote character can
-    change what the string means -- an escaped quote, a newline, or a
-    quote landing adjacent to a triple-quote boundary -- so the wrapped
-    text is re-parsed and compared rather than assumed safe).
+class _UnrenderableAnnotationError(Exception):
+    """A (possibly nested) forward-reference string cannot be safely re-rendered.
+
+    Either its content does not parse as an expression, or the rewritten
+    result, re-wrapped in the original prefix/quote, does not round-trip
+    back to exactly that result (fix-round-4: re-wrapping a decoded,
+    unescaped render raw in the original quote character can change what
+    the string means -- an escaped quote, a newline, or a quote landing
+    adjacent to a triple-quote boundary -- so the wrapped text is
+    re-parsed and compared rather than assumed safe).
 
     Always caught at the single outermost `_rewrite_string_content` call --
     the one `_plan_annotation_strings` makes directly -- never partway
@@ -256,8 +259,7 @@ class _UnrenderableAnnotation(Exception):
 def _rewrite_type_expr(
     expr: cst.BaseExpression, targets: dict[str, str]
 ) -> tuple[cst.BaseExpression, bool]:
-    """Rename bare ``Name`` references to a rewritten local anywhere inside
-    a *parsed* type expression.
+    """Rename bare ``Name`` references to a rewritten local anywhere in a *parsed* type expression.
 
     This is a structural walk, not a text substitution, so it cannot be
     fooled by a name that merely appears as a substring or after a ``.``:
@@ -280,7 +282,7 @@ def _rewrite_type_expr(
       reached only after parsing an outer string) is a forward reference in
       its own right and is recursed into via `_rewrite_string_content`, so
       a doubly-stringified annotation is handled exactly like a
-      singly-stringified one. Its failure -- `_UnrenderableAnnotation` --
+      singly-stringified one. Its failure -- `_UnrenderableAnnotationError` --
       is deliberately not caught here: it must propagate past every
       enclosing ``Subscript``/``Attribute``/... frame uncaught, all the way
       to the one call site that is allowed to swallow it.
@@ -315,10 +317,11 @@ def _rewrite_type_expr(
         new_elements = []
         for element in expr.elements:
             new_value, changed = _rewrite_type_expr(element.value, targets)
+            new_element = element
             if changed:
                 changed_any = True
-                element = element.with_changes(value=new_value)
-            new_elements.append(element)
+                new_element = element.with_changes(value=new_value)
+            new_elements.append(new_element)
         if not changed_any:
             return expr, False
         return expr.with_changes(elements=new_elements), True
@@ -366,15 +369,14 @@ def _rewrite_type_expr(
 def _rewrite_string_content(
     node: cst.SimpleString, targets: dict[str, str]
 ) -> cst.SimpleString | None:
-    """Re-parse *node*'s content as a type expression and rename it via
-    `_rewrite_type_expr`.
+    """Re-parse *node*'s content as a type expression and rename it via `_rewrite_type_expr`.
 
     Returns ``None`` when the content parses fine but nothing in it needed
     renaming (e.g. it is a `Literal`/`Annotated` payload, or mentions the
     name only after a ``.``) -- a genuinely inert string, safe to leave
     exactly as it is.
 
-    Raises `_UnrenderableAnnotation` -- never caught here, only by the
+    Raises `_UnrenderableAnnotationError` -- never caught here, only by the
     single outermost call -- when the content cannot be safely classified
     or re-rendered at all: it is not decodable text (e.g. a bytes literal),
     it does not parse as an expression, or the rewritten result re-wrapped
@@ -385,11 +387,11 @@ def _rewrite_string_content(
     """
     content = node.evaluated_value
     if not isinstance(content, str):
-        raise _UnrenderableAnnotation("non-text string content (e.g. bytes)")
+        raise _UnrenderableAnnotationError("non-text string content (e.g. bytes)")
     try:
         parsed = cst.parse_expression(content)
     except cst.ParserSyntaxError as exc:
-        raise _UnrenderableAnnotation("content does not parse as an expression") from exc
+        raise _UnrenderableAnnotationError("content does not parse as an expression") from exc
     new_expr, changed = _rewrite_type_expr(parsed, targets)
     if not changed:
         return None
@@ -402,7 +404,7 @@ def _rewrite_string_content(
     # if it had failed to parse. (Same defect family as the interior-comment
     # check on import lines: content loss is worse than declining the fix.)
     if cst.Module(body=[]).code_for_node(parsed) != content:
-        raise _UnrenderableAnnotation("content carries trivia that re-rendering would drop")
+        raise _UnrenderableAnnotationError("content carries trivia that re-rendering would drop")
     rendered = cst.Module(body=[]).code_for_node(new_expr)
     # `evaluated_value` *decodes* the content, so any escape it resolved is
     # gone by the time `rendered` exists: an escaped occurrence of the outer
@@ -418,9 +420,9 @@ def _rewrite_string_content(
     try:
         check = cst.parse_expression(new_value)
     except cst.ParserSyntaxError as exc:
-        raise _UnrenderableAnnotation("re-wrapped value does not parse") from exc
+        raise _UnrenderableAnnotationError("re-wrapped value does not parse") from exc
     if not isinstance(check, cst.SimpleString) or check.evaluated_value != rendered:
-        raise _UnrenderableAnnotation("re-wrapped value does not round-trip")
+        raise _UnrenderableAnnotationError("re-wrapped value does not round-trip")
     return node.with_changes(value=new_value)
 
 
@@ -548,14 +550,14 @@ class _Fixer(cst.CSTTransformer):
             if not targets:
                 continue
             # This is the one call site allowed to swallow
-            # `_UnrenderableAnnotation`: it means *this* candidate string
+            # `_UnrenderableAnnotationError`: it means *this* candidate string
             # (possibly via a nested one, arbitrarily deep) could not be
             # safely classified or re-rendered at all, so it is left
             # exactly as it is, for the ordinary string-mention guard to
             # judge on its own.
             try:
                 rewritten = _rewrite_string_content(string_node, targets)
-            except _UnrenderableAnnotation:
+            except _UnrenderableAnnotationError:
                 continue
             if rewritten is not None:
                 self.plan.string_repl[ident] = rewritten.value
@@ -616,9 +618,9 @@ class _Fixer(cst.CSTTransformer):
         pairs: list[tuple[cst.SimpleStatementLine, cst.ImportFrom]] = []
 
         class V(cst.CSTVisitor):
-            def visit_SimpleStatementLine(self, line: cst.SimpleStatementLine) -> None:
-                if len(line.body) == 1 and isinstance(line.body[0], cst.ImportFrom):
-                    pairs.append((line, line.body[0]))
+            def visit_SimpleStatementLine(self, node: cst.SimpleStatementLine) -> None:
+                if len(node.body) == 1 and isinstance(node.body[0], cst.ImportFrom):
+                    pairs.append((node, node.body[0]))
 
         node.visit(V())
         return pairs
@@ -664,8 +666,10 @@ class _Fixer(cst.CSTTransformer):
             self.blockers.append(
                 (
                     self._line_of(imp),
-                    "TYPE_CHECKING-gated import; rewriting it without "
-                    "`from __future__ import annotations` risks NameError",
+                    (
+                        "TYPE_CHECKING-gated import; rewriting it without "
+                        "`from __future__ import annotations` risks NameError"
+                    ),
                 )
             )
             return
@@ -687,8 +691,10 @@ class _Fixer(cst.CSTTransformer):
                 self.blockers.append(
                     (
                         self._line_of(imp),
-                        f"local '{bound}' is unbound with `del`; qualifying it would "
-                        "delete an attribute of the imported module",
+                        (
+                            f"local '{bound}' is unbound with `del`; qualifying it would "
+                            "delete an attribute of the imported module"
+                        ),
                     )
                 )
                 continue
@@ -824,15 +830,17 @@ class _Fixer(cst.CSTTransformer):
         return names
 
     def _names_in_scope(self, scope: Scope) -> set[str]:
-        """Names a new binding in *scope* must not collide with: names
-        assigned in *scope* itself, in any enclosing function/class scope,
-        or at module scope.
+        """Names a new binding in *scope* must not collide with.
+
+        That is, names assigned in *scope* itself, in any enclosing
+        function/class scope, or at module scope.
         """
         return self._ancestor_local_names(scope) | self._global_names
 
     def _shadow_names_between(self, access_scope: Scope, upper_scope: Scope) -> set[str]:
-        """Names assigned in *access_scope*, or in any scope strictly
-        between it and *upper_scope*, walking ``.parent`` upward.
+        """Names assigned in *access_scope*, or strictly between it and *upper_scope*.
+
+        The scopes are walked ``.parent`` upward.
 
         *upper_scope* itself is excluded -- its own names are handled by
         the ordinary collision check (`_names_in_scope`) at the point the
@@ -856,8 +864,9 @@ class _Fixer(cst.CSTTransformer):
         return names
 
     def _binding_for(self, scope: Scope, parent: str, extra_avoid: set[str]) -> tuple[str, bool]:
-        """Token to qualify *this line's* references through, and whether a
-        new import statement must be emitted for it.
+        """Token to qualify *this line's* references through.
+
+        Also reports whether a new import statement must be emitted for it.
 
         *extra_avoid* is the set of names (from `_shadow_names_between`)
         that a scope nested below *scope* -- specifically, one containing
@@ -936,8 +945,7 @@ class _Fixer(cst.CSTTransformer):
         return len(list(scope.globals[name])) > 1
 
     def _allocate_token(self, scope: Scope, parent: str, extra_avoid: set[str]) -> str:
-        """Pick a fresh, collision-free token for a new import of *parent*
-        in *scope*.
+        """Pick a fresh, collision-free token for a new import of *parent* in *scope*.
 
         Records the choice in the live name set(s) `_names_in_scope` reads
         (`_global_names` for `GlobalScope`, else `_local_names(scope)`), so
@@ -972,27 +980,29 @@ class _Fixer(cst.CSTTransformer):
 
     # -- application -------------------------------------------------------
     def leave_SimpleStatementLine(
-        self, original: cst.SimpleStatementLine, updated: cst.SimpleStatementLine
-    ):
-        repl = self.plan.line_repl.get(id(original))
+        self,
+        original_node: cst.SimpleStatementLine,
+        updated_node: cst.SimpleStatementLine,
+    ) -> cst.BaseStatement | cst.FlattenSentinel[cst.BaseStatement] | cst.RemovalSentinel:
+        repl = self.plan.line_repl.get(id(original_node))
         if repl is not None:
             return cst.FlattenSentinel(repl) if repl else cst.RemovalSentinel.REMOVE
-        return updated
+        return updated_node
 
-    def leave_Name(self, original: cst.Name, updated: cst.Name):
-        repl = self.plan.name_repl.get(id(original))
-        return repl if repl is not None else updated
+    def leave_Name(self, original_node: cst.Name, updated_node: cst.Name) -> cst.BaseExpression:
+        repl = self.plan.name_repl.get(id(original_node))
+        return repl if repl is not None else updated_node
 
     def leave_SimpleString(
-        self, original: cst.SimpleString, updated: cst.SimpleString
+        self, original_node: cst.SimpleString, updated_node: cst.SimpleString
     ) -> cst.BaseExpression:
-        replacement = self.plan.string_repl.get(id(original))
-        return updated if replacement is None else updated.with_changes(value=replacement)
+        replacement = self.plan.string_repl.get(id(original_node))
+        return updated_node if replacement is None else updated_node.with_changes(value=replacement)
 
-    def leave_Module(self, original: cst.Module, updated: cst.Module) -> cst.Module:
+    def leave_Module(self, original_node: cst.Module, updated_node: cst.Module) -> cst.Module:
         # All-or-nothing. libcst hands us the pristine original tree, so
         # returning it discards every edit made to the children.
-        return original if self.blockers else updated
+        return original_node if self.blockers else updated_node
 
 
 @dataclass

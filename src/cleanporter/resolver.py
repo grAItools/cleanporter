@@ -120,17 +120,18 @@ class Resolver:
                     capture_output=True,
                     text=True,
                     timeout=_PROBE_TIMEOUT,
+                    check=False,
                 )
             except (subprocess.SubprocessError, OSError):
-                return {p: None for p in pairs}
+                return dict.fromkeys(pairs)
             if proc.returncode != 0:
-                return {p: None for p in pairs}
+                return dict.fromkeys(pairs)
             try:
                 flat = json.loads(proc.stdout or "{}")
             except ValueError:
-                return {p: None for p in pairs}
+                return dict.fromkeys(pairs)
             if not isinstance(flat, dict):
-                return {p: None for p in pairs}
+                return dict.fromkeys(pairs)
         out: dict[tuple[str, str], bool | None] = {}
         for parent, name in pairs:
             out[(parent, name)] = flat.get(f"{parent}\x00{name}")

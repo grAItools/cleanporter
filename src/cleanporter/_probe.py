@@ -76,9 +76,9 @@ def classify(parent: str, name: str) -> bool | None:
 
 
 def classify_many(pairs: list[tuple[str, str]]) -> dict[str, bool | None]:
-    """Classify many ``(parent, name)`` pairs, caching parent imports.
+    r"""Classify many ``(parent, name)`` pairs, caching parent imports.
 
-    Keys in the returned mapping are ``f"{parent}\\x00{name}"`` so the result is
+    Keys in the returned mapping are ``f"{parent}\x00{name}"`` so the result is
     trivially JSON-serialisable for the subprocess bridge.
     """
     out: dict[str, bool | None] = {}

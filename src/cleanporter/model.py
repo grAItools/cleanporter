@@ -54,7 +54,10 @@ class Finding:
                 f"import the module and use '{token}.{self.name}'"
             )
         elif self.status is Status.UNRESOLVED:
-            msg = f"could not determine whether '{self.parent}.{self.name}' is a module: {self.detail}"
+            msg = (
+                f"could not determine whether '{self.parent}.{self.name}' "
+                f"is a module: {self.detail}"
+            )
         else:
             subject = "file" if self.name == "?" else f"'{self.name}' from '{self.parent}'"
             msg = f"{subject} not rewritten: {self.detail}"

@@ -13,7 +13,7 @@ import pytest
 from cleanporter.cli import main
 
 
-@pytest.fixture()
+@pytest.fixture
 def project(tmp_path: Path) -> Path:
     (tmp_path / "src" / "demo").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
@@ -192,7 +192,7 @@ def test_internal_rewrite_error_does_not_write_a_broken_file(project, monkeypatc
 # -- src layout, no path arguments (final review, Critical 1) ---------------
 
 
-@pytest.fixture()
+@pytest.fixture
 def src_layout(tmp_path: Path) -> Path:
     """A src-layout project with a `tests/` package, as most repos have."""
     (tmp_path / "src" / "mypkg").mkdir(parents=True)
@@ -319,7 +319,7 @@ def _runs(project: Path, module: str, root: Path) -> subprocess.CompletedProcess
     )
 
 
-@pytest.fixture()
+@pytest.fixture
 def declared_namespace(tmp_path: Path) -> Path:
     """A src layout whose package is a namespace package: `--root src` is the
     only thing that says where the import root is."""

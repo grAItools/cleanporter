@@ -129,26 +129,27 @@ def run(args: argparse.Namespace) -> int:
     findings: list[Finding] = []
     changed = 0
     for rec in records:
+        current = rec
         if args.fix or args.diff:
-            outcome = fix_record(rec, resolver, config)
+            outcome = fix_record(current, resolver, config)
             if outcome.status == "fixed":
                 changed += 1
-                # Diff first: rec.source is still the original here.
+                # Diff first: current.source is still the original here.
                 sys.stdout.writelines(
                     difflib.unified_diff(
-                        rec.source.splitlines(keepends=True),
+                        current.source.splitlines(keepends=True),
                         outcome.source.splitlines(keepends=True),
-                        fromfile=f"a/{_diff_path(rec.path)}",
-                        tofile=f"b/{_diff_path(rec.path)}",
+                        fromfile=f"a/{_diff_path(current.path)}",
+                        tofile=f"b/{_diff_path(current.path)}",
                     )
                 )
                 if args.fix:
-                    rec.path.write_text(outcome.source, encoding="utf-8")
-                    print(f"fixed: {rec.path}", file=report)
+                    current.path.write_text(outcome.source, encoding="utf-8")
+                    print(f"fixed: {current.path}", file=report)
                     # Report against what is now on disk.
-                    rec = _reparse(rec, outcome.source)
+                    current = _reparse(current, outcome.source)
             findings.extend(outcome.blockers)
-        findings.extend(analyze_record(rec, resolver, config))
+        findings.extend(analyze_record(current, resolver, config))
 
     if args.fix and changed:
         # The one place the tool changes something it cannot fully check: a

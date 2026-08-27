@@ -38,7 +38,7 @@ def _patterns(names: Collection[str]) -> list[tuple[str, re.Pattern[str]]]:
 
 
 def _docstring_ids(tree: cst.Module) -> set[int]:
-    """ids of ``SimpleString`` nodes that are genuine, non-doctest docstrings.
+    """Ids of ``SimpleString`` nodes that are genuine, non-doctest docstrings.
 
     A "genuine docstring" is identified structurally, never by guessing from
     position or content: it is the value of an ``Expr`` that is the first
@@ -143,8 +143,10 @@ def find_match_captures(tree: cst.Module, names: Collection[str], line_of: LineO
                 hits.append(
                     (
                         line_of(node),
-                        f"'{name.value}' is bound by a match capture pattern; "
-                        "qualifying it would turn it into a value pattern",
+                        (
+                            f"'{name.value}' is bound by a match capture pattern; "
+                            "qualifying it would turn it into a value pattern"
+                        ),
                     )
                 )
 

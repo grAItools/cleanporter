@@ -68,13 +68,13 @@ def _nesting_warnings(roots: list[Path]) -> list[str]:
     """
     out: list[str] = []
     for outer in roots:
-        for inner in roots:
-            if inner is not outer and inner.is_relative_to(outer):
-                out.append(
-                    f"import roots nest: '{outer}' contains '{inner}'; each file is "
-                    "qualified against the most specific root that can hold it, "
-                    "and a declared root beats an inferred one"
-                )
+        out.extend(
+            f"import roots nest: '{outer}' contains '{inner}'; each file is "
+            "qualified against the most specific root that can hold it, "
+            "and a declared root beats an inferred one"
+            for inner in roots
+            if inner is not outer and inner.is_relative_to(outer)
+        )
     return out
 
 

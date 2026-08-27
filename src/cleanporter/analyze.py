@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import libcst as cst
-from libcst.metadata import MetadataWrapper, PositionProvider
+from libcst.metadata import CodeRange, MetadataWrapper, PositionProvider
 
 from . import _imports
 from .config import Config
@@ -33,7 +34,9 @@ class FileRecord:
     tree: cst.Module
     base_pkg: str
     _units: list[ImportUnit] | None = field(default=None, repr=False, compare=False)
-    _positions: object | None = field(default=None, repr=False, compare=False)
+    _positions: Mapping[cst.CSTNode, CodeRange] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @property
     def units(self) -> list[ImportUnit]:
@@ -43,7 +46,7 @@ class FileRecord:
         return self._units
 
     @property
-    def positions(self):  # type: ignore[no-untyped-def]
+    def positions(self) -> Mapping[cst.CSTNode, CodeRange]:
         """``PositionProvider`` mapping for this tree. Resolved once."""
         if self._positions is None:
             self._positions = MetadataWrapper(self.tree, unsafe_skip_copy=True).resolve(
@@ -68,7 +71,7 @@ def package_of(path: Path, module_map: ModuleMap, relative_level: int = 0) -> st
     return qn.rsplit(".", 1)[0] if "." in qn else ""
 
 
-def iter_units(tree: cst.Module, base_pkg: str):
+def iter_units(tree: cst.Module, base_pkg: str) -> Iterator[ImportUnit]:
     """Yield an :class:`ImportUnit` per name in every ``from`` import."""
     for node in _walk_import_froms(tree):
         parent = _imports.resolve_parent(node, base_pkg)

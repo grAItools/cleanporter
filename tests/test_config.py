@@ -75,7 +75,7 @@ def test_exempt_modules_extends_rather_than_replaces_defaults(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "table, message",
+    ("table", "message"),
     [
         ('[tool.cleanporter]\nexclude = "tests/"\n', "must be a list of strings"),
         ('[tool.cleanporter]\nscope = "mine"\n', "must be one of"),
