@@ -1112,3 +1112,32 @@ def test_triple_quoted_plain_annotation_is_still_rewritten():
     result = outcome(src)
     assert result.status == "fixed"
     assert "def g(a: '''mod.Thing''') -> None: ..." in result.source
+
+
+# -- final whole-branch review ----------------------------------------------
+
+
+def test_existing_binding_rebound_at_module_scope_is_not_reused():
+    """Critical 2: reusing `path` after `path = "/data"` yields a TypeError."""
+    src = (
+        "from os import path\n"
+        "from os.path import join\n"
+        'path = "/data"\n'
+        'print(join(path, "x"))\n'
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "path.join" not in result.source
+    assert "from os import path as path_2" in result.source
+    assert 'print(path_2.join(path, "x"))' in result.source
+
+
+def test_deleting_a_rewritten_local_blocks_the_file():
+    """Critical 3: `del Thing` must not become `del mod.Thing`."""
+    src = "from pkg.sub.mod import Thing\nx = Thing()\ndel Thing\n"
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src, "a blocked file must be byte-identical"
+    assert "del" in result.blockers[0].detail
+
+

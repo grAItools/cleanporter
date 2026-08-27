@@ -89,6 +89,39 @@ def _collect_import_froms(node: cst.CSTNode) -> list[cst.ImportFrom]:
     return found
 
 
+def _deleted_names(tree: cst.Module) -> set[str]:
+    """Simple names that appear as a ``del`` target anywhere in the file.
+
+    libcst's scope analysis records ``del x`` as an *access* of ``x``, not as
+    an assignment, so a deleted name sails straight past the rebinding guard
+    and lands in ``plan.name_repl`` like any other reference -- turning
+    ``del Thing`` into ``del mod.Thing``, which does not unbind a local at
+    all: it deletes the attribute from ``sys.modules['a.mod']``, silently
+    breaking every *other* importer of that module. ``del name`` right after
+    an import is a real ``__init__.py`` cleanup idiom, so this is not
+    theoretical.
+
+    Only bare names (including inside a ``del a, b`` tuple/list target)
+    count. ``del obj.attr`` / ``del obj[k]`` rebind nothing, so descending
+    into an ``Attribute``/``Subscript`` would only cause spurious blocks.
+    """
+    names: set[str] = set()
+
+    def absorb(target: cst.BaseExpression) -> None:
+        if isinstance(target, cst.Name):
+            names.add(target.value)
+        elif isinstance(target, (cst.Tuple, cst.List)):
+            for element in target.elements:
+                absorb(element.value)
+
+    class V(cst.CSTVisitor):
+        def visit_Del(self, node: cst.Del) -> None:
+            absorb(node.target)
+
+    tree.visit(V())
+    return names
+
+
 def _collect_imports(node: cst.CSTNode) -> list[cst.Import]:
     found: list[cst.Import] = []
 
@@ -377,6 +410,8 @@ class _Fixer(cst.CSTTransformer):
         #: `_binding_for` for the same reason `_global_names` is live.
         self._scope_locals: dict[Scope, set[str]] = {}
         self._tc_ids: set[int] = set()
+        #: Names appearing as a ``del`` target (see `_deleted_names`).
+        self._del_names: set[str] = set()
         #: Local names this run would rewrite -- the input to every guard.
         self._fixed_locals: set[str] = set()
         self._future_annotations = False
@@ -386,6 +421,7 @@ class _Fixer(cst.CSTTransformer):
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
         self._tc_ids = _type_checking_import_ids(node)
+        self._del_names = _deleted_names(node)
         # Names already bound at module scope, seen from *any* scope's
         # `.globals` -- not gated on the import itself being GlobalScope-
         # scoped. A file whose only import is function-local has no
@@ -561,6 +597,17 @@ class _Fixer(cst.CSTTransformer):
         extra_avoid: set[str] = set()
         for name, asname in fix:
             bound = asname or name
+            if bound in self._del_names:
+                # `del bound` reads as an access, not an assignment, so the
+                # `others` check below cannot see it (see `_deleted_names`).
+                self.blockers.append(
+                    (
+                        self._line_of(imp),
+                        f"local '{bound}' is unbound with `del`; qualifying it would "
+                        "delete an attribute of the imported module",
+                    )
+                )
+                continue
             ours = [a for a in scope[bound] if getattr(a, "node", None) is imp]
             # No BuiltinAssignment filter needed here: libcst only ever puts
             # BuiltinAssignment objects in a BuiltinScope's own assignments,
@@ -770,8 +817,22 @@ class _Fixer(cst.CSTTransformer):
             # of this import's references actually lives, assigns that name
             # itself (fix-round-2): that check applies regardless of
             # `scope`'s own kind, unlike the ancestor check above.
-            shadowed = existing in extra_avoid or (
-                not isinstance(scope, GlobalScope) and existing in self._ancestor_local_names(scope)
+            # And it is unusable if the name is *rebound* (or deleted) at
+            # module scope, which is the same `ours and others` test
+            # `_plan_line` applies to the imported name, applied here to
+            # the name we are about to reuse: `from os import path` +
+            # `path = "/data"` must not turn `join(path, "x")` into
+            # `path.join(path, "x")` (final review Critical 2). Only
+            # `_allocate_token` avoided module-level names; this path
+            # bypassed that entirely.
+            shadowed = (
+                existing in extra_avoid
+                or existing in self._del_names
+                or self._rebound_at_module_scope(scope, existing)
+                or (
+                    not isinstance(scope, GlobalScope)
+                    and existing in self._ancestor_local_names(scope)
+                )
             )
             if not shadowed:
                 self._module_binding[key] = existing
@@ -780,6 +841,17 @@ class _Fixer(cst.CSTTransformer):
         bind = self._allocate_token(scope, parent, extra_avoid)
         self._module_binding[key] = bind
         return bind, True
+
+    def _rebound_at_module_scope(self, scope: Scope, name: str) -> bool:
+        """True when *name* has more than one assignment at module scope.
+
+        Every entry in `_existing` is bound at module scope (`_build_existing`
+        only records `GlobalScope` imports), so that is where a competing
+        assignment would live. More than one assignment means libcst cannot
+        say which one a reference resolves to -- exactly the condition that
+        makes an imported name unrewritable -- so the binding is unusable.
+        """
+        return len(list(scope.globals[name])) > 1
 
     def _allocate_token(self, scope: Scope, parent: str, extra_avoid: set[str]) -> str:
         """Pick a fresh, collision-free token for a new import of *parent*
