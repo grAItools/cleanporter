@@ -682,3 +682,71 @@ def test_downward_shadowing_blocks_reusing_an_existing_import_too():
         "    mod = 1\n"
         "    return mod, mod_2.Thing()\n"
     )
+
+
+_TC_HEAD = "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n"
+
+
+def test_type_checking_without_future_annotations_blocks():
+    src = _TC_HEAD + "    from pkg.sub.mod import Thing\ndef g(x: Thing) -> None: ...\n"
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert "TYPE_CHECKING" in result.blockers[0].detail
+
+
+def test_type_checking_with_future_annotations_is_fixed():
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\ndef g(x: Thing) -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "    from pkg.sub import mod" in result.source
+    assert "def g(x: mod.Thing) -> None" in result.source
+
+
+def test_lazy_string_annotation_is_renamed():
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\ndef g(x: 'Thing') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "'mod.Thing'" in result.source
+
+
+def test_alias_in_lazy_annotation_is_renamed_by_local_name():
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing as T\ndef g(x: 'T') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "'mod.Thing'" in result.source
+    assert "'T'" not in result.source
+
+
+def test_string_outside_an_annotation_still_blocks_under_future_annotations():
+    src = (
+        "from __future__ import annotations\n"
+        "from pkg.sub.mod import Thing\n"
+        '__all__ = ["Thing"]\n'
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert "string literal" in result.blockers[0].detail
+
+
+def test_annotated_assignment_string_is_renamed():
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\nvalue: 'Thing' = None\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "value: 'mod.Thing' = None" in result.source

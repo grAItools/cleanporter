@@ -13,8 +13,10 @@ module-level import of the same module.
 Safety boundary (these are reported by ``check`` but deliberately NOT auto-fixed
 because a mechanical rewrite could change runtime behaviour):
 
-* imports inside an ``if TYPE_CHECKING:`` block (rewriting could break runtime
-  annotations),
+* imports inside an ``if TYPE_CHECKING:`` block, *unless* the file has
+  ``from __future__ import annotations`` -- with it, annotations are strings
+  at runtime, so both the import and any lazy string annotation mentioning
+  the name are rewritten together; without it, rewriting risks ``NameError``,
 * ``from x import *`` and unresolved/unknown names,
 * names the resolver could not classify.
 
@@ -25,6 +27,7 @@ names in a mixed statement are kept in place.
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass, field
 
 import libcst as cst
@@ -48,6 +51,7 @@ from .resolver import Resolver
 class _Plan:
     line_repl: dict[int, list[cst.BaseStatement]] = field(default_factory=dict)
     name_repl: dict[int, cst.BaseExpression] = field(default_factory=dict)
+    string_repl: dict[int, str] = field(default_factory=dict)
     fixed: int = 0
 
 
@@ -97,6 +101,42 @@ def _collect_imports(node: cst.CSTNode) -> list[cst.Import]:
     return found
 
 
+def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
+    """String literals sitting in a genuine annotation slot.
+
+    Under ``from __future__ import annotations`` these are never evaluated at
+    runtime, so a textual rename inside them is safe.
+    """
+    found: dict[int, cst.SimpleString] = {}
+
+    def absorb(annotation: cst.Annotation | None) -> None:
+        if annotation is None:
+            return
+        stack: list[cst.CSTNode] = [annotation.annotation]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, cst.SimpleString):
+                found[id(node)] = node
+            stack.extend(node.children)
+
+    class V(cst.CSTVisitor):
+        def visit_FunctionDef(self, node: cst.FunctionDef) -> None:
+            params = node.params
+            for param in (
+                list(params.params)
+                + list(params.posonly_params)
+                + list(params.kwonly_params)
+            ):
+                absorb(param.annotation)
+            absorb(node.returns)
+
+        def visit_AnnAssign(self, node: cst.AnnAssign) -> None:
+            absorb(node.annotation)
+
+    tree.visit(V())
+    return found
+
+
 class _Fixer(cst.CSTTransformer):
     METADATA_DEPENDENCIES = (ScopeProvider, PositionProvider)
 
@@ -119,6 +159,9 @@ class _Fixer(cst.CSTTransformer):
         self._tc_ids: set[int] = set()
         #: Local names this run would rewrite -- the input to every guard.
         self._fixed_locals: set[str] = set()
+        self._future_annotations = False
+        #: local name -> "token.name", for lazy string annotations (Task 16).
+        self._string_targets: dict[str, str] = {}
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
@@ -134,6 +177,11 @@ class _Fixer(cst.CSTTransformer):
                 self._global_names = {a.name for a in scope.globals.assignments}
                 break
         self._build_existing(node)
+        self._future_annotations = any(
+            _imports.resolve_parent(imp, self._rec.base_pkg) == "__future__"
+            and any(n == "annotations" for n, _a, _x in _imports.imported_names(imp))
+            for _line, imp in self._import_lines(node)
+        )
         for line, imp in self._import_lines(node):
             self._plan_line(line, imp)
         # Guards run last, on the pristine node, before libcst descends into
@@ -150,12 +198,31 @@ class _Fixer(cst.CSTTransformer):
     def _run_guards(self, node: cst.Module) -> None:
         if not self._fixed_locals:
             return
+        skip_ids = self._plan_annotation_strings(node)
         self.blockers.extend(
-            guards.find_string_mentions(node, self._fixed_locals, self._line_of)
+            guards.find_string_mentions(
+                node, self._fixed_locals, self._line_of, skip_ids=skip_ids
+            )
         )
         self.blockers.extend(
             guards.find_scope_declarations(node, self._fixed_locals, self._line_of)
         )
+
+    def _plan_annotation_strings(self, node: cst.Module) -> frozenset[int]:
+        """Rename locals inside lazy string annotations; return their ids."""
+        if not (self._future_annotations and self._string_targets):
+            return frozenset()
+        patterns = [
+            (re.compile(rf"\b{re.escape(local)}\b"), replacement)
+            for local, replacement in sorted(self._string_targets.items())
+        ]
+        for ident, string_node in _annotation_strings(node).items():
+            value = string_node.value
+            for pattern, replacement in patterns:
+                value = pattern.sub(replacement, value)
+            if value != string_node.value:
+                self.plan.string_repl[ident] = value
+        return frozenset(self.plan.string_repl)
 
     def _build_existing(self, node: cst.Module) -> None:
         """Map already-imported modules to the simple name they are bound to."""
@@ -196,7 +263,7 @@ class _Fixer(cst.CSTTransformer):
         return pairs
 
     def _plan_line(self, line: cst.SimpleStatementLine, imp: cst.ImportFrom) -> None:
-        if _imports.is_star(imp) or id(imp) in self._tc_ids:
+        if _imports.is_star(imp):
             return
         scope = self.get_metadata(ScopeProvider, imp, None)
         if scope is None:
@@ -219,6 +286,15 @@ class _Fixer(cst.CSTTransformer):
         if not fix:
             return
         self._fixed_locals.update(asname or name for name, asname in fix)
+        if id(imp) in self._tc_ids and not self._future_annotations:
+            self.blockers.append(
+                (
+                    self._line_of(imp),
+                    "TYPE_CHECKING-gated import; rewriting it without "
+                    "`from __future__ import annotations` risks NameError",
+                )
+            )
+            return
 
         # Resolve each fixed name's rebinding status, and collect the
         # accesses that will actually be qualified, *before* choosing a
@@ -227,7 +303,7 @@ class _Fixer(cst.CSTTransformer):
         # would silently resolve to the local instead of the new import
         # (fix-round-2 downward shadowing -- the mirror of fix-round-1's
         # ancestor check, but for scopes *below* where the binding lands).
-        rewrites: list[tuple[str, list[BaseAssignment]]] = []
+        rewrites: list[tuple[str, str, list[BaseAssignment]]] = []
         extra_avoid: set[str] = set()
         for name, asname in fix:
             bound = asname or name
@@ -252,7 +328,7 @@ class _Fixer(cst.CSTTransformer):
                     (self._line_of(imp), f"local '{bound}' is rebound in the same scope")
                 )
                 continue
-            rewrites.append((name, ours))
+            rewrites.append((name, bound, ours))
             for assignment in ours:
                 for ref in assignment.references:
                     access_scope: Scope = ref.scope
@@ -276,12 +352,13 @@ class _Fixer(cst.CSTTransformer):
             )
 
         # qualify references for each fixed name
-        for name, ours in rewrites:
+        for name, bound, ours in rewrites:
             for assignment in ours:
                 for ref in assignment.references:
                     self.plan.name_repl[id(ref.node)] = cst.Attribute(
                         value=cst.Name(bind), attr=cst.Name(name)
                     )
+            self._string_targets[bound] = f"{bind}.{name}"
             self.plan.fixed += 1
 
         # carry the original line's leading comments/blank lines onto the first
@@ -495,6 +572,10 @@ class _Fixer(cst.CSTTransformer):
     def leave_Name(self, original: cst.Name, updated: cst.Name):
         repl = self.plan.name_repl.get(id(original))
         return repl if repl is not None else updated
+
+    def leave_SimpleString(self, original: cst.SimpleString, updated: cst.SimpleString):
+        replacement = self.plan.string_repl.get(id(original))
+        return updated if replacement is None else updated.with_changes(value=replacement)
 
     def leave_Module(self, original: cst.Module, updated: cst.Module) -> cst.Module:
         # All-or-nothing. libcst hands us the pristine original tree, so

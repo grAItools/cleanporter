@@ -26,7 +26,7 @@ dependencies = ["libcst>=1.1", "tomli>=2.0; python_version<'3.11'"]
 cleanporter = "cleanporter.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cleanporter"]
