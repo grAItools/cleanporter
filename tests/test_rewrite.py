@@ -750,3 +750,164 @@ def test_annotated_assignment_string_is_renamed():
     result = outcome(src)
     assert result.status == "fixed"
     assert "value: 'mod.Thing' = None" in result.source
+
+
+def test_type_checking_binding_reused_by_later_runtime_import():
+    # `if TYPE_CHECKING:` is GlobalScope to libcst, same as the module body,
+    # so a rewritten TC line can memoize a binding there. A *later* runtime
+    # import of the same parent must never reuse a binding that lives only
+    # inside the guarded block -- that block never executes, so the runtime
+    # reference would raise NameError (fix-round-1 Critical 1). Planning
+    # runtime lines before TC lines guarantees the shared binding is the
+    # runtime one; here the TC import textually comes first, so this pins
+    # the direction a naive textual-order plan would get wrong.
+    src = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.sub.mod import Thing\n"
+        "from pkg.sub.mod import go\n"
+        "def g(x: Thing) -> None:\n"
+        "    return go()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    pass\n"
+        "from pkg.sub import mod\n"
+        "def g(x: mod.Thing) -> None:\n"
+        "    return mod.go()\n"
+    )
+
+
+def test_type_checking_binding_reused_by_earlier_runtime_import():
+    # The mirror of the previous test: the runtime import textually comes
+    # *first* here, so a plan that merely preserved textual order would
+    # happen to get this one right while still failing the other -- a
+    # single passing order is exactly what hid fix-round-1 Critical 1.
+    src = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "from pkg.sub.mod import go\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.sub.mod import Thing\n"
+        "def g(x: Thing) -> None:\n"
+        "    return go()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "from pkg.sub import mod\n"
+        "if TYPE_CHECKING:\n"
+        "    pass\n"
+        "def g(x: mod.Thing) -> None:\n"
+        "    return mod.go()\n"
+    )
+
+
+def test_dotted_prefixed_lazy_string_is_not_corrupted_and_blocks():
+    # `\b` alone matches right after a `.` (a non-word character), so a
+    # naive pattern would turn `'other.Thing'` into a fabricated
+    # `'other.mod.Thing'` -- a dotted path nobody ever bound (fix-round-1
+    # Critical 2). The lookbehind must leave it untouched, which drops it
+    # out of `skip_ids` and lets the ordinary string-mention guard block
+    # the whole file instead of silently corrupting it.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: 'Thing', b: 'other.Thing') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_literal_string_argument_is_not_treated_as_a_type_reference():
+    # `Literal['Thing']`'s argument is a value, not a type reference.
+    # Treating it as one and renaming it would silently change the literal
+    # a runtime `==` comparison depends on (fix-round-1 Critical 2). Once
+    # excluded from `_annotation_strings`, the string is untouched by the
+    # annotation-rewrite pass and falls back to the ordinary string-mention
+    # guard, which blocks conservatively instead of guessing.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "from typing import Literal\n"
+        "def g(a: Literal['Thing']) -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_annotated_metadata_string_is_not_treated_as_a_type_reference():
+    # `Annotated[T, ...]` mixes one real type with arbitrary metadata.
+    # A metadata string that happens to mention the renamed name in prose
+    # must not be silently rewritten (or silently exempted from the
+    # string-mention guard) just because it sits inside an annotation slot.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "from typing import Annotated\n"
+        'def g(a: Annotated[Thing, "Thing"]) -> None: ...\n'
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_annotated_first_slot_lazy_string_is_still_renamed():
+    # The narrowing must not over-reach: `Annotated`'s *first* slice element
+    # is the genuine type, so a lazy string sitting there is still a real
+    # forward reference and must still be renamed.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "from typing import Annotated\n"
+        "def g(a: Annotated['Thing', 'meta']) -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "Annotated['mod.Thing', 'meta']" in result.source
+
+
+def test_forward_ref_inside_list_and_dict_subscript_still_renamed():
+    # `Optional['Thing']`, `list['Thing']` and `dict[str, 'Thing']` are
+    # ordinary subscripts whose slice elements are genuine types -- the
+    # `Literal`/`Annotated` narrowing must not exclude them too.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: list['Thing'], b: dict[str, 'Thing']) -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "list['mod.Thing']" in result.source
+    assert "dict[str, 'mod.Thing']" in result.source
+
+
+def test_star_args_lazy_string_annotation_is_renamed():
+    # `*args`/`**kwargs` annotations were not absorbed by
+    # `_annotation_strings`, so a lazy string there fell through to the
+    # string-mention guard and blocked the file needlessly.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(*args: 'Thing', **kwargs: 'Thing') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "*args: 'mod.Thing'" in result.source
+    assert "**kwargs: 'mod.Thing'" in result.source

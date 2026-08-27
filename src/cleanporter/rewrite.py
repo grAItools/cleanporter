@@ -101,11 +101,36 @@ def _collect_imports(node: cst.CSTNode) -> list[cst.Import]:
     return found
 
 
+#: Subscript bases whose slice contents are not type references, so a
+#: string sitting inside them must never be treated as an annotation for
+#: renaming purposes (matched on the final attribute name, so both
+#: ``Literal[...]`` and ``typing.Literal[...]`` are caught).
+_OPAQUE_SUBSCRIPT_BASES = frozenset({"Literal", "Annotated"})
+
+
+def _subscript_base_name(node: cst.Subscript) -> str:
+    value = node.value
+    if isinstance(value, cst.Name):
+        return value.value
+    if isinstance(value, cst.Attribute):
+        return value.attr.value
+    return ""
+
+
 def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
     """String literals sitting in a genuine annotation slot.
 
     Under ``from __future__ import annotations`` these are never evaluated at
     runtime, so a textual rename inside them is safe.
+
+    ``Literal[...]`` arguments are values, not type references, so its whole
+    slice is skipped. ``Annotated[T, ...]`` mixes a real type (the first
+    slice element) with arbitrary metadata (the rest); only that first
+    element is descended into, so a string sitting in the metadata -- which
+    might coincidentally contain the renamed name as prose -- is never
+    mistaken for a type reference. ``Optional['Thing']``, ``list['Thing']``
+    and ``dict[str, 'Thing']`` are ordinary subscripts and are walked in
+    full, since every slice element there is a genuine type.
     """
     found: dict[int, cst.SimpleString] = {}
 
@@ -117,6 +142,15 @@ def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
             node = stack.pop()
             if isinstance(node, cst.SimpleString):
                 found[id(node)] = node
+                continue
+            if isinstance(node, cst.Subscript):
+                base = _subscript_base_name(node)
+                if base in _OPAQUE_SUBSCRIPT_BASES:
+                    if base == "Annotated" and node.slice:
+                        first = node.slice[0].slice
+                        if isinstance(first, cst.Index):
+                            stack.append(first.value)
+                    continue
             stack.extend(node.children)
 
     class V(cst.CSTVisitor):
@@ -126,6 +160,8 @@ def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
                 list(params.params)
                 + list(params.posonly_params)
                 + list(params.kwonly_params)
+                + ([params.star_arg] if isinstance(params.star_arg, cst.Param) else [])
+                + ([params.star_kwarg] if params.star_kwarg is not None else [])
             ):
                 absorb(param.annotation)
             absorb(node.returns)
@@ -182,8 +218,25 @@ class _Fixer(cst.CSTTransformer):
             and any(n == "annotations" for n, _a, _x in _imports.imported_names(imp))
             for _line, imp in self._import_lines(node)
         )
-        for line, imp in self._import_lines(node):
-            self._plan_line(line, imp)
+        # Runtime (non-TYPE_CHECKING) lines are planned before TYPE_CHECKING
+        # ones, regardless of their textual order in the file. `_binding_for`
+        # memoizes one token per (scope, parent) and happily reuses it for a
+        # later line -- reusing a *runtime* binding from inside a
+        # TYPE_CHECKING block is safe (the name exists at runtime either
+        # way), but the reverse is not: a TYPE_CHECKING block is GlobalScope
+        # to libcst just like the module body, so a binding created *there*
+        # would get memoized first and then wrongly reused -- and its own
+        # import line deleted -- by a later runtime import of the same
+        # parent, leaving the only binding inside a block that never runs
+        # (fix-round-1 Critical 1). Planning runtime lines first guarantees
+        # any shared parent's binding is the runtime one.
+        import_lines = self._import_lines(node)
+        for line, imp in import_lines:
+            if id(imp) not in self._tc_ids:
+                self._plan_line(line, imp)
+        for line, imp in import_lines:
+            if id(imp) in self._tc_ids:
+                self._plan_line(line, imp)
         # Guards run last, on the pristine node, before libcst descends into
         # any children (visit_Module runs on the way down). Anything a guard
         # needs to see -- e.g. Task 16's skip_ids for lazy annotations it
@@ -209,11 +262,21 @@ class _Fixer(cst.CSTTransformer):
         )
 
     def _plan_annotation_strings(self, node: cst.Module) -> frozenset[int]:
-        """Rename locals inside lazy string annotations; return their ids."""
+        """Rename locals inside lazy string annotations; return their ids.
+
+        The pattern uses a negative lookbehind, not just ``\\b``, on the left
+        edge: ``\\b`` alone matches right after a ``.`` (a non-word
+        character), so ``'other.Thing'`` would have its ``Thing`` renamed
+        into a fabricated ``other.mod.Thing`` -- a dotted reference that was
+        never actually bound to the renamed import. The lookbehind leaves
+        such strings untouched, so they fall out of ``skip_ids`` and the
+        string-mention guard blocks the file instead of silently corrupting
+        it.
+        """
         if not (self._future_annotations and self._string_targets):
             return frozenset()
         patterns = [
-            (re.compile(rf"\b{re.escape(local)}\b"), replacement)
+            (re.compile(rf"(?<![\w.]){re.escape(local)}\b"), replacement)
             for local, replacement in sorted(self._string_targets.items())
         ]
         for ident, string_node in _annotation_strings(node).items():
@@ -573,7 +636,9 @@ class _Fixer(cst.CSTTransformer):
         repl = self.plan.name_repl.get(id(original))
         return repl if repl is not None else updated
 
-    def leave_SimpleString(self, original: cst.SimpleString, updated: cst.SimpleString):
+    def leave_SimpleString(
+        self, original: cst.SimpleString, updated: cst.SimpleString
+    ) -> cst.BaseExpression:
         replacement = self.plan.string_repl.get(id(original))
         return updated if replacement is None else updated.with_changes(value=replacement)
 
