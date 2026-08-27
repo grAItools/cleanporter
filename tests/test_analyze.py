@@ -2,44 +2,44 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import pathlib
 
 import libcst as cst
 
-from cleanporter.analyze import FileRecord, analyze_record, package_of
-from cleanporter.config import Config
-from cleanporter.firstparty import ModuleMap
-from cleanporter.model import Status
-from cleanporter.resolver import Resolver
-from cleanporter.rewrite import fix_record
+from cleanporter import analyze, config, firstparty, model, rewrite
+from cleanporter import resolver as resolver_lib
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
 
-def _record(source: str, path: Path, module_map: ModuleMap) -> FileRecord:
-    return FileRecord(path, source, cst.parse_module(source), package_of(path, module_map))
+def _record(
+    source: str, path: pathlib.Path, module_map: firstparty.ModuleMap
+) -> analyze.FileRecord:
+    return analyze.FileRecord(
+        path, source, cst.parse_module(source), analyze.package_of(path, module_map)
+    )
 
 
-def _fix(source: str, path: Path) -> str:
-    mm = ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = Resolver(mm)
+def _fix(source: str, path: pathlib.Path) -> str:
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = resolver_lib.Resolver(mm)
     rec = _record(source, path, mm)
     resolver.warm([(u.parent, u.name) for u in _units(rec)])
-    return fix_record(rec, resolver, Config()).source
+    return rewrite.fix_record(rec, resolver, config.Config()).source
 
 
-def _units(rec: FileRecord):
-    from cleanporter.analyze import iter_units
+def _units(rec: analyze.FileRecord):
+    from cleanporter import analyze as analyze_lib
 
-    return [u for u in iter_units(rec.tree, rec.base_pkg) if u.parent and not u.star]
+    return [u for u in analyze_lib.iter_units(rec.tree, rec.base_pkg) if u.parent and not u.star]
 
 
-def _analyze(source: str, path: Path):
-    mm = ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = Resolver(mm)
+def _analyze(source: str, path: pathlib.Path):
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = resolver_lib.Resolver(mm)
     rec = _record(source, path, mm)
     resolver.warm([(u.parent, u.name) for u in _units(rec)])
-    return analyze_record(rec, resolver, Config())
+    return analyze.analyze_record(rec, resolver, config.Config())
 
 
 # -- analysis -------------------------------------------------------------
@@ -51,7 +51,7 @@ def test_module_import_is_clean():
 def test_object_import_first_party_is_violation():
     src = "from pkg.sub.mod import Thing\n"
     findings = _analyze(src, FIXTURES / "pkg" / "a.py")
-    assert [f.status for f in findings] == [Status.VIOLATION]
+    assert [f.status for f in findings] == [model.Status.VIOLATION]
     assert findings[0].parent == "pkg.sub.mod"
     assert findings[0].name == "Thing"
 
@@ -59,7 +59,7 @@ def test_object_import_first_party_is_violation():
 def test_stdlib_object_is_violation():
     src = "from functools import partial\n"
     findings = _analyze(src, FIXTURES / "pkg" / "a.py")
-    assert [f.status for f in findings] == [Status.VIOLATION]
+    assert [f.status for f in findings] == [model.Status.VIOLATION]
 
 
 def test_typing_is_exempt():
@@ -141,25 +141,25 @@ def test_type_checking_import_not_fixed():
 # -- scope ------------------------------------------------------------------
 def test_scope_first_party_ignores_stdlib():
     src = "from functools import partial\nfrom pkg.sub.mod import Thing\n"
-    findings = _analyze_with(src, Config(scope="first-party"))
+    findings = _analyze_with(src, config.Config(scope="first-party"))
     assert [f.parent for f in findings] == ["pkg.sub.mod"]
 
 
 def test_scope_all_reports_both():
     src = "from functools import partial\nfrom pkg.sub.mod import Thing\n"
-    findings = _analyze_with(src, Config(scope="all"))
+    findings = _analyze_with(src, config.Config(scope="all"))
     assert sorted(f.parent for f in findings) == ["functools", "pkg.sub.mod"]
 
 
 def test_scope_first_party_still_reports_unanchorable_relative_imports():
-    findings = _analyze_with("from ..... import nothing\n", Config(scope="first-party"))
-    assert [f.status for f in findings] == [Status.UNRESOLVED]
+    findings = _analyze_with("from ..... import nothing\n", config.Config(scope="first-party"))
+    assert [f.status for f in findings] == [model.Status.UNRESOLVED]
 
 
-def _analyze_with(source: str, config: Config):
+def _analyze_with(source: str, config: config.Config):
     path = FIXTURES / "pkg" / "a.py"
-    mm = ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = Resolver(mm)
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = resolver_lib.Resolver(mm)
     rec = _record(source, path, mm)
     resolver.warm([(u.parent, u.name) for u in rec.units if u.parent and not u.star])
-    return analyze_record(rec, resolver, config)
+    return analyze.analyze_record(rec, resolver, config)

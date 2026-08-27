@@ -2,24 +2,22 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import pathlib
 
 import libcst as cst
 
-from cleanporter.analyze import FileRecord, analyze_record, collect_pairs, package_of
-from cleanporter.config import Config
-from cleanporter.firstparty import ModuleMap
-from cleanporter.resolver import Resolver
+from cleanporter import analyze, config, firstparty
+from cleanporter import resolver as resolver_lib
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
 SOURCE = "from pkg.sub.mod import Thing\nfrom pkg.sub import mod\nx = Thing()\n"
 
 
-def _record() -> FileRecord:
+def _record() -> analyze.FileRecord:
     path = FIXTURES / "pkg" / "a.py"
-    mm = ModuleMap.from_paths([FIXTURES / "pkg", path])
-    return FileRecord(path, SOURCE, cst.parse_module(SOURCE), package_of(path, mm))
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    return analyze.FileRecord(path, SOURCE, cst.parse_module(SOURCE), analyze.package_of(path, mm))
 
 
 def test_units_are_computed_once_and_cached():
@@ -37,9 +35,9 @@ def test_repeated_analysis_does_not_rewalk_the_tree(monkeypatch):
     import cleanporter.analyze as analyze_mod
 
     rec = _record()
-    mm = ModuleMap.from_paths([FIXTURES / "pkg", rec.path])
-    resolver = Resolver(mm)
-    resolver.warm(collect_pairs([rec]))
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", rec.path])
+    resolver = resolver_lib.Resolver(mm)
+    resolver.warm(analyze.collect_pairs([rec]))
 
     calls = {"n": 0}
     real = analyze_mod.iter_units
@@ -50,6 +48,6 @@ def test_repeated_analysis_does_not_rewalk_the_tree(monkeypatch):
 
     monkeypatch.setattr(analyze_mod, "iter_units", counting)
 
-    analyze_record(rec, resolver, Config())
-    analyze_record(rec, resolver, Config())
-    assert calls["n"] == 0, "analyze_record must read the cached rec.units"
+    analyze.analyze_record(rec, resolver, config.Config())
+    analyze.analyze_record(rec, resolver, config.Config())
+    assert calls["n"] == 0, "the cached rec.units must be reused, not recomputed"

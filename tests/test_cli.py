@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-from cleanporter.cli import main
+from cleanporter import cli
 
 
 @pytest.fixture
-def project(tmp_path: Path) -> Path:
+def project(tmp_path: pathlib.Path) -> pathlib.Path:
     (tmp_path / "src" / "demo").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8"
@@ -28,7 +28,7 @@ def project(tmp_path: Path) -> Path:
 
 
 def test_check_reports_and_exits_1(project, capsys):
-    rc = main([str(project / "src")])
+    rc = cli.main([str(project / "src")])
     out = capsys.readouterr().out
     assert "consumer.py" in out and "CP001" in out
     assert rc == 1
@@ -38,11 +38,11 @@ def test_clean_tree_exits_0(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
         "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8"
     )
-    assert main([str(project / "src")]) == 0
+    assert cli.main([str(project / "src")]) == 0
 
 
 def test_fix_rewrites_and_exits_0(project, capsys):
-    rc = main(["--fix", str(project / "src")])
+    rc = cli.main(["--fix", str(project / "src")])
     assert rc == 0
     assert (project / "src" / "demo" / "consumer.py").read_text(encoding="utf-8") == (
         "from demo import helpers\ntotal = helpers.THING\n"
@@ -53,7 +53,7 @@ def test_fix_rewrites_and_exits_0(project, capsys):
 
 def test_diff_previews_without_writing(project, capsys):
     before = (project / "src" / "demo" / "consumer.py").read_text(encoding="utf-8")
-    rc = main(["--diff", str(project / "src")])
+    rc = cli.main(["--diff", str(project / "src")])
     out = capsys.readouterr().out
     assert "-from demo.helpers import THING" in out
     assert (project / "src" / "demo" / "consumer.py").read_text(encoding="utf-8") == before
@@ -66,14 +66,14 @@ def test_typing_imports_are_exempt(project, capsys):
         "x: Any = None\ny: Mapping = {}\n",
         encoding="utf-8",
     )
-    assert main([str(project / "src")]) == 0
+    assert cli.main([str(project / "src")]) == 0
 
 
 def test_exempt_flag_extends_the_allowlist(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
         "from demo.helpers import THING\n", encoding="utf-8"
     )
-    assert main(["--exempt", "demo.helpers", str(project / "src")]) == 0
+    assert cli.main(["--exempt", "demo.helpers", str(project / "src")]) == 0
 
 
 def test_exclude_config_is_respected(project, capsys):
@@ -82,13 +82,13 @@ def test_exclude_config_is_respected(project, capsys):
         '[tool.cleanporter]\nexclude = ["**/consumer.py"]\n',
         encoding="utf-8",
     )
-    assert main([str(project / "src")]) == 0
+    assert cli.main([str(project / "src")]) == 0
     assert "consumer.py" not in capsys.readouterr().out
 
 
 def test_syntax_error_exits_2(project, capsys):
     (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8")
-    assert main([str(project / "src")]) == 2
+    assert cli.main([str(project / "src")]) == 2
 
 
 def test_bad_config_exits_2(project, capsys):
@@ -96,12 +96,12 @@ def test_bad_config_exits_2(project, capsys):
         '[project]\nname = "demo"\nversion = "0"\n[tool.cleanporter]\nscope = "nonsense"\n',
         encoding="utf-8",
     )
-    assert main([str(project / "src")]) == 2
+    assert cli.main([str(project / "src")]) == 2
     assert "configuration error" in capsys.readouterr().err
 
 
 def test_missing_path_warns_and_exits_0(project, capsys):
-    rc = main([str(project / "nope")])
+    rc = cli.main([str(project / "nope")])
     captured = capsys.readouterr()
     assert "does not exist" in captured.out + captured.err
     assert rc == 0
@@ -111,8 +111,8 @@ def test_strict_promotes_unresolved_to_failure(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
         "from definitely_missing_pkg_xyz import thing\n", encoding="utf-8"
     )
-    assert main([str(project / "src")]) == 0
-    assert main(["--strict", str(project / "src")]) == 1
+    assert cli.main([str(project / "src")]) == 0
+    assert cli.main(["--strict", str(project / "src")]) == 1
 
 
 def test_fix_still_reports_violations_it_declined(project, capsys):
@@ -120,7 +120,7 @@ def test_fix_still_reports_violations_it_declined(project, capsys):
         'from demo.helpers import THING\n__all__ = ["THING"]\n',
         encoding="utf-8",
     )
-    rc = main(["--fix", str(project / "src")])
+    rc = cli.main(["--fix", str(project / "src")])
     err = capsys.readouterr().err
     assert "CP003" in err, "the blocker must be explained"
     assert "CP001" in err, "the unfixed violation must still be reported"
@@ -128,7 +128,7 @@ def test_fix_still_reports_violations_it_declined(project, capsys):
 
 
 def test_fix_reports_nothing_for_a_fully_fixed_file(project, capsys):
-    rc = main(["--fix", str(project / "src")])
+    rc = cli.main(["--fix", str(project / "src")])
     out = capsys.readouterr().out
     assert "CP001" not in out
     assert rc == 0
@@ -139,7 +139,7 @@ def test_summary_counts_match_the_printed_lines(project, capsys):
         "from demo.helpers import THING\nfrom definitely_missing_pkg_xyz import other\n",
         encoding="utf-8",
     )
-    main([str(project / "src")])
+    cli.main([str(project / "src")])
     out = capsys.readouterr().out
     assert out.count("CP001") == 1
     assert out.count("CP002") == 1
@@ -151,7 +151,7 @@ def test_unanchorable_relative_import_is_counted(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
         "from ..... import nothing\n", encoding="utf-8"
     )
-    main([str(project / "src")])
+    cli.main([str(project / "src")])
     out = capsys.readouterr().out
     assert "CP002" in out
     assert "0 unresolved" not in out
@@ -161,32 +161,31 @@ def test_strict_exits_1_for_unanchorable_relative_import(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
         "from ..... import nothing\n", encoding="utf-8"
     )
-    assert main(["--strict", str(project / "src")]) == 1
+    assert cli.main(["--strict", str(project / "src")]) == 1
 
 
 def test_non_utf8_source_exits_2(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_bytes(b"\xff\xfe# not utf-8\n")
-    assert main([str(project / "src")]) == 2
+    assert cli.main([str(project / "src")]) == 2
 
 
 def test_internal_rewrite_error_does_not_write_a_broken_file(project, monkeypatch):
-    from cleanporter.model import Finding, Status
-    from cleanporter.rewrite import FixOutcome
+    from cleanporter import model, rewrite
 
     target = project / "src" / "demo" / "consumer.py"
     before = target.read_text(encoding="utf-8")
 
     def fake(rec, resolver, config):
-        return FixOutcome(
+        return rewrite.FixOutcome(
             "error",
             rec.source,
-            [Finding(rec.path, 1, 0, "?", "?", Status.SKIPPED, "internal error")],
+            [model.Finding(rec.path, 1, 0, "?", "?", model.Status.SKIPPED, "internal error")],
         )
 
     # cli calls `rewrite.fix_record`, resolving the attribute at call time,
     # so patch it on the module that owns it.
     monkeypatch.setattr("cleanporter.rewrite.fix_record", fake)
-    assert main(["--fix", str(project / "src")]) == 1
+    assert cli.main(["--fix", str(project / "src")]) == 1
     assert target.read_text(encoding="utf-8") == before
 
 
@@ -194,7 +193,7 @@ def test_internal_rewrite_error_does_not_write_a_broken_file(project, monkeypatc
 
 
 @pytest.fixture
-def src_layout(tmp_path: Path) -> Path:
+def src_layout(tmp_path: pathlib.Path) -> pathlib.Path:
     """A src-layout project with a `tests/` package, as most repos have."""
     (tmp_path / "src" / "mypkg").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
@@ -212,7 +211,7 @@ def src_layout(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _imports_cleanly(project: Path) -> subprocess.CompletedProcess[str]:
+def _imports_cleanly(project: pathlib.Path) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ, PYTHONPATH=str(project / "src"))
     return subprocess.run(
         [sys.executable, "-c", "import mypkg.consumer"],
@@ -230,7 +229,7 @@ def test_fix_with_no_path_arguments_keeps_the_package_importable(src_layout, mon
     monkeypatch.chdir(src_layout)
     assert _imports_cleanly(src_layout).returncode == 0, "fixture must import before --fix"
 
-    main(["--fix"])
+    cli.main(["--fix"])
     capsys.readouterr()
 
     proc = _imports_cleanly(src_layout)
@@ -243,7 +242,7 @@ def test_check_on_a_src_layout_names_the_module_without_the_src_prefix(
     src_layout, monkeypatch, capsys
 ):
     monkeypatch.chdir(src_layout)
-    main([])
+    cli.main([])
     # One readouterr() call drains the buffers; a second always returns
     # empty, so both streams must come from the same capture.
     captured = capsys.readouterr()
@@ -255,7 +254,7 @@ def test_check_on_a_src_layout_names_the_module_without_the_src_prefix(
 
 def test_diff_stdout_carries_only_the_patch(project, monkeypatch, capsys):
     monkeypatch.chdir(project)
-    main(["--diff", "src"])
+    cli.main(["--diff", "src"])
     captured = capsys.readouterr()
     assert captured.out.startswith("--- a/src/demo/consumer.py\n")
     assert "a//" not in captured.out
@@ -268,7 +267,7 @@ def test_diff_stdout_carries_only_the_patch(project, monkeypatch, capsys):
 
 def test_diff_headers_are_relative_even_for_an_absolute_path_argument(project, monkeypatch, capsys):
     monkeypatch.chdir(project)
-    main(["--diff", str(project / "src")])
+    cli.main(["--diff", str(project / "src")])
     out = capsys.readouterr().out
     assert "--- a/src/demo/consumer.py" in out
     assert "a//" not in out
@@ -278,7 +277,7 @@ def test_diff_headers_are_relative_even_for_an_absolute_path_argument(project, m
 def test_the_diff_can_be_applied_with_git_apply(project, monkeypatch, capsys):
     monkeypatch.chdir(project)
     subprocess.run(["git", "init", "-q"], cwd=project, check=True)
-    main(["--diff", "src"])
+    cli.main(["--diff", "src"])
     patch = capsys.readouterr().out
     proc = subprocess.run(
         ["git", "apply", "--check", "-"],
@@ -292,7 +291,7 @@ def test_the_diff_can_be_applied_with_git_apply(project, monkeypatch, capsys):
 
 def test_warnings_go_to_stderr_when_a_patch_is_on_stdout(project, monkeypatch, capsys):
     monkeypatch.chdir(project)
-    main(["--diff", "src", "nope"])
+    cli.main(["--diff", "src", "nope"])
     captured = capsys.readouterr()
     assert "path does not exist" in captured.err
     assert "path does not exist" not in captured.out
@@ -300,7 +299,7 @@ def test_warnings_go_to_stderr_when_a_patch_is_on_stdout(project, monkeypatch, c
 
 def test_check_mode_still_reports_on_stdout(project, monkeypatch, capsys):
     monkeypatch.chdir(project)
-    main(["src"])
+    cli.main(["src"])
     captured = capsys.readouterr()
     assert "CP001" in captured.out
     assert "checked 3 file(s)" in captured.out
@@ -309,7 +308,9 @@ def test_check_mode_still_reports_on_stdout(project, monkeypatch, capsys):
 # -- PEP 420 namespace packages (re-review blocker) --------------------------
 
 
-def _runs(project: Path, module: str, root: Path) -> subprocess.CompletedProcess[str]:
+def _runs(
+    project: pathlib.Path, module: str, root: pathlib.Path
+) -> subprocess.CompletedProcess[str]:
     """Import *module* with only *root* on sys.path, from outside the tree."""
     return subprocess.run(
         [sys.executable, "-c", f"import {module}"],
@@ -321,7 +322,7 @@ def _runs(project: Path, module: str, root: Path) -> subprocess.CompletedProcess
 
 
 @pytest.fixture
-def declared_namespace(tmp_path: Path) -> Path:
+def declared_namespace(tmp_path: pathlib.Path) -> pathlib.Path:
     """A src layout whose package is a namespace package: `--root src` is the
     only thing that says where the import root is."""
     (tmp_path / "src" / "mypkg").mkdir(parents=True)
@@ -344,7 +345,7 @@ def test_an_explicit_root_beats_a_namespace_package_inferred_below_it(
     monkeypatch.chdir(project)
     assert _runs(project, "mypkg.mod", project / "src").returncode == 0, "must import first"
 
-    main(["--fix", "--root", "src", "."])
+    cli.main(["--fix", "--root", "src", "."])
     capsys.readouterr()
 
     # Not `import other`, which compiles and then raises ModuleNotFoundError.
@@ -365,7 +366,7 @@ def test_a_flat_namespace_package_stays_importable_after_fix(tmp_path, monkeypat
     (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
-    main(["--fix", "."])
+    cli.main(["--fix", "."])
     capsys.readouterr()
 
     assert (tmp_path / "mypkg" / "consumer.py").read_text(encoding="utf-8") == (
@@ -384,7 +385,7 @@ def test_a_namespace_subpackage_reuses_its_existing_relative_import(tmp_path, mo
     )
     monkeypatch.chdir(tmp_path)
 
-    main(["--fix", "."])
+    cli.main(["--fix", "."])
     captured = capsys.readouterr()
 
     # The existing binding is reused: no `other_2` alias, and no bogus CP002.
@@ -404,7 +405,7 @@ _NOTE = "cleanporter: note: --fix cannot see dotted references from other files"
 
 def test_fix_notes_the_cross_file_limitation_on_stderr(project, monkeypatch, capsys):
     monkeypatch.chdir(project)
-    main(["--fix", "src"])
+    cli.main(["--fix", "src"])
     captured = capsys.readouterr()
     assert _NOTE in captured.err
     assert "re-run your tests" in captured.err
@@ -417,13 +418,13 @@ def test_no_note_when_fix_writes_nothing(project, monkeypatch, capsys):
         "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8"
     )
     monkeypatch.chdir(project)
-    main(["--fix", "src"])
+    cli.main(["--fix", "src"])
     assert _NOTE not in capsys.readouterr().err
 
 
 def test_no_note_for_a_preview_that_writes_nothing(project, monkeypatch, capsys):
     monkeypatch.chdir(project)
-    main(["--diff", "src"])
+    cli.main(["--diff", "src"])
     captured = capsys.readouterr()
     assert _NOTE not in captured.err + captured.out
 
@@ -448,7 +449,7 @@ def test_a_namespace_package_holding_a_subpackage_is_not_rewritten_to_stdlib(
     )
     monkeypatch.chdir(tmp_path)
 
-    main(["--fix", "."])
+    cli.main(["--fix", "."])
     capsys.readouterr()
 
     assert (tmp_path / "analytics" / "io" / "__init__.py").read_text(encoding="utf-8") == (

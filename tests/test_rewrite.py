@@ -2,27 +2,24 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+import pathlib
 
 import libcst as cst
 
-from cleanporter.analyze import FileRecord, collect_pairs, package_of
-from cleanporter.config import Config
-from cleanporter.firstparty import ModuleMap
-from cleanporter.model import Status
-from cleanporter.resolver import Resolver
-from cleanporter.rewrite import FixOutcome, fix_record
+from cleanporter import analyze, firstparty, model, rewrite
+from cleanporter import config as config_lib
+from cleanporter import resolver as resolver_lib
 
-FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
 
-def outcome(source: str, config: Config | None = None) -> FixOutcome:
+def outcome(source: str, config: config_lib.Config | None = None) -> rewrite.FixOutcome:
     path = FIXTURES / "pkg" / "a.py"
-    mm = ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = Resolver(mm)
-    rec = FileRecord(path, source, cst.parse_module(source), package_of(path, mm))
-    resolver.warm(collect_pairs([rec]))
-    return fix_record(rec, resolver, config if config is not None else Config())
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = resolver_lib.Resolver(mm)
+    rec = analyze.FileRecord(path, source, cst.parse_module(source), analyze.package_of(path, mm))
+    resolver.warm(analyze.collect_pairs([rec]))
+    return rewrite.fix_record(rec, resolver, config if config is not None else config_lib.Config())
 
 
 def test_basic_rewrite_reports_fixed():
@@ -45,7 +42,7 @@ def test_dunder_all_blocks_the_whole_file():
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src, "a blocked file must be byte-identical"
-    assert [f.status for f in result.blockers] == [Status.SKIPPED]
+    assert [f.status for f in result.blockers] == [model.Status.SKIPPED]
     assert "string literal" in result.blockers[0].detail
 
 
@@ -117,7 +114,7 @@ def test_exempt_name_mentioned_in_a_string_does_not_block_the_fix():
     # 'go' is exempted by config, so it is never in _fixed_locals; a string
     # naming it must not produce a false blocker for the file's real fix.
     src = 'from pkg.sub.mod import Thing, go\ny = "go"\nx = Thing()\nz = go()\n'
-    config = Config(exempt_names=frozenset({"go"}))
+    config = config_lib.Config(exempt_names=frozenset({"go"}))
     result = outcome(src, config)
     assert result.status == "fixed"
     assert result.blockers == []
@@ -277,7 +274,7 @@ def test_trailing_comment_lands_on_the_last_replacement_line():
     # comment must land on the *last* one (the kept-names import), not the
     # first (the new module import).
     src = "from pkg.sub.mod import Thing, go  # both\nx = Thing()\ny = go()\n"
-    config = Config(exempt_names=frozenset({"go"}))
+    config = config_lib.Config(exempt_names=frozenset({"go"}))
     result = outcome(src, config)
     assert result.status == "fixed"
     assert result.source == (

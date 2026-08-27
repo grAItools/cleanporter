@@ -8,9 +8,11 @@ from cleanporter import guards
 
 
 def _line_of(tree: cst.Module):
-    from libcst.metadata import MetadataWrapper, PositionProvider
+    from libcst import metadata
 
-    positions = MetadataWrapper(tree, unsafe_skip_copy=True).resolve(PositionProvider)
+    positions = metadata.MetadataWrapper(tree, unsafe_skip_copy=True).resolve(
+        metadata.PositionProvider
+    )
     return lambda node: positions[node].start.line
 
 

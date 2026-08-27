@@ -12,14 +12,15 @@ keeps -- do not relax them without changing the code first.
 
 from __future__ import annotations
 
+import pathlib
 import re
-from pathlib import Path
 
 import pytest
 
-from cleanporter import __version__, cli, config, model
+import cleanporter
+from cleanporter import cli, config, model
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 README = ROOT / "README.md"
 USAGE = DOCS / "usage.md"
@@ -30,7 +31,7 @@ SAFETY = DOCS / "safety.md"
 ALL_PAGES = [README, *sorted(DOCS.glob("*.md"))]
 
 
-def _text(path: Path) -> str:
+def _text(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
@@ -69,7 +70,7 @@ def test_every_finding_code_is_documented() -> None:
 
 
 @pytest.mark.parametrize("page", ALL_PAGES, ids=lambda p: p.name)
-def test_no_stale_references_to_the_old_tools(page: Path) -> None:
+def test_no_stale_references_to_the_old_tools(page: pathlib.Path) -> None:
     text = _text(page)
     assert "modimports" not in text
     assert "3rdparty" not in text
@@ -87,7 +88,7 @@ def test_the_version_is_single_sourced() -> None:
     import tomllib
 
     declared = tomllib.loads(_text(ROOT / "pyproject.toml"))["project"]["version"]
-    assert __version__ == declared
+    assert cleanporter.__version__ == declared
 
 
 def test_the_python_requirement_agrees_with_the_readme() -> None:

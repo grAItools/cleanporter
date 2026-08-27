@@ -22,14 +22,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import pathlib
 import re
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[1]
 TARGET = "src/cleanporter"
 
 #: Accepted `mypy --strict` errors. Never raise this.
