@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -59,6 +60,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _diff_path(path: Path) -> str:
+    """*path* as a diff header should spell it: relative to the cwd, POSIX.
+
+    Headers used to be built as ``f"a/{path}"`` straight from the record,
+    so an absolute path argument produced ``a//home/you/pkg/file.py`` -- a
+    doubled slash neither ``patch`` nor ``git apply`` can strip -- and the
+    patch could not be applied from anywhere.
+    """
+    try:
+        relative = os.path.relpath(path, Path.cwd())
+    except ValueError:  # pragma: no cover - different drive on Windows
+        return Path(path).as_posix().lstrip("/")
+    return Path(relative).as_posix()
+
+
 def _apply_overrides(config: Config, args: argparse.Namespace) -> Config:
     return replace(
         config,
@@ -77,13 +93,19 @@ def run(args: argparse.Namespace) -> int:
         print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
         return _EXIT_ERROR
 
+    # When a patch is going to stdout, stdout carries *only* the patch:
+    # everything else -- warnings, parse errors, findings, the summary --
+    # goes to stderr, so `cleanporter --diff src/ | git apply` works. In
+    # plain check mode there is no patch, so the report stays on stdout.
+    report = sys.stderr if (args.fix or args.diff) else sys.stdout
+
     paths = [Path(p) for p in args.paths]
     records, resolver, parse_errors, warnings = build(paths, config)
     for warning in warnings:
-        print(f"cleanporter: warning: {warning}")
+        print(f"cleanporter: warning: {warning}", file=report)
 
     for error in sorted(parse_errors, key=lambda f: (str(f.path), f.line)):
-        print(error.format())
+        print(error.format(), file=report)
 
     findings: list[Finding] = []
     changed = 0
@@ -97,13 +119,13 @@ def run(args: argparse.Namespace) -> int:
                     difflib.unified_diff(
                         rec.source.splitlines(keepends=True),
                         outcome.source.splitlines(keepends=True),
-                        fromfile=f"a/{rec.path}",
-                        tofile=f"b/{rec.path}",
+                        fromfile=f"a/{_diff_path(rec.path)}",
+                        tofile=f"b/{_diff_path(rec.path)}",
                     )
                 )
                 if args.fix:
                     rec.path.write_text(outcome.source, encoding="utf-8")
-                    print(f"fixed: {rec.path}")
+                    print(f"fixed: {rec.path}", file=report)
                     # Report against what is now on disk.
                     rec = _reparse(rec, outcome.source)
             findings.extend(outcome.blockers)
@@ -111,17 +133,18 @@ def run(args: argparse.Namespace) -> int:
 
     findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
     for finding in findings:
-        print(finding.format())
+        print(finding.format(), file=report)
 
     violations = sum(f.status is Status.VIOLATION for f in findings)
     skipped = sum(f.status is Status.SKIPPED for f in findings)
     unresolved = sum(f.status is Status.UNRESOLVED for f in findings)
-    print()
+    print(file=report)
     print(
         f"checked {len(records)} file(s)"
         + (f", fixed {changed}" if args.fix else "")
         + f": {violations} violation(s), {skipped} not rewritten, "
-        f"{unresolved} unresolved"
+        f"{unresolved} unresolved",
+        file=report,
     )
 
     if parse_errors:

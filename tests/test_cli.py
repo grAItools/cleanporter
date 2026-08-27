@@ -49,7 +49,8 @@ def test_fix_rewrites_and_exits_0(project, capsys):
     assert (project / "src" / "demo" / "consumer.py").read_text(encoding="utf-8") == (
         "from demo import helpers\ntotal = helpers.THING\n"
     )
-    assert "fixed" in capsys.readouterr().out
+    # progress and findings go to stderr while a patch is on stdout
+    assert "fixed" in capsys.readouterr().err
 
 
 def test_diff_previews_without_writing(project, capsys):
@@ -124,9 +125,9 @@ def test_fix_still_reports_violations_it_declined(project, capsys):
         encoding="utf-8",
     )
     rc = main(["--fix", str(project / "src")])
-    out = capsys.readouterr().out
-    assert "CP003" in out, "the blocker must be explained"
-    assert "CP001" in out, "the unfixed violation must still be reported"
+    err = capsys.readouterr().err
+    assert "CP003" in err, "the blocker must be explained"
+    assert "CP001" in err, "the unfixed violation must still be reported"
     assert rc == 1
 
 
@@ -244,3 +245,54 @@ def test_check_on_a_src_layout_names_the_module_without_the_src_prefix(src_layou
     out = capsys.readouterr().out + capsys.readouterr().err
     assert "src.mypkg" not in out
 
+# -- output streams (final review, Important 5) -----------------------------
+
+
+def test_diff_stdout_carries_only_the_patch(project, monkeypatch, capsys):
+    monkeypatch.chdir(project)
+    main(["--diff", "src"])
+    captured = capsys.readouterr()
+    assert captured.out.startswith("--- a/src/demo/consumer.py\n")
+    assert "a//" not in captured.out
+    assert "CP001" not in captured.out and "checked" not in captured.out
+    for line in captured.out.splitlines():
+        assert line[:1] in {"-", "+", "@", " "}, line
+    assert "CP001" in captured.err
+    assert "checked 3 file(s)" in captured.err
+
+
+def test_diff_headers_are_relative_even_for_an_absolute_path_argument(project, monkeypatch, capsys):
+    monkeypatch.chdir(project)
+    main(["--diff", str(project / "src")])
+    out = capsys.readouterr().out
+    assert "--- a/src/demo/consumer.py" in out
+    assert "a//" not in out
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_the_diff_can_be_applied_with_git_apply(project, monkeypatch, capsys):
+    monkeypatch.chdir(project)
+    subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    main(["--diff", "src"])
+    patch = capsys.readouterr().out
+    proc = subprocess.run(
+        ["git", "apply", "--check", "-"], input=patch, text=True,
+        capture_output=True, cwd=project,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_warnings_go_to_stderr_when_a_patch_is_on_stdout(project, monkeypatch, capsys):
+    monkeypatch.chdir(project)
+    main(["--diff", "src", "nope"])
+    captured = capsys.readouterr()
+    assert "path does not exist" in captured.err
+    assert "path does not exist" not in captured.out
+
+
+def test_check_mode_still_reports_on_stdout(project, monkeypatch, capsys):
+    monkeypatch.chdir(project)
+    main(["src"])
+    captured = capsys.readouterr()
+    assert "CP001" in captured.out
+    assert "checked 3 file(s)" in captured.out
