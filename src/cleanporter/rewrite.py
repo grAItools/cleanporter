@@ -27,7 +27,6 @@ names in a mixed statement are kept in place.
 from __future__ import annotations
 
 import ast
-import re
 from dataclasses import dataclass, field
 
 import libcst as cst
@@ -173,6 +172,139 @@ def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
     return found
 
 
+def _rewrite_type_expr(
+    expr: cst.BaseExpression, targets: dict[str, str]
+) -> tuple[cst.BaseExpression, bool]:
+    """Rename bare ``Name`` references to a rewritten local anywhere inside
+    a *parsed* type expression.
+
+    This is a structural walk, not a text substitution, so it cannot be
+    fooled by a name that merely appears as a substring or after a ``.``:
+    only an actual ``Name`` node matching a target is ever replaced, and
+    only when it sits in a genuine reference position.
+
+    * The ``.attr`` half of an ``Attribute`` (``other.Thing``'s ``Thing``)
+      is a syntax slot, not an independent reference, and is never visited.
+    * ``Literal[...]``'s slice holds values, not types, and is skipped
+      whole; ``Annotated[T, ...]`` mixes one real type (the first slice
+      element) with arbitrary metadata (the rest), so only that first
+      element is walked -- the same opacity rules ``_annotation_strings``
+      applies at the CST level, reapplied here because a *parsed* string's
+      content can contain a ``Literal``/``Annotated`` subscript that was
+      never visible as a CST node to that first pass (fix-round-2 Critical
+      2: a fully-stringified annotation like ``"Literal['Thing']"`` has no
+      ``Subscript`` node until its content is parsed).
+    * A nested ``SimpleString`` sitting in an otherwise genuine type
+      position (e.g. the ``'Thing'`` in ``list['Thing']``, itself possibly
+      reached only after parsing an outer string) is a forward reference in
+      its own right and is recursed into via `_rewrite_string_content`, so
+      a doubly-stringified annotation is handled exactly like a
+      singly-stringified one.
+
+    Returns ``(expr, False)`` unchanged when nothing needed renaming, so a
+    caller can tell "nothing to do" from "rewrote to something identical".
+    """
+    if isinstance(expr, cst.Name):
+        target = targets.get(expr.value)
+        if target is None:
+            return expr, False
+        bind, _dot, symbol = target.partition(".")
+        return cst.Attribute(value=cst.Name(bind), attr=cst.Name(symbol)), True
+
+    if isinstance(expr, cst.Attribute):
+        new_value, changed = _rewrite_type_expr(expr.value, targets)
+        return (expr.with_changes(value=new_value), True) if changed else (expr, False)
+
+    if isinstance(expr, cst.SimpleString):
+        rewritten = _rewrite_string_content(expr, targets)
+        return (rewritten, True) if rewritten is not None else (expr, False)
+
+    if isinstance(expr, cst.BinaryOperation):
+        new_left, left_changed = _rewrite_type_expr(expr.left, targets)
+        new_right, right_changed = _rewrite_type_expr(expr.right, targets)
+        if not (left_changed or right_changed):
+            return expr, False
+        return expr.with_changes(left=new_left, right=new_right), True
+
+    if isinstance(expr, (cst.Tuple, cst.List)):
+        changed_any = False
+        new_elements = []
+        for element in expr.elements:
+            new_value, changed = _rewrite_type_expr(element.value, targets)
+            if changed:
+                changed_any = True
+                element = element.with_changes(value=new_value)
+            new_elements.append(element)
+        if not changed_any:
+            return expr, False
+        return expr.with_changes(elements=new_elements), True
+
+    if isinstance(expr, cst.Subscript):
+        base = _subscript_base_name(expr)
+        new_base, base_changed = _rewrite_type_expr(expr.value, targets)
+        slice_changed = False
+        new_slice: list[cst.SubscriptElement] = list(expr.slice)
+        if base == "Literal":
+            pass  # the whole slice is opaque values, never touched
+        elif base == "Annotated":
+            if expr.slice:
+                first = expr.slice[0]
+                if isinstance(first.slice, cst.Index):
+                    new_value, changed = _rewrite_type_expr(first.slice.value, targets)
+                    if changed:
+                        slice_changed = True
+                        new_slice[0] = first.with_changes(
+                            slice=first.slice.with_changes(value=new_value)
+                        )
+        else:
+            for i, slice_element in enumerate(expr.slice):
+                if isinstance(slice_element.slice, cst.Index):
+                    new_value, changed = _rewrite_type_expr(slice_element.slice.value, targets)
+                    if changed:
+                        slice_changed = True
+                        new_slice[i] = slice_element.with_changes(
+                            slice=slice_element.slice.with_changes(value=new_value)
+                        )
+        if not (base_changed or slice_changed):
+            return expr, False
+        return (
+            expr.with_changes(
+                value=new_base if base_changed else expr.value,
+                slice=new_slice,
+            ),
+            True,
+        )
+
+    return expr, False
+
+
+def _rewrite_string_content(
+    node: cst.SimpleString, targets: dict[str, str]
+) -> cst.SimpleString | None:
+    """Re-parse *node*'s content as a type expression and rename it via
+    `_rewrite_type_expr`.
+
+    Returns ``None`` -- meaning "leave this string alone, let it stay
+    subject to the ordinary string-mention guard" -- both when the content
+    does not parse as an expression at all (never guess: unclassifiable
+    means reported, not rewritten) and when parsing succeeds but nothing in
+    it actually needed renaming (e.g. it is a `Literal`/`Annotated`
+    payload, or mentions the name only after a ``.``).
+    """
+    content = node.evaluated_value
+    if not isinstance(content, str):
+        return None
+    try:
+        parsed = cst.parse_expression(content)
+    except cst.ParserSyntaxError:
+        return None
+    new_expr, changed = _rewrite_type_expr(parsed, targets)
+    if not changed:
+        return None
+    rendered = cst.Module(body=[]).code_for_node(new_expr)
+    return node.with_changes(value=f"{node.prefix}{node.quote}{rendered}{node.quote}")
+
+
 class _Fixer(cst.CSTTransformer):
     METADATA_DEPENDENCIES = (ScopeProvider, PositionProvider)
 
@@ -264,27 +396,25 @@ class _Fixer(cst.CSTTransformer):
     def _plan_annotation_strings(self, node: cst.Module) -> frozenset[int]:
         """Rename locals inside lazy string annotations; return their ids.
 
-        The pattern uses a negative lookbehind, not just ``\\b``, on the left
-        edge: ``\\b`` alone matches right after a ``.`` (a non-word
-        character), so ``'other.Thing'`` would have its ``Thing`` renamed
-        into a fabricated ``other.mod.Thing`` -- a dotted reference that was
-        never actually bound to the renamed import. The lookbehind leaves
-        such strings untouched, so they fall out of ``skip_ids`` and the
-        string-mention guard blocks the file instead of silently corrupting
-        it.
+        Each candidate string's *content* is parsed as an expression and
+        walked structurally by `_rewrite_type_expr`, rather than pattern-
+        matched as raw text: a regex substitution over an unparsed token
+        cannot tell a type reference from a string payload (a `Literal`
+        value, `Annotated` metadata, or a dotted name it does not own), so
+        it can only ever be patched for one more shape at a time
+        (fix-round-1 added a lookbehind for ``other.Thing``, fix-round-2
+        found ``"Literal['Thing']"`` still slipped through because that
+        whole annotation is one string with no `Subscript` node for the
+        earlier CST-level narrowing to see). Parsing sidesteps the whole
+        class of bugs: a string that fails to parse is never guessed at --
+        it is left for the ordinary string-mention guard to block.
         """
         if not (self._future_annotations and self._string_targets):
             return frozenset()
-        patterns = [
-            (re.compile(rf"(?<![\w.]){re.escape(local)}\b"), replacement)
-            for local, replacement in sorted(self._string_targets.items())
-        ]
         for ident, string_node in _annotation_strings(node).items():
-            value = string_node.value
-            for pattern, replacement in patterns:
-                value = pattern.sub(replacement, value)
-            if value != string_node.value:
-                self.plan.string_repl[ident] = value
+            rewritten = _rewrite_string_content(string_node, self._string_targets)
+            if rewritten is not None:
+                self.plan.string_repl[ident] = rewritten.value
         return frozenset(self.plan.string_repl)
 
     def _build_existing(self, node: cst.Module) -> None:

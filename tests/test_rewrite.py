@@ -911,3 +911,103 @@ def test_star_args_lazy_string_annotation_is_renamed():
     assert result.status == "fixed"
     assert "*args: 'mod.Thing'" in result.source
     assert "**kwargs: 'mod.Thing'" in result.source
+
+
+def test_fully_stringified_literal_annotation_blocks_payload_intact():
+    # When the *entire* annotation is one string, there is no `Subscript`
+    # node in the CST for the fix-round-1 narrowing to see -- the content
+    # only becomes a `Subscript` once parsed. `_rewrite_type_expr` reapplies
+    # the same Literal-is-opaque rule to the *parsed* content, so nothing
+    # changes and the string is left for the ordinary guard to block
+    # (fix-round-2 Critical 2, part A).
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "from typing import Literal\n"
+        "def g(a: \"Literal['Thing']\") -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_fully_stringified_annotated_metadata_blocks_payload_intact():
+    # Same root cause as above, for `Annotated`'s metadata half.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "from typing import Annotated\n"
+        "def g(a: \"Annotated[int, 'Thing']\") -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_fully_stringified_dotted_name_is_not_corrupted():
+    # `"other.Thing"` parses to `Attribute(value=Name('other'), attr=Name(
+    # 'Thing'))`. `Thing` there is the `.attr` half of an `Attribute`, a
+    # syntax slot rather than an independent reference, so
+    # `_rewrite_type_expr` never visits it -- nothing changes, and the
+    # string blocks instead of becoming a fabricated `other.mod.Thing`.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        'def g(a: "other.Thing") -> None: ...\n'
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_fully_stringified_list_subscript_inner_ref_is_still_renamed():
+    # The narrowing must not over-reach into genuine type positions: a
+    # `list[...]` slice is not `Literal`/`Annotated`, so its element is a
+    # real type. The inner `'Thing'` is itself a nested forward-reference
+    # string once the outer string is parsed, and is recursed into via
+    # `_rewrite_string_content` -- proving the parse-based approach handles
+    # a doubly-stringified annotation, not just a singly-stringified one.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: \"list['Thing']\") -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert 'a: "list[\'mod.Thing\']"' in result.source
+
+
+def test_unparseable_annotation_string_blocks_instead_of_guessing():
+    # "Never guess: an import that cannot be classified is reported, never
+    # rewritten" applies just as much to a string that fails to parse as an
+    # expression at all -- `cst.parse_expression` raises, so the string is
+    # left untouched and the ordinary string-mention guard blocks the file.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: 'Thing[') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_double_quoted_lazy_annotation_keeps_its_quote_style():
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + '    from pkg.sub.mod import Thing\ndef g(a: "Thing") -> None: ...\n'
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert 'a: "mod.Thing"' in result.source
+    assert "'mod.Thing'" not in result.source
