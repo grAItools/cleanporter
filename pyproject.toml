@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
     "Typing :: Typed",
 ]
-dependencies = ["libcst>=1.1"]
+dependencies = ["libcst>=1.9"]
 
 [project.urls]
 Homepage = "https://github.com/grAItools/cleanporter"
@@ -38,16 +38,16 @@ cleanporter = "cleanporter.cli:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8",
-    "ruff>=0.14",
-    "mypy>=1.10",
-    "pyright>=1.1.400",
+    "pytest>=9.1",
+    "ruff>=0.16.4",
+    "mypy>=2.3",
+    "pyright>=1.1.411",
     "prek>=0.5",
 ]
 docs = ["zensical>=0.0.57"]
 # Optional, non-blocking cross-check. Not in `dev`: install with
 # `uv sync --group zuban` when you want a second opinion on the type errors.
-zuban = ["zuban>=0.9"]
+zuban = ["zuban>=0.9.2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cleanporter"]

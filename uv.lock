@@ -96,18 +96,18 @@ zuban = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "libcst", specifier = ">=1.1" }]
+requires-dist = [{ name = "libcst", specifier = ">=1.9" }]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "mypy", specifier = ">=1.10" },
+    { name = "mypy", specifier = ">=2.3" },
     { name = "prek", specifier = ">=0.5" },
-    { name = "pyright", specifier = ">=1.1.400" },
-    { name = "pytest", specifier = ">=8" },
-    { name = "ruff", specifier = ">=0.14" },
+    { name = "pyright", specifier = ">=1.1.411" },
+    { name = "pytest", specifier = ">=9.1" },
+    { name = "ruff", specifier = ">=0.16.4" },
 ]
 docs = [{ name = "zensical", specifier = ">=0.0.57" }]
-zuban = [{ name = "zuban", specifier = ">=0.9" }]
+zuban = [{ name = "zuban", specifier = ">=0.9.2" }]
 
 [[package]]
 name = "click"
