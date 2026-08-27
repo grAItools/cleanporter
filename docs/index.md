@@ -1,3 +1,6 @@
+![cleanporter](assets/wordmark-light.svg#only-light){ width=330 }
+![cleanporter](assets/wordmark-dark.svg#only-dark){ width=330 }
+
 # cleanporter
 
 **cleanporter** enforces section

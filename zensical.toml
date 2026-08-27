@@ -19,10 +19,13 @@ nav = [
 
 [project.theme]
 language = "en"
-# `logo.svg` is drawn with `currentColor`, so it follows the palette
-# toggle for free. `logo-mark.svg` bakes the accent in, for contexts
-# with no CSS to inherit from -- GitHub's README. favicon.svg is the
-# same mark again with a heavier stroke, tuned for 16px.
+# `logo.svg` is drawn with `currentColor`, so the navbar mark follows the
+# palette toggle for free. `favicon.svg` is the same mark with the accent
+# baked in and a heavier stroke: a favicon has no CSS to inherit from, and
+# at 16px a 2px stroke anti-aliases into a pale smear.
+#
+# The wide wordmark is deliberately not used here -- this slot is a small
+# square next to the site name. It heads docs/index.md and the README.
 logo = "assets/logo.svg"
 favicon = "assets/favicon.svg"
 features = [

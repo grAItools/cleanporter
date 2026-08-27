@@ -1,6 +1,9 @@
-<img src="docs/assets/logo-mark.svg" width="80" align="right" alt="">
-
-# cleanporter
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/wordmark-dark.svg">
+    <img src="docs/assets/wordmark-light.svg" alt="cleanporter" width="330">
+  </picture>
+</h1>
 
 [![CI](https://github.com/grAItools/cleanporter/actions/workflows/ci.yml/badge.svg)](https://github.com/grAItools/cleanporter/actions/workflows/ci.yml)
 [![Docs](https://github.com/grAItools/cleanporter/actions/workflows/docs.yml/badge.svg)](https://graitools.github.io/cleanporter/)
