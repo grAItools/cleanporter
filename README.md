@@ -104,9 +104,13 @@ with §2.2. An existing binding of the same module in the same scope is
 reused rather than duplicated, and a colliding module token is aliased
 (`helpers_2`) instead of breaking the file.
 
-Formatting, comments, and blank lines are preserved exactly (libcst round-trips
-the source); the only structural change is the inserted/replaced import
-statement itself.
+Formatting and blank lines are preserved exactly (libcst round-trips the
+source); the only structural change is the inserted/replaced import statement
+itself. Comments are never *altered* and never silently dropped: where a
+rewrite could not carry a comment across — one attached to an import line that
+disappears, one sitting inside a parenthesized import (including a per-name
+`# noqa:`), or one inside a lazy annotation string — the file is left alone
+and reported (`CP003`) instead.
 
 ## Exit codes
 
@@ -198,6 +202,12 @@ first-party root — is reported `CP002` rather than guessed at):
    interpreter, or the probe otherwise failed. Reported `CP002`, never
    rewritten.
 
+Import roots are inferred from the paths given (plus any `source_roots`), and
+each file is qualified against the **most specific** root that contains it — a
+`src/` layout with a `tests/__init__.py` infers both `src/` and the repo root,
+and only the former is really on `sys.path` for `src/mypkg/consumer.py`. When
+inferred roots nest, cleanporter says so as a warning.
+
 Results are cached per `(module, symbol)` pair; each file's syntax tree is
 parsed and walked once per run, not once per finding-generating pass.
 
@@ -214,12 +224,15 @@ any module-level import of the same module.
 A whole file is skipped (`CP003` explains why) when any target has:
 
 - a mention of the local name inside a string literal (`__all__`,
-  `getattr(..., "Name")`, an f-string, ...) — except a genuine prose
+  `getattr(..., "Name")`, ...) — except a genuine prose
   docstring (module/class/function docstrings containing no `>>>` doctest
   marker are exempt: a stale name in prose is a documentation nit, not broken
   code) and except lazy string annotations under
   `from __future__ import annotations`, which are *rewritten along with* the
-  code rather than left as a mention;
+  code rather than left as a mention. An f-string is **not** a blocking
+  mention: its interpolations are code, so `f"{Thing}"` is rewritten to
+  `f"{mod.Thing}"` like any other reference (a plain string nested *inside*
+  one, as in `f"{getattr(m, 'Thing')}"`, still blocks);
 - a module-level rebinding of the local name (libcst's scopes are not
   flow-sensitive, so such references are ambiguous between the import and the
   rebinding);
@@ -229,9 +242,12 @@ A whole file is skipped (`CP003` explains why) when any target has:
   would raise `NameError` after the import moved); with future annotations
   active, both the import and any lazy string annotation mentioning the name
   are rewritten together;
-- a one-liner suite body (`if x: from p import obj`) — reported, not fixed;
-- another statement joined onto the same physical line by a semicolon —
-  reported, not fixed;
+- a match capture pattern binding the local name (`case Name:` binds, it does
+  not compare — qualifying it to `case mod.Name:` would silently change
+  control flow), including the `case [*rest]` / `case {**rest}` forms;
+- a `del` of the local name (libcst records `del x` as a read, and
+  `del mod.x` would delete the attribute from the *imported module*, breaking
+  every other importer of it);
 - removing the import line outright would discard a leading or trailing
   comment attached to it (the module is already bound elsewhere and nothing
   else on the line needs to be kept) — rather than silently drop the
@@ -242,6 +258,11 @@ kept untouched and an internal-error finding is emitted. In `--fix` mode a
 unified diff is printed to stdout for every changed file before it is written;
 `--diff` prints the same preview without writing anything.
 
+Whenever a patch goes to stdout (`--diff` or `--fix`), **stdout carries only
+the patch** — warnings, findings and the summary go to stderr, and diff headers
+are relative to the current directory, so `cleanporter --diff src/ | git apply`
+works. Plain check mode produces no patch and reports on stdout as usual.
+
 ## Known limitations
 
 - Relative imports are rewritten to their **absolute** form
@@ -249,20 +270,19 @@ unified diff is printed to stdout for every changed file before it is written;
 - Imports are not re-sorted; the fixer inserts/replaces a statement in place
   rather than reflowing import blocks — use isort/Ruff separately for layout.
 - Wildcard imports (`from x import *`) are reported but never rewritten.
-- One-liner suites (`if x: from p import obj`) and statements joined by a
-  semicolon onto the same physical line as an import are reported but never
-  rewritten.
 - A file is blocked outright (not partially fixed) when a rewritten name
   appears in a non-docstring string literal, inside a doctest, or when
   removing an import would discard its comment — see "Fixer safety model".
 - Type comments (`# type: ...`) are not inspected.
-- `--diff`/the diff portion of `--fix` output is **not** currently
-  `git apply`-able: diff headers are built as `f"a/{path}"`/`f"b/{path}"`
-  without normalizing `path`, so an absolute path argument produces headers
-  like `a//home/you/project/file.py` (a doubled slash `patch`/`git apply`
-  will not resolve), and all diffs for a run are concatenated to stdout
-  rather than written as separate patch files. This is a known gap, tracked
-  for a future fix rather than addressed here.
+- One-liner suites and semicolon-joined imports are reported as `CP001`
+  only; no `CP003` explains that `--fix` skipped them. The fixer never plans
+  such a line at all, and turning that into a blocker would make the *whole
+  file* unfixable — strictly worse, since it would also stop the unrelated,
+  provably safe rewrites in it. The violation is still reported, only the
+  "declined, because…" note is missing.
+- All diffs for a run are concatenated to stdout rather than written as
+  separate patch files (headers are relative to the current directory, so the
+  stream is `git apply`-able as one patch).
 - `six.moves` is not in the default exemption set, even though the style
   guide mentions it; add it via `--exempt six.moves` or
   `exempt_modules = ["six.moves"]` if you need it.
@@ -278,6 +298,13 @@ uv run pytest
 uv run ruff check src tests
 uv run mypy --strict src/cleanporter
 ```
+
+`mypy --strict` currently reports **13** errors on `src/cleanporter`, and that
+count is a *budget*, not a floor: `tests/test_mypy_baseline.py` fails the suite
+if a fourteenth appears. The accepted thirteen are the missing `tomli` stub on
+3.10, libcst union/`CSTNode` shapes that strict mode cannot narrow
+(`_bindings.py`, `guards.py`, `rewrite.py`), and three untyped visitor hooks.
+Fixing one? Lower `BASELINE` in the same commit.
 
 This project runs `ruff check` (not `ruff format`) as a gate: formatting is
 not currently enforced, so `ruff format` may show drift against the existing

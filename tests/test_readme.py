@@ -44,3 +44,33 @@ def test_no_stale_references_to_the_old_tools():
     text = README.read_text(encoding="utf-8")
     assert "modimports" not in text
     assert "3rdparty" not in text
+
+
+# -- claims the final review found to be false ------------------------------
+
+
+def test_comment_preservation_is_not_overclaimed():
+    """Comments are preserved *or the file is declined* -- not "exactly"."""
+    text = README.read_text(encoding="utf-8")
+    assert "comments, and blank lines are preserved exactly" not in text
+    assert "never silently dropped" in text
+
+
+def test_f_strings_are_not_listed_as_a_blocking_string_mention():
+    """`find_string_mentions` visits `SimpleString` only; f-strings rewrite."""
+    text = README.read_text(encoding="utf-8")
+    assert "an f-string, ...)" not in text
+    assert "An f-string is **not** a blocking" in text
+
+
+def test_the_diff_is_documented_as_applyable():
+    text = README.read_text(encoding="utf-8")
+    assert "| git apply" in text
+    assert "is **not** currently" not in text
+
+
+def test_the_mypy_budget_is_documented():
+    from tests.test_mypy_baseline import BASELINE
+
+    text = README.read_text(encoding="utf-8")
+    assert f"reports **{BASELINE}** errors" in text
