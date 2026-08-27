@@ -252,3 +252,67 @@ def test_a_declared_root_is_kept_even_when_no_file_implies_it(tmp_path):
     mm = ModuleMap([], declared=(root / "src",))
     assert mm.roots == [(root / "src").resolve()]
     assert mm.classify("mypkg", "other") is Kind.MODULE
+
+
+# -- a namespace package holding a regular subpackage ------------------------
+#
+# `analytics/` (no `__init__.py`) around `analytics/io/__init__.py` is the
+# canonical PEP 420 layout, and it defeats both rules above: `analytics` is
+# inferred as a root, and `io/__init__.py` can honestly sit one package deep.
+# Only a file *outside* it can settle the question.
+
+
+def _namespace_with_subpackage(tmp_path: Path) -> Path:
+    (tmp_path / "analytics" / "io").mkdir(parents=True)
+    (tmp_path / "analytics" / "io" / "readers.py").write_text("read = print\n", encoding="utf-8")
+    (tmp_path / "analytics" / "io" / "__init__.py").write_text(
+        "from .readers import read\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "test_it.py").write_text(
+        "from analytics.io import read\n", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def _map_for(root: Path) -> ModuleMap:
+    return ModuleMap.from_paths(sorted(root.rglob("*.py")))
+
+
+def test_a_root_that_another_file_imports_as_a_package_is_demoted(tmp_path):
+    root = _namespace_with_subpackage(tmp_path)
+    init = root / "analytics" / "io" / "__init__.py"
+    mm = _map_for(root)
+    assert mm.qualname_for(init, relative_level=1) == "io", "undecidable on its own"
+
+    mm = _map_for(root)
+    mm.demote_roots({"analytics": [root / "tests" / "test_it.py"]})
+    # Not `io`, which makes `from .readers import read` a stdlib rewrite.
+    assert mm.qualname_for(init, relative_level=1) == "analytics.io"
+
+
+def test_evidence_from_inside_the_candidate_root_does_not_demote_it(tmp_path):
+    """A file under `src/` writing `from src.mypkg import x` -- possibly one an
+    earlier bad rewrite produced -- must not cement `src` as a package."""
+    root = _src_layout(tmp_path)
+    consumer = root / "src" / "mypkg" / "consumer.py"
+    mm = _map_for(root)
+    mm.demote_roots({"src": [consumer]})
+    assert mm.qualname_for(consumer, relative_level=1) == "mypkg.consumer"
+
+
+def test_a_declared_root_is_never_demoted(tmp_path):
+    root = _namespace_with_subpackage(tmp_path)
+    mm = ModuleMap.from_paths(
+        sorted(root.rglob("*.py")), declared=(root / "analytics",)
+    )
+    mm.demote_roots({"analytics": [root / "tests" / "test_it.py"]})
+    assert mm.qualname_for(root / "analytics" / "io" / "__init__.py", 1) == "io"
+
+
+def test_a_root_with_no_fallback_is_not_demoted(tmp_path):
+    root = _namespace_with_subpackage(tmp_path)
+    mm = ModuleMap([root / "analytics"])
+    mm.demote_roots({"analytics": [root / "tests" / "test_it.py"]})
+    assert mm.qualname_for(root / "analytics" / "io" / "__init__.py", 1) == "io"

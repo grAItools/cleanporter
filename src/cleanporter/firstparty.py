@@ -95,6 +95,8 @@ class ModuleMap:
         self.roots += [d for d in sorted(self.declared) if d not in self.roots]
         #: Human-readable notes about the root set itself (see `_nesting_warnings`).
         self.warnings: list[str] = _nesting_warnings(self.roots)
+        #: Roots another file has shown to be a package (see `demote_roots`).
+        self._demoted: set[Path] = set()
         self._modules: set[str] = set()  # dotted names of .py modules
         self._packages: set[str] = set()  # dotted names of packages
         self._inits: dict[str, Path] = {}  # dotted package -> its __init__.py
@@ -107,6 +109,38 @@ class ModuleMap:
         for p in paths:
             roots.add(_root_for(p.resolve()))
         return cls(sorted(roots), declared=declared)
+
+    def demote_roots(self, evidence: dict[str, list[Path]]) -> None:
+        """Rank down inferred roots that some *other* file imports as a package.
+
+        ``evidence`` maps a top-level name imported absolutely (``import
+        analytics.io`` -> ``analytics``) to the files that import it.
+
+        A PEP 420 namespace package holding a regular subpackage --
+        ``analytics/`` with no ``__init__.py`` around ``analytics/io/`` -- is
+        the canonical PEP 420 layout, and it defeats both of the other rules
+        in `qualname_for`: `_root_for` infers ``analytics`` as a root, and
+        ``analytics/io/__init__.py`` really can sit one package deep, so its
+        own relative imports do not rule that root out. Nothing *inside*
+        ``analytics`` can settle it. A file outside it saying ``from
+        analytics.io import x`` can: ``analytics`` is then a package under
+        some higher root, so it is not a root itself. Without this, ``from
+        .readers import read`` in that ``__init__.py`` is rewritten to ``from
+        io import readers`` -- the standard library.
+
+        Only inferred roots that sit inside another root are affected;
+        a declared root is never demoted.
+        """
+        for root in self.roots:
+            if root in self.declared:
+                continue
+            if not any(root != o and root.is_relative_to(o) for o in self.roots):
+                continue  # nothing to fall back to; demoting would say nothing
+            if any(
+                not f.resolve().is_relative_to(root)
+                for f in evidence.get(root.name, ())
+            ):
+                self._demoted.add(root)
 
     def _scan(self, root: Path, directory: Path) -> None:
         for child in sorted(directory.iterdir()):
@@ -169,19 +203,22 @@ class ModuleMap:
            infers a bogus root one level too deep -- the source text is
            evidence about the file's position that the directory tree alone
            does not carry.
+        1b. **A root another file imports as a package is not a root.** See
+           `demote_roots`; this is the same kind of evidence as rule 1, taken
+           from a file other than this one.
         2. **A declared root outranks an inferred one.** ``--root src`` is the
            user telling us the answer; inferring past it is never right.
         3. **The most specific (deepest) root wins** among what is left. That
            is what keeps a ``src`` layout from being qualified against the repo
            root as ``src.mypkg.consumer``.
 
-        If *every* candidate is below the floor the file has an unanchorable
-        relative import; the best-ranked candidate is returned anyway so the
-        import is reported as CP002 rather than vanishing.
+        If rules 1 and 1b leave nothing, the file has an unanchorable relative
+        import; the best-ranked candidate is returned anyway so the import is
+        reported as CP002 rather than vanishing.
         """
         path = path.resolve()
         best: tuple[tuple[bool, int], str] | None = None
-        floored: tuple[tuple[bool, int], str] | None = None
+        chosen: tuple[tuple[bool, int], str] | None = None
         for root in self.roots:
             try:
                 rel = path.relative_to(root)
@@ -190,14 +227,14 @@ class ModuleMap:
             parts = list(rel.with_suffix("").parts)
             # Rule 1: `__init__` counts as the component a relative import
             # anchors on, so it is counted here and dropped afterwards.
-            deep_enough = len(parts) > relative_level
+            usable = len(parts) > relative_level and root not in self._demoted
             if parts and parts[-1] == "__init__":
                 parts.pop()
             rank = (root in self.declared, len(root.parts))  # rules 2 then 3
             candidate = (rank, ".".join(parts))
             if best is None or rank > best[0]:
                 best = candidate
-            if deep_enough and (floored is None or rank > floored[0]):
-                floored = candidate
-        winner = floored or best
+            if usable and (chosen is None or rank > chosen[0]):
+                chosen = candidate
+        winner = chosen or best
         return None if winner is None else winner[1]

@@ -422,3 +422,33 @@ def test_no_note_for_a_preview_that_writes_nothing(project, monkeypatch, capsys)
     main(["--diff", "src"])
     captured = capsys.readouterr()
     assert _NOTE not in captured.err + captured.out
+
+
+def test_a_namespace_package_holding_a_subpackage_is_not_rewritten_to_stdlib(
+    tmp_path, monkeypatch, capsys
+):
+    """`analytics/io/__init__.py` must not be qualified as `io`: rewriting
+    `from .readers import read` to `from io import readers` reaches the
+    standard library, and the file still imports, so nothing catches it."""
+    (tmp_path / "analytics" / "io").mkdir(parents=True)
+    (tmp_path / "analytics" / "io" / "readers.py").write_text(
+        "def read():\n    return []\n", encoding="utf-8"
+    )
+    (tmp_path / "analytics" / "io" / "__init__.py").write_text(
+        "from .readers import read\n\nvalues = read()\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "test_it.py").write_text(
+        "from analytics.io import values\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    main(["--fix", "."])
+    capsys.readouterr()
+
+    assert (tmp_path / "analytics" / "io" / "__init__.py").read_text(encoding="utf-8") == (
+        "from analytics.io import readers\n\nvalues = readers.read()\n"
+    )
+    proc = _runs(tmp_path, "analytics.io", tmp_path)
+    assert proc.returncode == 0, proc.stderr

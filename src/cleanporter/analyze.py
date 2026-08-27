@@ -79,6 +79,28 @@ def iter_units(tree: cst.Module, base_pkg: str):
             yield ImportUnit(node, parent, name, asname, alias, star=False)
 
 
+def absolute_import_heads(tree: cst.Module) -> set[str]:
+    """Top-level names *tree* imports absolutely (``import a.b`` -> ``a``).
+
+    Evidence for `ModuleMap.demote_roots`: whatever a file imports by an
+    absolute name lives under an import root, so it is not a root itself.
+    """
+    heads: set[str] = set()
+
+    class V(cst.CSTVisitor):
+        def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
+            if _imports.relative_level(node) == 0:
+                heads.add(_imports.dotted(node.module).split(".")[0])
+
+        def visit_Import(self, node: cst.Import) -> None:
+            for alias in node.names:
+                heads.add(_imports.dotted(alias.name).split(".")[0])
+
+    tree.visit(V())
+    heads.discard("")
+    return heads
+
+
 def max_relative_level(tree: cst.Module) -> int:
     """Deepest ``from ... import`` dot count in *tree* (0 if none are relative)."""
     return max(
@@ -159,8 +181,9 @@ def build(
     warnings.extend(module_map.warnings)
     resolver = Resolver(module_map, python=config.python)
 
-    records: list[FileRecord] = []
+    parsed: list[tuple[Path, str, cst.Module]] = []
     errors: list[Finding] = []
+    evidence: dict[str, list[Path]] = {}
     for f in files:
         source = f.read_text(encoding="utf-8")
         try:
@@ -169,9 +192,17 @@ def build(
             errors.append(Finding(f, exc.raw_line, exc.raw_column, "?", "?",
                                   Status.UNRESOLVED, f"parse error: {exc.message}"))
             continue
-        records.append(
-            FileRecord(f, source, tree, package_of(f, module_map, max_relative_level(tree)))
-        )
+        parsed.append((f, source, tree))
+        for head in absolute_import_heads(tree):
+            evidence.setdefault(head, []).append(f)
+
+    # Every file's absolute imports say which directories are packages, so
+    # settle the root set before anchoring anyone's relative imports.
+    module_map.demote_roots(evidence)
+    records = [
+        FileRecord(f, source, tree, package_of(f, module_map, max_relative_level(tree)))
+        for f, source, tree in parsed
+    ]
 
     resolver.warm(collect_pairs(records))
     return records, resolver, errors, warnings

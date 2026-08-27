@@ -210,11 +210,16 @@ Import roots are inferred from the paths given, plus any `source_roots` /
    packages deep. This is what keeps a PEP 420 namespace directory (which has
    no `__init__.py`, so root inference stops there) from being mistaken for an
    import root.
-2. A **declared** root (`--root`, `source_roots`) beats an inferred one — so
+2. A root that some *other* file imports by an absolute name is a package, not
+   a root — `from analytics.io import x` in `tests/` settles a namespace
+   package that nothing inside it could — the canonical PEP 420 layout, an
+   `analytics/` with no `__init__.py` around an `analytics/io/`, is otherwise
+   undecidable from inside.
+3. A **declared** root (`--root`, `source_roots`) beats an inferred one — so
    declare the directory that is really on `sys.path`, not one that merely
    contains it (`--root .` on a `src/` layout would qualify the package as
    `src.mypkg`, which is what the nesting warning is telling you).
-3. Otherwise the **most specific** (deepest) root wins — a `src/` layout with a
+4. Otherwise the **most specific** (deepest) root wins — a `src/` layout with a
    `tests/__init__.py` infers both `src/` and the repo root, and only the
    former is really on `sys.path` for `src/mypkg/consumer.py`.
 
