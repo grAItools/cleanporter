@@ -19,8 +19,7 @@ from .rewrite import fix_record
 
 #: Printed to stderr after `--fix` writes anything (see `run`).
 _CROSS_FILE_NOTE = (
-    "cleanporter: note: --fix cannot see dotted references from other files; "
-    "re-run your tests"
+    "cleanporter: note: --fix cannot see dotted references from other files; re-run your tests"
 )
 
 _EXIT_OK = 0
@@ -46,23 +45,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("paths", nargs="*", default=["."],
-                        help="files or directories to process")
-    parser.add_argument("--fix", action="store_true",
-                        help="rewrite violations in place where provably safe")
-    parser.add_argument("--diff", action="store_true",
-                        help="show the rewrite as a unified diff without writing "
-                             "(ignored if --fix is also given: --fix wins and writes)")
-    parser.add_argument("--python", default=None,
-                        help="interpreter used to classify stdlib/third-party names")
-    parser.add_argument("--exempt", action="append", default=[], metavar="MODULE",
-                        help="additional module whose members may be imported by name")
-    parser.add_argument("--root", action="append", default=[], metavar="PATH",
-                        help="additional first-party import root")
-    parser.add_argument("--strict", action="store_true",
-                        help="also fail on imports that could not be classified")
-    parser.add_argument("--version", action="version",
-                        version=f"cleanporter {__version__}")
+    parser.add_argument("paths", nargs="*", default=["."], help="files or directories to process")
+    parser.add_argument(
+        "--fix", action="store_true", help="rewrite violations in place where provably safe"
+    )
+    parser.add_argument(
+        "--diff",
+        action="store_true",
+        help="show the rewrite as a unified diff without writing "
+        "(ignored if --fix is also given: --fix wins and writes)",
+    )
+    parser.add_argument(
+        "--python", default=None, help="interpreter used to classify stdlib/third-party names"
+    )
+    parser.add_argument(
+        "--exempt",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help="additional module whose members may be imported by name",
+    )
+    parser.add_argument(
+        "--root",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="additional first-party import root",
+    )
+    parser.add_argument(
+        "--strict", action="store_true", help="also fail on imports that could not be classified"
+    )
+    parser.add_argument("--version", action="version", version=f"cleanporter {__version__}")
     return parser
 
 

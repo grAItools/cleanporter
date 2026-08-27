@@ -73,7 +73,10 @@ def test_the_real_subprocess_bridge_round_trips():
     pairs = [("os", "path"), ("functools", "partial"), ("no_such_module_xyz", "z")]
     proc = subprocess.run(
         [sys.executable, str(Path(_probe.__file__).resolve())],
-        input=json.dumps(pairs), capture_output=True, text=True, check=True,
+        input=json.dumps(pairs),
+        capture_output=True,
+        text=True,
+        check=True,
     )
     assert json.loads(proc.stdout) == {
         "os\x00path": True,
@@ -88,7 +91,9 @@ def test_the_probe_module_never_imports_cleanporter():
     # ... and it really runs standalone, with the package off sys.path.
     proc = subprocess.run(
         [sys.executable, "-I", str(Path(_probe.__file__).resolve())],
-        input="[]", capture_output=True, text=True,
+        input="[]",
+        capture_output=True,
+        text=True,
     )
     assert proc.returncode == 0, proc.stderr
 

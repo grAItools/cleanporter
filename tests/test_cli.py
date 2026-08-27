@@ -20,9 +20,7 @@ def project(tmp_path: Path) -> Path:
         '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8"
     )
     (tmp_path / "src" / "demo" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "src" / "demo" / "helpers.py").write_text(
-        "THING = 42\n", encoding="utf-8"
-    )
+    (tmp_path / "src" / "demo" / "helpers.py").write_text("THING = 42\n", encoding="utf-8")
     (tmp_path / "src" / "demo" / "consumer.py").write_text(
         "from demo.helpers import THING\ntotal = THING\n", encoding="utf-8"
     )
@@ -95,8 +93,7 @@ def test_syntax_error_exits_2(project, capsys):
 
 def test_bad_config_exits_2(project, capsys):
     (project / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0"\n'
-        '[tool.cleanporter]\nscope = "nonsense"\n',
+        '[project]\nname = "demo"\nversion = "0"\n[tool.cleanporter]\nscope = "nonsense"\n',
         encoding="utf-8",
     )
     assert main([str(project / "src")]) == 2
@@ -120,8 +117,7 @@ def test_strict_promotes_unresolved_to_failure(project, capsys):
 
 def test_fix_still_reports_violations_it_declined(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from demo.helpers import THING\n"
-        '__all__ = ["THING"]\n',
+        'from demo.helpers import THING\n__all__ = ["THING"]\n',
         encoding="utf-8",
     )
     rc = main(["--fix", str(project / "src")])
@@ -140,8 +136,7 @@ def test_fix_reports_nothing_for_a_fully_fixed_file(project, capsys):
 
 def test_summary_counts_match_the_printed_lines(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from demo.helpers import THING\n"
-        "from definitely_missing_pkg_xyz import other\n",
+        "from demo.helpers import THING\nfrom definitely_missing_pkg_xyz import other\n",
         encoding="utf-8",
     )
     main([str(project / "src")])
@@ -183,7 +178,8 @@ def test_internal_rewrite_error_does_not_write_a_broken_file(project, monkeypatc
 
     def fake(rec, resolver, config):
         return FixOutcome(
-            "error", rec.source,
+            "error",
+            rec.source,
             [Finding(rec.path, 1, 0, "?", "?", Status.SKIPPED, "internal error")],
         )
 
@@ -222,7 +218,10 @@ def _imports_cleanly(project: Path) -> subprocess.CompletedProcess[str]:
         # cwd is *inside* src, so only the real import root is on sys.path --
         # running from the project root would make a bogus `src.` prefix
         # resolve as a namespace package and hide the bug.
-        capture_output=True, text=True, env=env, cwd=project / "src",
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=project / "src",
     )
 
 
@@ -239,13 +238,16 @@ def test_fix_with_no_path_arguments_keeps_the_package_importable(src_layout, mon
     assert after == "from mypkg import helpers\nw = helpers.Widget()\n"
 
 
-def test_check_on_a_src_layout_names_the_module_without_the_src_prefix(src_layout, monkeypatch, capsys):
+def test_check_on_a_src_layout_names_the_module_without_the_src_prefix(
+    src_layout, monkeypatch, capsys
+):
     monkeypatch.chdir(src_layout)
     main([])
     # One readouterr() call drains the buffers; a second always returns
     # empty, so both streams must come from the same capture.
     captured = capsys.readouterr()
     assert "src.mypkg" not in captured.out + captured.err
+
 
 # -- output streams (final review, Important 5) -----------------------------
 
@@ -278,8 +280,11 @@ def test_the_diff_can_be_applied_with_git_apply(project, monkeypatch, capsys):
     main(["--diff", "src"])
     patch = capsys.readouterr().out
     proc = subprocess.run(
-        ["git", "apply", "--check", "-"], input=patch, text=True,
-        capture_output=True, cwd=project,
+        ["git", "apply", "--check", "-"],
+        input=patch,
+        text=True,
+        capture_output=True,
+        cwd=project,
     )
     assert proc.returncode == 0, proc.stderr
 
@@ -307,7 +312,9 @@ def _runs(project: Path, module: str, root: Path) -> subprocess.CompletedProcess
     """Import *module* with only *root* on sys.path, from outside the tree."""
     return subprocess.run(
         [sys.executable, "-c", f"import {module}"],
-        capture_output=True, text=True, cwd=project,
+        capture_output=True,
+        text=True,
+        cwd=project,
         env=dict(os.environ, PYTHONPATH=str(root)),
     )
 
@@ -349,9 +356,7 @@ def test_an_explicit_root_beats_a_namespace_package_inferred_below_it(
 
 def test_a_flat_namespace_package_stays_importable_after_fix(tmp_path, monkeypatch, capsys):
     (tmp_path / "mypkg").mkdir()
-    (tmp_path / "mypkg" / "helpers.py").write_text(
-        "class Widget:\n    pass\n", encoding="utf-8"
-    )
+    (tmp_path / "mypkg" / "helpers.py").write_text("class Widget:\n    pass\n", encoding="utf-8")
     (tmp_path / "mypkg" / "consumer.py").write_text(
         "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
     )
@@ -372,9 +377,7 @@ def test_a_flat_namespace_package_stays_importable_after_fix(tmp_path, monkeypat
 def test_a_namespace_subpackage_reuses_its_existing_relative_import(tmp_path, monkeypatch, capsys):
     (tmp_path / "pkg" / "sub").mkdir(parents=True)
     (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "pkg" / "sub" / "other.py").write_text(
-        "class Thing:\n    pass\n", encoding="utf-8"
-    )
+    (tmp_path / "pkg" / "sub" / "other.py").write_text("class Thing:\n    pass\n", encoding="utf-8")
     (tmp_path / "pkg" / "sub" / "mod.py").write_text(
         "from . import other\nfrom .other import Thing\nt = Thing()\n", encoding="utf-8"
     )

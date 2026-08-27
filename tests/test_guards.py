@@ -48,9 +48,12 @@ def test_no_names_means_no_hits():
 def test_skip_ids_exempts_a_specific_string_node():
     tree = cst.parse_module('__all__ = ["THING"]\n')
     strings = [n for n in _walk(tree) if isinstance(n, cst.SimpleString)]
-    assert guards.find_string_mentions(
-        tree, {"THING"}, _line_of(tree), skip_ids=frozenset({id(strings[0])})
-    ) == []
+    assert (
+        guards.find_string_mentions(
+            tree, {"THING"}, _line_of(tree), skip_ids=frozenset({id(strings[0])})
+        )
+        == []
+    )
 
 
 def test_module_docstring_mention_is_not_a_hit():

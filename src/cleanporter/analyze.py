@@ -46,9 +46,9 @@ class FileRecord:
     def positions(self):  # type: ignore[no-untyped-def]
         """``PositionProvider`` mapping for this tree. Resolved once."""
         if self._positions is None:
-            self._positions = MetadataWrapper(
-                self.tree, unsafe_skip_copy=True
-            ).resolve(PositionProvider)
+            self._positions = MetadataWrapper(self.tree, unsafe_skip_copy=True).resolve(
+                PositionProvider
+            )
         return self._positions
 
 
@@ -103,9 +103,7 @@ def absolute_import_heads(tree: cst.Module) -> set[str]:
 
 def max_relative_level(tree: cst.Module) -> int:
     """Deepest ``from ... import`` dot count in *tree* (0 if none are relative)."""
-    return max(
-        (_imports.relative_level(node) for node in _walk_import_froms(tree)), default=0
-    )
+    return max((_imports.relative_level(node) for node in _walk_import_froms(tree)), default=0)
 
 
 def _walk_import_froms(tree: cst.Module) -> list[cst.ImportFrom]:
@@ -137,14 +135,28 @@ def analyze_record(rec: FileRecord, resolver: Resolver, config: Config) -> list[
 
         if unit.star:
             findings.append(
-                Finding(rec.path, line, col, unit.parent or "?", "*",
-                        Status.SKIPPED, "wildcard import cannot be rewritten to a module import")
+                Finding(
+                    rec.path,
+                    line,
+                    col,
+                    unit.parent or "?",
+                    "*",
+                    Status.SKIPPED,
+                    "wildcard import cannot be rewritten to a module import",
+                )
             )
             continue
         if unit.parent is None:
             findings.append(
-                Finding(rec.path, line, col, "?", unit.name, Status.UNRESOLVED,
-                        "relative import could not be anchored to a package")
+                Finding(
+                    rec.path,
+                    line,
+                    col,
+                    "?",
+                    unit.name,
+                    Status.UNRESOLVED,
+                    "relative import could not be anchored to a package",
+                )
             )
             continue
         if config.is_exempt(unit.parent, unit.name):
@@ -157,13 +169,18 @@ def analyze_record(rec: FileRecord, resolver: Resolver, config: Config) -> list[
             continue  # importing a module -> compliant
         if verdict is None:
             findings.append(
-                Finding(rec.path, line, col, unit.parent, unit.name,
-                        Status.UNRESOLVED, resolver.reason(unit.parent, unit.name))
+                Finding(
+                    rec.path,
+                    line,
+                    col,
+                    unit.parent,
+                    unit.name,
+                    Status.UNRESOLVED,
+                    resolver.reason(unit.parent, unit.name),
+                )
             )
             continue
-        findings.append(
-            Finding(rec.path, line, col, unit.parent, unit.name, Status.VIOLATION)
-        )
+        findings.append(Finding(rec.path, line, col, unit.parent, unit.name, Status.VIOLATION))
     return findings
 
 
@@ -189,8 +206,17 @@ def build(
         try:
             tree = cst.parse_module(source)
         except cst.ParserSyntaxError as exc:  # pragma: no cover - defensive
-            errors.append(Finding(f, exc.raw_line, exc.raw_column, "?", "?",
-                                  Status.UNRESOLVED, f"parse error: {exc.message}"))
+            errors.append(
+                Finding(
+                    f,
+                    exc.raw_line,
+                    exc.raw_column,
+                    "?",
+                    "?",
+                    Status.UNRESOLVED,
+                    f"parse error: {exc.message}",
+                )
+            )
             continue
         parsed.append((f, source, tree))
         for head in absolute_import_heads(tree):

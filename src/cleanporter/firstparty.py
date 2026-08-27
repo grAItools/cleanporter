@@ -39,8 +39,7 @@ def _is_pkg_dir(d: Path) -> bool:
         return True
     # PEP 420 namespace package: a directory that contributes submodules.
     return d.is_dir() and any(
-        _is_importable_file(c) or (c.is_dir() and c.name != "__pycache__")
-        for c in d.iterdir()
+        _is_importable_file(c) or (c.is_dir() and c.name != "__pycache__") for c in d.iterdir()
     )
 
 
@@ -136,10 +135,7 @@ class ModuleMap:
                 continue
             if not any(root != o and root.is_relative_to(o) for o in self.roots):
                 continue  # nothing to fall back to; demoting would say nothing
-            if any(
-                not f.resolve().is_relative_to(root)
-                for f in evidence.get(root.name, ())
-            ):
+            if any(not f.resolve().is_relative_to(root) for f in evidence.get(root.name, ())):
                 self._demoted.add(root)
 
     def _scan(self, root: Path, directory: Path) -> None:

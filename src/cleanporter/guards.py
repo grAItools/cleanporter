@@ -108,9 +108,7 @@ def find_string_mentions(
     return hits
 
 
-def find_match_captures(
-    tree: cst.Module, names: Collection[str], line_of: LineOf
-) -> list[Hit]:
+def find_match_captures(tree: cst.Module, names: Collection[str], line_of: LineOf) -> list[Hit]:
     """``match`` patterns that *bind* a rewritten local rather than read it.
 
     ``case VAL:`` is a capture pattern: it always matches and binds ``VAL``.
@@ -154,9 +152,7 @@ def find_match_captures(
     return hits
 
 
-def find_scope_declarations(
-    tree: cst.Module, names: Collection[str], line_of: LineOf
-) -> list[Hit]:
+def find_scope_declarations(tree: cst.Module, names: Collection[str], line_of: LineOf) -> list[Hit]:
     """``global`` / ``nonlocal`` declarations naming a rewritten local.
 
     Such a declaration keeps a module-level name writable from another scope.
@@ -178,9 +174,7 @@ def find_scope_declarations(
         def _record(self, node: cst.CSTNode, keyword: str) -> None:
             clashing = [i.name.value for i in node.names if i.name.value in wanted]
             if clashing:
-                hits.append(
-                    (line_of(node), f"'{'/'.join(sorted(clashing))}' declared {keyword}")
-                )
+                hits.append((line_of(node), f"'{'/'.join(sorted(clashing))}' declared {keyword}"))
 
     tree.visit(V())
     return hits

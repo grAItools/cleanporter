@@ -31,13 +31,13 @@ def _error_count(output: str) -> int:
     return 0
 
 
-@pytest.mark.skipif(
-    importlib.util.find_spec("mypy") is None, reason="mypy is not installed"
-)
+@pytest.mark.skipif(importlib.util.find_spec("mypy") is None, reason="mypy is not installed")
 def test_strict_error_count_stays_within_budget():
     proc = subprocess.run(
         [sys.executable, "-m", "mypy", "--strict", "src/cleanporter"],
-        cwd=ROOT, capture_output=True, text=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
     )
     count = _error_count(proc.stdout)
     assert count <= BASELINE, (

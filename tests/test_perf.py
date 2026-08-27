@@ -13,11 +13,7 @@ from cleanporter.resolver import Resolver
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-SOURCE = (
-    "from pkg.sub.mod import Thing\n"
-    "from pkg.sub import mod\n"
-    "x = Thing()\n"
-)
+SOURCE = "from pkg.sub.mod import Thing\nfrom pkg.sub import mod\nx = Thing()\n"
 
 
 def _record() -> FileRecord:

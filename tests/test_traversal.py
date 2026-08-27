@@ -23,8 +23,9 @@ def _prepare(source: str):
     rec = FileRecord(path, source, cst.parse_module(source), package_of(path, mm))
     from cleanporter.analyze import iter_units
 
-    resolver.warm([(u.parent, u.name) for u in iter_units(rec.tree, rec.base_pkg)
-                   if u.parent and not u.star])
+    resolver.warm(
+        [(u.parent, u.name) for u in iter_units(rec.tree, rec.base_pkg) if u.parent and not u.star]
+    )
     return rec, resolver
 
 

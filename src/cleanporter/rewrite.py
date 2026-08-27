@@ -509,16 +509,12 @@ class _Fixer(cst.CSTTransformer):
             return
         skip_ids = self._plan_annotation_strings(node)
         self.blockers.extend(
-            guards.find_string_mentions(
-                node, self._fixed_locals, self._line_of, skip_ids=skip_ids
-            )
+            guards.find_string_mentions(node, self._fixed_locals, self._line_of, skip_ids=skip_ids)
         )
         self.blockers.extend(
             guards.find_scope_declarations(node, self._fixed_locals, self._line_of)
         )
-        self.blockers.extend(
-            guards.find_match_captures(node, self._fixed_locals, self._line_of)
-        )
+        self.blockers.extend(guards.find_match_captures(node, self._fixed_locals, self._line_of))
 
     def _plan_annotation_strings(self, node: cst.Module) -> frozenset[int]:
         """Rename locals inside lazy string annotations; return their ids.
@@ -614,7 +610,9 @@ class _Fixer(cst.CSTTransformer):
                 elif "." not in mod:
                     self._existing[mod] = mod
 
-    def _import_lines(self, node: cst.Module) -> list[tuple[cst.SimpleStatementLine, cst.ImportFrom]]:
+    def _import_lines(
+        self, node: cst.Module
+    ) -> list[tuple[cst.SimpleStatementLine, cst.ImportFrom]]:
         pairs: list[tuple[cst.SimpleStatementLine, cst.ImportFrom]] = []
 
         class V(cst.CSTVisitor):
@@ -769,9 +767,7 @@ class _Fixer(cst.CSTTransformer):
             # leading_lines and trailing_whitespace land on it.
             last = new_lines[-1]
             if isinstance(last, cst.SimpleStatementLine):
-                new_lines[-1] = last.with_changes(
-                    trailing_whitespace=line.trailing_whitespace
-                )
+                new_lines[-1] = last.with_changes(trailing_whitespace=line.trailing_whitespace)
         elif has_trailing_comment or has_leading_comment:
             # The line disappears entirely (the module is already bound and
             # nothing is kept), so there is nowhere to put the author's
@@ -975,7 +971,9 @@ class _Fixer(cst.CSTTransformer):
         return cst.ensure_type(cst.parse_statement(code), cst.SimpleStatementLine)
 
     # -- application -------------------------------------------------------
-    def leave_SimpleStatementLine(self, original: cst.SimpleStatementLine, updated: cst.SimpleStatementLine):
+    def leave_SimpleStatementLine(
+        self, original: cst.SimpleStatementLine, updated: cst.SimpleStatementLine
+    ):
         repl = self.plan.line_repl.get(id(original))
         if repl is not None:
             return cst.FlattenSentinel(repl) if repl else cst.RemovalSentinel.REMOVE
@@ -1041,7 +1039,12 @@ def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> FixOutcom
             rec.source,
             [
                 Finding(
-                    rec.path, getattr(exc, "lineno", None) or 0, 0, "?", "?", Status.SKIPPED,
+                    rec.path,
+                    getattr(exc, "lineno", None) or 0,
+                    0,
+                    "?",
+                    "?",
+                    Status.SKIPPED,
                     "internal error: the rewrite did not parse; reverted",
                 )
             ],

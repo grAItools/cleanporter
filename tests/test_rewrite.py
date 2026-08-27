@@ -51,12 +51,7 @@ def test_dunder_all_blocks_the_whole_file():
 
 def test_a_blocker_suppresses_otherwise_safe_rewrites_in_the_same_file():
     # 'go' is perfectly safe to rewrite, but the file is all-or-nothing.
-    src = (
-        "from pkg.sub.mod import Thing, go\n"
-        '__all__ = ["Thing"]\n'
-        "x = Thing()\n"
-        "y = go()\n"
-    )
+    src = 'from pkg.sub.mod import Thing, go\n__all__ = ["Thing"]\nx = Thing()\ny = go()\n'
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -80,11 +75,7 @@ def test_prose_docstring_mentioning_the_name_does_not_block_the_fix():
 
 
 def test_docstring_doctest_mentioning_the_name_blocks_the_fix():
-    src = (
-        '"""Example.\n\n>>> Thing()\n"""\n'
-        "from pkg.sub.mod import Thing\n"
-        "x = Thing()\n"
-    )
+    src = '"""Example.\n\n>>> Thing()\n"""\nfrom pkg.sub.mod import Thing\nx = Thing()\n'
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -92,7 +83,7 @@ def test_docstring_doctest_mentioning_the_name_blocks_the_fix():
 
 def test_non_docstring_string_mentioning_the_name_still_blocks_the_fix():
     # Not the module's first statement -> not a docstring, still blocks.
-    src = "from pkg.sub.mod import Thing\nx = Thing()\ny = \"Thing\"\n"
+    src = 'from pkg.sub.mod import Thing\nx = Thing()\ny = "Thing"\n'
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -110,14 +101,14 @@ def test_dunder_all_mention_still_blocks_after_the_docstring_exemption():
 
 
 def test_guard_checks_the_local_alias_not_the_original_name():
-    src = "from pkg.sub.mod import Thing as T\n" '__all__ = ["T"]\n' "x = T()\n"
+    src = 'from pkg.sub.mod import Thing as T\n__all__ = ["T"]\nx = T()\n'
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
 
 
 def test_guard_does_not_fire_on_the_original_name_after_aliasing():
-    src = "from pkg.sub.mod import Thing as T\n" '__all__ = ["Thing"]\n' "x = T()\n"
+    src = 'from pkg.sub.mod import Thing as T\n__all__ = ["Thing"]\nx = T()\n'
     result = outcome(src)
     assert result.status == "fixed"
 
@@ -125,12 +116,7 @@ def test_guard_does_not_fire_on_the_original_name_after_aliasing():
 def test_exempt_name_mentioned_in_a_string_does_not_block_the_fix():
     # 'go' is exempted by config, so it is never in _fixed_locals; a string
     # naming it must not produce a false blocker for the file's real fix.
-    src = (
-        "from pkg.sub.mod import Thing, go\n"
-        'y = "go"\n'
-        "x = Thing()\n"
-        "z = go()\n"
-    )
+    src = 'from pkg.sub.mod import Thing, go\ny = "go"\nx = Thing()\nz = go()\n'
     config = Config(exempt_names=frozenset({"go"}))
     result = outcome(src, config)
     assert result.status == "fixed"
@@ -138,11 +124,7 @@ def test_exempt_name_mentioned_in_a_string_does_not_block_the_fix():
 
 
 def test_two_mentions_of_the_same_name_on_one_line_dedup_to_one_blocker():
-    src = (
-        "from pkg.sub.mod import Thing\n"
-        'y = "Thing" + "Thing"\n'
-        "x = Thing()\n"
-    )
+    src = 'from pkg.sub.mod import Thing\ny = "Thing" + "Thing"\nx = Thing()\n'
     result = outcome(src)
     assert result.status == "skipped"
     assert len(result.blockers) == 1
@@ -152,12 +134,7 @@ def test_two_mentions_of_the_same_name_on_one_line_dedup_to_one_blocker():
 
 
 def test_global_declaration_blocks_the_file():
-    src = (
-        "from pkg.sub.mod import Thing\n"
-        "def f():\n"
-        "    global Thing\n"
-        "    Thing = 3\n"
-    )
+    src = "from pkg.sub.mod import Thing\ndef f():\n    global Thing\n    Thing = 3\n"
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -173,12 +150,7 @@ def test_global_declaration_blocks_the_file():
 
 
 def test_module_level_rebinding_blocks_the_file():
-    src = (
-        "from pkg.sub.mod import Thing\n"
-        "first = Thing\n"
-        "Thing = 5\n"
-        "second = Thing\n"
-    )
+    src = "from pkg.sub.mod import Thing\nfirst = Thing\nThing = 5\nsecond = Thing\n"
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -237,11 +209,7 @@ def test_two_imports_of_the_same_name_both_get_blocked():
     # two distinct ImportAssignment objects in scope['Thing']; each import
     # sees the other as a sibling assignment it cannot distinguish itself
     # from, so both are conservatively blocked.
-    src = (
-        "from pkg.sub.mod import Thing\n"
-        "from pkg.sub.mod import Thing\n"
-        "x = Thing()\n"
-    )
+    src = "from pkg.sub.mod import Thing\nfrom pkg.sub.mod import Thing\nx = Thing()\n"
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -294,23 +262,11 @@ def test_trailing_comment_is_preserved():
 
 
 def test_leading_comments_and_blank_lines_are_preserved():
-    src = (
-        "# leading comment block\n"
-        "# second line\n"
-        "\n"
-        "from pkg.sub.mod import Thing\n"
-        "\n"
-        "use = Thing\n"
-    )
+    src = "# leading comment block\n# second line\n\nfrom pkg.sub.mod import Thing\n\nuse = Thing\n"
     result = outcome(src)
     assert result.status == "fixed"
     assert result.source == (
-        "# leading comment block\n"
-        "# second line\n"
-        "\n"
-        "from pkg.sub import mod\n"
-        "\n"
-        "use = mod.Thing\n"
+        "# leading comment block\n# second line\n\nfrom pkg.sub import mod\n\nuse = mod.Thing\n"
     )
 
 
@@ -325,19 +281,12 @@ def test_trailing_comment_lands_on_the_last_replacement_line():
     result = outcome(src, config)
     assert result.status == "fixed"
     assert result.source == (
-        "from pkg.sub import mod\n"
-        "from pkg.sub.mod import go  # both\n"
-        "x = mod.Thing()\n"
-        "y = go()\n"
+        "from pkg.sub import mod\nfrom pkg.sub.mod import go  # both\nx = mod.Thing()\ny = go()\n"
     )
 
 
 def test_deleting_a_commented_line_blocks_instead_of_dropping_the_comment():
-    src = (
-        "from pkg.sub import mod\n"
-        "from pkg.sub.mod import Thing  # why this exists\n"
-        "x = Thing()\n"
-    )
+    src = "from pkg.sub import mod\nfrom pkg.sub.mod import Thing  # why this exists\nx = Thing()\n"
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -356,12 +305,7 @@ def test_deleting_a_line_with_leading_comment_blocks_instead_of_dropping_it():
     # is already bound and the line disappears entirely, a *leading* comment
     # has nowhere to go either. Silently discarding it is worse than
     # declining to fix the file.
-    src = (
-        "from pkg.sub import mod\n"
-        "# why this exists\n"
-        "from pkg.sub.mod import Thing\n"
-        "x = Thing()\n"
-    )
+    src = "from pkg.sub import mod\n# why this exists\nfrom pkg.sub.mod import Thing\nx = Thing()\n"
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -371,12 +315,7 @@ def test_deleting_a_line_with_leading_comment_blocks_instead_of_dropping_it():
 def test_deleting_a_line_preceded_only_by_a_blank_line_is_still_fixed():
     # leading_lines also holds blank-line EmptyLine nodes with comment=None;
     # those must not trigger the leading-comment block.
-    src = (
-        "from pkg.sub import mod\n"
-        "\n"
-        "from pkg.sub.mod import Thing\n"
-        "x = Thing()\n"
-    )
+    src = "from pkg.sub import mod\n\nfrom pkg.sub.mod import Thing\nx = Thing()\n"
     result = outcome(src)
     assert result.status == "fixed"
     assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"
@@ -386,9 +325,7 @@ def test_function_scope_import_is_fixed_in_place():
     src = "def f():\n    from pkg.sub.mod import Thing\n    return Thing()\n"
     result = outcome(src)
     assert result.status == "fixed"
-    assert result.source == (
-        "def f():\n    from pkg.sub import mod\n    return mod.Thing()\n"
-    )
+    assert result.source == ("def f():\n    from pkg.sub import mod\n    return mod.Thing()\n")
 
 
 def test_each_function_gets_its_own_import():
@@ -407,16 +344,11 @@ def test_each_function_gets_its_own_import():
 
 def test_function_scope_reuses_a_module_level_binding():
     src = (
-        "from pkg.sub import mod\n"
-        "def f():\n"
-        "    from pkg.sub.mod import Thing\n"
-        "    return Thing()\n"
+        "from pkg.sub import mod\ndef f():\n    from pkg.sub.mod import Thing\n    return Thing()\n"
     )
     result = outcome(src)
     assert result.status == "fixed"
-    assert result.source == (
-        "from pkg.sub import mod\ndef f():\n    return mod.Thing()\n"
-    )
+    assert result.source == ("from pkg.sub import mod\ndef f():\n    return mod.Thing()\n")
 
 
 def test_function_scope_avoids_colliding_with_a_local():
@@ -555,19 +487,11 @@ def test_downward_shadowing_at_module_scope_aliases_around_the_local():
     # `Thing()` is read from inside `f`, where `mod` is a plain local. The
     # module-level import must not bind `mod` -- it must alias to `mod_2`,
     # or `mod.Thing()` inside `f` would resolve `mod` to the integer `1`.
-    src = (
-        "from pkg.sub.mod import Thing\n"
-        "def f():\n"
-        "    mod = 1\n"
-        "    return mod, Thing()\n"
-    )
+    src = "from pkg.sub.mod import Thing\ndef f():\n    mod = 1\n    return mod, Thing()\n"
     result = outcome(src)
     assert result.status == "fixed"
     assert result.source == (
-        "from pkg.sub import mod as mod_2\n"
-        "def f():\n"
-        "    mod = 1\n"
-        "    return mod, mod_2.Thing()\n"
+        "from pkg.sub import mod as mod_2\ndef f():\n    mod = 1\n    return mod, mod_2.Thing()\n"
     )
 
 
@@ -604,21 +528,11 @@ def test_no_spurious_alias_when_all_references_are_at_the_import_s_own_scope():
     # precise, access-site-driven implementation leaves this unaliased. A
     # version with no function locals at all (the original round-2 form of
     # this test) cannot tell the two implementations apart.
-    src = (
-        "from pkg.sub.mod import Thing\n"
-        "x = Thing()\n"
-        "def g():\n"
-        "    mod = 1\n"
-        "    return mod\n"
-    )
+    src = "from pkg.sub.mod import Thing\nx = Thing()\ndef g():\n    mod = 1\n    return mod\n"
     result = outcome(src)
     assert result.status == "fixed"
     assert result.source == (
-        "from pkg.sub import mod\n"
-        "x = mod.Thing()\n"
-        "def g():\n"
-        "    mod = 1\n"
-        "    return mod\n"
+        "from pkg.sub import mod\nx = mod.Thing()\ndef g():\n    mod = 1\n    return mod\n"
     )
 
 
@@ -731,11 +645,7 @@ def test_alias_in_lazy_annotation_is_renamed_by_local_name():
 
 
 def test_string_outside_an_annotation_still_blocks_under_future_annotations():
-    src = (
-        "from __future__ import annotations\n"
-        "from pkg.sub.mod import Thing\n"
-        '__all__ = ["Thing"]\n'
-    )
+    src = 'from __future__ import annotations\nfrom pkg.sub.mod import Thing\n__all__ = ["Thing"]\n'
     result = outcome(src)
     assert result.status == "skipped"
     assert "string literal" in result.blockers[0].detail
@@ -818,9 +728,7 @@ def test_dotted_prefixed_lazy_string_is_not_corrupted_and_blocks():
     # out of `skip_ids` and lets the ordinary string-mention guard block
     # the whole file instead of silently corrupting it.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: 'Thing', b: 'other.Thing') -> None: ...\n"
     )
     result = outcome(src)
@@ -837,9 +745,7 @@ def test_literal_string_argument_is_not_treated_as_a_type_reference():
     # annotation-rewrite pass and falls back to the ordinary string-mention
     # guard, which blocks conservatively instead of guessing.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "from typing import Literal\n"
         "def g(a: Literal['Thing']) -> None: ...\n"
     )
@@ -854,9 +760,7 @@ def test_annotated_metadata_string_is_not_treated_as_a_type_reference():
     # must not be silently rewritten (or silently exempted from the
     # string-mention guard) just because it sits inside an annotation slot.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "from typing import Annotated\n"
         'def g(a: Annotated[Thing, "Thing"]) -> None: ...\n'
     )
@@ -870,9 +774,7 @@ def test_annotated_first_slot_lazy_string_is_still_renamed():
     # is the genuine type, so a lazy string sitting there is still a real
     # forward reference and must still be renamed.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "from typing import Annotated\n"
         "def g(a: Annotated['Thing', 'meta']) -> None: ...\n"
     )
@@ -886,9 +788,7 @@ def test_forward_ref_inside_list_and_dict_subscript_still_renamed():
     # ordinary subscripts whose slice elements are genuine types -- the
     # `Literal`/`Annotated` narrowing must not exclude them too.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: list['Thing'], b: dict[str, 'Thing']) -> None: ...\n"
     )
     result = outcome(src)
@@ -902,9 +802,7 @@ def test_star_args_lazy_string_annotation_is_renamed():
     # `_annotation_strings`, so a lazy string there fell through to the
     # string-mention guard and blocked the file needlessly.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(*args: 'Thing', **kwargs: 'Thing') -> None: ...\n"
     )
     result = outcome(src)
@@ -921,9 +819,7 @@ def test_fully_stringified_literal_annotation_blocks_payload_intact():
     # changes and the string is left for the ordinary guard to block
     # (fix-round-2 Critical 2, part A).
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "from typing import Literal\n"
         "def g(a: \"Literal['Thing']\") -> None: ...\n"
     )
@@ -936,9 +832,7 @@ def test_fully_stringified_literal_annotation_blocks_payload_intact():
 def test_fully_stringified_annotated_metadata_blocks_payload_intact():
     # Same root cause as above, for `Annotated`'s metadata half.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "from typing import Annotated\n"
         "def g(a: \"Annotated[int, 'Thing']\") -> None: ...\n"
     )
@@ -955,9 +849,7 @@ def test_fully_stringified_dotted_name_is_not_corrupted():
     # `_rewrite_type_expr` never visits it -- nothing changes, and the
     # string blocks instead of becoming a fabricated `other.mod.Thing`.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         'def g(a: "other.Thing") -> None: ...\n'
     )
     result = outcome(src)
@@ -974,14 +866,12 @@ def test_fully_stringified_list_subscript_inner_ref_is_still_renamed():
     # `_rewrite_string_content` -- proving the parse-based approach handles
     # a doubly-stringified annotation, not just a singly-stringified one.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: \"list['Thing']\") -> None: ...\n"
     )
     result = outcome(src)
     assert result.status == "fixed"
-    assert 'a: "list[\'mod.Thing\']"' in result.source
+    assert "a: \"list['mod.Thing']\"" in result.source
 
 
 def test_unparseable_annotation_string_blocks_instead_of_guessing():
@@ -990,9 +880,7 @@ def test_unparseable_annotation_string_blocks_instead_of_guessing():
     # expression at all -- `cst.parse_expression` raises, so the string is
     # left untouched and the ordinary string-mention guard blocks the file.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: 'Thing[') -> None: ...\n"
     )
     result = outcome(src)
@@ -1026,9 +914,7 @@ def test_escaped_quote_annotation_blocks_instead_of_corrupting():
     # previously reachable, if regex-fragile, fix should degrade to
     # "reported", not to "crashed and recovered".
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: 'list[\\'Thing\\']') -> None: ...\n"
     )
     result = outcome(src)
@@ -1050,9 +936,7 @@ def test_nested_unparseable_element_blocks_whole_annotation():
     # that rename produced (fix-round-3 New 2). The nested failure must
     # abort the entire candidate string's rewrite instead.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: \"dict['Thing', 'Thing[']\") -> None: ...\n"
     )
     result = outcome(src)
@@ -1070,9 +954,7 @@ def test_triple_quoted_escaped_quote_annotation_blocks_instead_of_erroring():
     # triple-quote boundary. Round-trip verification of the re-wrapped value
     # catches this where enumerating unsafe characters cannot.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: '''\\'Thing\\'''') -> None: ...\n"
     )
     result = outcome(src)
@@ -1089,9 +971,7 @@ def test_newline_in_annotation_string_blocks_instead_of_erroring():
     # that survives decoding and cannot be re-emitted raw"; the quote
     # character is only one member of it.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: 'list[\\n\"Thing\"]') -> None: ...\n"
     )
     result = outcome(src)
@@ -1104,9 +984,7 @@ def test_triple_quoted_plain_annotation_is_still_rewritten():
     # The round-trip check must not over-block: a triple-quoted annotation
     # with nothing problematic in it re-wraps and round-trips fine.
     src = (
-        "from __future__ import annotations\n"
-        + _TC_HEAD
-        + "    from pkg.sub.mod import Thing\n"
+        "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: '''Thing''') -> None: ...\n"
     )
     result = outcome(src)
@@ -1119,12 +997,7 @@ def test_triple_quoted_plain_annotation_is_still_rewritten():
 
 def test_existing_binding_rebound_at_module_scope_is_not_reused():
     """Critical 2: reusing `path` after `path = "/data"` yields a TypeError."""
-    src = (
-        "from os import path\n"
-        "from os.path import join\n"
-        'path = "/data"\n'
-        'print(join(path, "x"))\n'
-    )
+    src = 'from os import path\nfrom os.path import join\npath = "/data"\nprint(join(path, "x"))\n'
     result = outcome(src)
     assert result.status == "fixed"
     assert "path.join" not in result.source
@@ -1168,7 +1041,7 @@ def test_an_annotation_inside_the_importing_scope_is_still_rewritten():
         "\n"
         "def f():\n"
         "    from pkg.sub.mod import Thing\n"
-        "    def inner(x: \"Thing\") -> None: ...\n"
+        '    def inner(x: "Thing") -> None: ...\n'
         "    return inner, Thing\n"
     )
     result = outcome(src)
@@ -1193,12 +1066,7 @@ def test_a_comment_inside_a_parenthesized_import_blocks_the_file():
 
 
 def test_a_noqa_comment_on_one_imported_name_blocks_the_file():
-    src = (
-        "from pkg.sub.mod import (\n"
-        "    Thing,  # noqa: F401\n"
-        ")\n"
-        "x = Thing()\n"
-    )
+    src = "from pkg.sub.mod import (\n    Thing,  # noqa: F401\n)\nx = Thing()\n"
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src

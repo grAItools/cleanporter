@@ -86,9 +86,7 @@ def test_grandparent_relative_import_that_shadows_a_submodule_is_ambiguous(tmp_p
     root = tmp_path / "src"
     (root / "pkg" / "sub").mkdir(parents=True)
     (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "pkg" / "sub" / "__init__.py").write_text(
-        "from .. import Y\n", encoding="utf-8"
-    )
+    (root / "pkg" / "sub" / "__init__.py").write_text("from .. import Y\n", encoding="utf-8")
     (root / "pkg" / "sub" / "Y.py").write_text("Q = 1\n", encoding="utf-8")
     mm = ModuleMap([root])
     assert mm.classify("pkg.sub", "Y") is Kind.AMBIGUOUS
@@ -96,9 +94,7 @@ def test_grandparent_relative_import_that_shadows_a_submodule_is_ambiguous(tmp_p
 
 def test_aliased_self_import_that_shadows_a_real_submodule_is_ambiguous(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text(
-        "from . import mod as m\n", encoding="utf-8"
-    )
+    (root / "amb" / "__init__.py").write_text("from . import mod as m\n", encoding="utf-8")
     (root / "amb" / "m.py").write_text("Q = 1\n", encoding="utf-8")
     mm = ModuleMap([root])
     assert mm.classify("amb", "m") is Kind.AMBIGUOUS
@@ -203,9 +199,7 @@ def test_a_namespace_subpackage_is_not_mistaken_for_an_import_root(tmp_path):
 
 def test_a_deeper_relative_import_pushes_the_root_further_up(tmp_path):
     root = _nested_namespace(tmp_path)
-    (root / "pkg" / "sub" / "mod.py").write_text(
-        "from ..other import Thing\n", encoding="utf-8"
-    )
+    (root / "pkg" / "sub" / "mod.py").write_text("from ..other import Thing\n", encoding="utf-8")
     mm = ModuleMap.from_paths(sorted(root.rglob("*.py")))
     # `from ..x` needs two packages above it, which only the repo root gives.
     assert mm.qualname_for(root / "pkg" / "sub" / "mod.py", relative_level=2) == "pkg.sub.mod"
@@ -239,9 +233,7 @@ def _declared_namespace(tmp_path: Path) -> Path:
 
 def test_a_declared_root_outranks_a_deeper_inferred_one(tmp_path):
     root = _declared_namespace(tmp_path)
-    mm = ModuleMap.from_paths(
-        sorted(root.rglob("*.py")), declared=(root / "src",)
-    )
+    mm = ModuleMap.from_paths(sorted(root.rglob("*.py")), declared=(root / "src",))
     assert root / "src" in mm.roots, "a declared root is always in the root set"
     # Even with no relative import to set a floor, `--root src` is the answer.
     assert mm.qualname_for(root / "src" / "mypkg" / "mod.py") == "mypkg.mod"
@@ -304,9 +296,7 @@ def test_evidence_from_inside_the_candidate_root_does_not_demote_it(tmp_path):
 
 def test_a_declared_root_is_never_demoted(tmp_path):
     root = _namespace_with_subpackage(tmp_path)
-    mm = ModuleMap.from_paths(
-        sorted(root.rglob("*.py")), declared=(root / "analytics",)
-    )
+    mm = ModuleMap.from_paths(sorted(root.rglob("*.py")), declared=(root / "analytics",))
     mm.demote_roots({"analytics": [root / "tests" / "test_it.py"]})
     assert mm.qualname_for(root / "analytics" / "io" / "__init__.py", 1) == "io"
 
