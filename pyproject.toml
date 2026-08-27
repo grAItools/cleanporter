@@ -68,7 +68,12 @@ target-version = "py312"
 src = ["src", "tests"]
 # Fixtures are input data for the tool -- arbitrary user code it must handle,
 # not project code. Linting or formatting them would defeat their purpose.
-extend-exclude = ["tests/fixtures"]
+#
+# Markdown is excluded for the same reason: ruff formats Python code blocks
+# inside `.md` files, but the documentation is largely made of deliberately
+# *non-compliant* examples and side-by-side before/after listings whose
+# alignment is the point. A formatter reflowing them destroys the lesson.
+extend-exclude = ["tests/fixtures", "*.md"]
 
 [tool.ruff.lint]
 select = ["ALL"]
