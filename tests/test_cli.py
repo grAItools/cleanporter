@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -186,3 +190,57 @@ def test_internal_rewrite_error_does_not_write_a_broken_file(project, monkeypatc
     monkeypatch.setattr("cleanporter.cli.fix_record", fake)
     assert main(["--fix", str(project / "src")]) == 1
     assert target.read_text(encoding="utf-8") == before
+
+
+# -- src layout, no path arguments (final review, Critical 1) ---------------
+
+
+@pytest.fixture()
+def src_layout(tmp_path: Path) -> Path:
+    """A src-layout project with a `tests/` package, as most repos have."""
+    (tmp_path / "src" / "mypkg").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "mypkg"\nversion = "0"\n', encoding="utf-8"
+    )
+    (tmp_path / "src" / "mypkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "mypkg" / "helpers.py").write_text(
+        "class Widget:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "mypkg" / "consumer.py").write_text(
+        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    return tmp_path
+
+
+def _imports_cleanly(project: Path) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ, PYTHONPATH=str(project / "src"))
+    return subprocess.run(
+        [sys.executable, "-c", "import mypkg.consumer"],
+        # cwd is *inside* src, so only the real import root is on sys.path --
+        # running from the project root would make a bogus `src.` prefix
+        # resolve as a namespace package and hide the bug.
+        capture_output=True, text=True, env=env, cwd=project / "src",
+    )
+
+
+def test_fix_with_no_path_arguments_keeps_the_package_importable(src_layout, monkeypatch, capsys):
+    monkeypatch.chdir(src_layout)
+    assert _imports_cleanly(src_layout).returncode == 0, "fixture must import before --fix"
+
+    main(["--fix"])
+    capsys.readouterr()
+
+    proc = _imports_cleanly(src_layout)
+    assert proc.returncode == 0, proc.stderr
+    after = (src_layout / "src" / "mypkg" / "consumer.py").read_text(encoding="utf-8")
+    assert after == "from mypkg import helpers\nw = helpers.Widget()\n"
+
+
+def test_check_on_a_src_layout_names_the_module_without_the_src_prefix(src_layout, monkeypatch, capsys):
+    monkeypatch.chdir(src_layout)
+    main([])
+    out = capsys.readouterr().out + capsys.readouterr().err
+    assert "src.mypkg" not in out
+
