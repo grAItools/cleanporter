@@ -9,14 +9,9 @@ Everything is configurable under ``[tool.cleanporter]`` in the nearest
 
 from __future__ import annotations
 
-import sys
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - 3.10 only
-    import tomli as tomllib
 
 # Modules whose members may be imported directly by name.
 DEFAULT_EXEMPT_MODULES: frozenset[str] = frozenset(

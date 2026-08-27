@@ -1,9 +1,49 @@
+# Byte-compiled / optimized
 __pycache__/
 *.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
 .venv/
-.pytest_cache/
+venv/
+env/
+
+# Tool caches
 .ruff_cache/
 .mypy_cache/
-dist/
-build/
+.dmypy.json
+.pytest_cache/
+.zuban_cache/
+.cache/
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Documentation build output
+site/
+.zensical/
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS clutter
+.DS_Store
+Thumbs.db
+
+# Coding-agent scratch and machine-local overrides
 .superpowers/
+.claude/settings.local.json

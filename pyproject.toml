@@ -4,44 +4,170 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cleanporter"
-version = "0.2.0"
+version = "0.3.0"
 description = "Check that from-imports follow Google Python Style Guide section 2.2 (import modules only) and auto-fix violations."
 readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "Enrique Garcia" }]
-keywords = ["style", "imports", "lint", "codemod", "libcst"]
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "grAItools" }]
+maintainers = [{ name = "Enrique González Paredes" }]
+keywords = ["style", "imports", "lint", "codemod", "libcst", "google-style"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
 ]
-dependencies = ["libcst>=1.1", "tomli>=2.0; python_version<'3.11'"]
+dependencies = ["libcst>=1.1"]
+
+[project.urls]
+Homepage = "https://github.com/grAItools/cleanporter"
+Documentation = "https://graitools.github.io/cleanporter/"
+Repository = "https://github.com/grAItools/cleanporter"
+Issues = "https://github.com/grAItools/cleanporter/issues"
+Changelog = "https://github.com/grAItools/cleanporter/blob/main/CHANGELOG.md"
 
 [project.scripts]
 cleanporter = "cleanporter.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.14",
+    "mypy>=1.10",
+    "pyright>=1.1.400",
+    "prek>=0.5",
+]
+docs = ["zensical>=0.0.57"]
+# Optional, non-blocking cross-check. Not in `dev`: install with
+# `uv sync --group zuban` when you want a second opinion on the type errors.
+zuban = ["zuban>=0.9"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cleanporter"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["--strict-markers", "--strict-config"]
+xfail_strict = true
+
+# ---------------------------------------------------------------------------
+# Ruff is the only linter and formatter in this project. Everything it can
+# check is enabled; each exception below carries the reason it is an exception.
+# ---------------------------------------------------------------------------
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py312"
+src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM"]
-ignore = ["E501"]
+select = ["ALL"]
+ignore = [
+    # Formatter conflicts -- ruff itself warns when these run alongside
+    # `ruff format`.
+    "COM812", # missing-trailing-comma
+    "ISC001", # single-line-implicit-string-concatenation
+
+    # Docstring *style* is enforced (see [tool.ruff.lint.pydocstyle]), but a
+    # docstring is not demanded on every public object.
+    "D100", # undocumented-public-module
+    "D101", # undocumented-public-class
+    "D102", # undocumented-public-method
+    "D103", # undocumented-public-function
+    "D104", # undocumented-public-package
+    "D105", # undocumented-magic-method
+    "D106", # undocumented-public-nested-class
+    "D107", # undocumented-public-init
+
+    # These force every raise into a message-constant dance, which makes the
+    # error paths harder to read than the exception text they guard.
+    "TRY003", # raise-vanilla-args
+    "EM101",  # raw-string-in-exception
+    "EM102",  # f-string-in-exception
+    "EM103",  # dot-format-in-exception
+
+    # Moving runtime imports into `if TYPE_CHECKING:` blocks trades clarity for
+    # a startup micro-optimization -- and reads oddly in a tool about import
+    # shape.
+    "TC001", # typing-only-first-party-import
+    "TC002", # typing-only-third-party-import
+    "TC003", # typing-only-standard-library-import
+
+    # TODO policing. A TODO is a note, not a lint failure.
+    "TD002",  # missing-todo-author
+    "TD003",  # missing-todo-link
+    "FIX002", # line-contains-todo
+
+    # No per-file copyright headers in this project; the LICENSE covers it.
+    "CPY001", # missing-copyright-notice
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",    # assert: that is what a test suite is made of
+    "PLR2004", # magic-value-comparison: expected values belong inline in tests
+    "ANN",     # annotations add nothing to a test function signature
+    "D",       # docstring rules do not apply to test cases
+    "SLF001",  # private-member-access: tests may reach into internals
+    "PT018",   # composite assertions read fine in this suite
+    "S603",    # subprocess calls in tests are all fixed, local commands
+    "S607",    # ... including ones resolved via PATH
+    "PLW1510", # subprocess.run without check=: the tests assert on returncode
+    "PLC0415", # local imports keep a test's dependencies next to the test
+    "ARG",     # unused args are how pytest fixtures and stub signatures work
+]
+# The probe deliberately shells out to another interpreter -- that is the
+# feature, and the argv is built from validated config, never from user text.
+"src/cleanporter/_probe.py" = ["S603", "S607"]
+"src/cleanporter/resolver.py" = ["S603", "S607"]
+# A CLI writes to stdout and stderr on purpose.
+"src/cleanporter/cli.py" = ["T201"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["cleanporter"]
+
+[tool.ruff.lint.pep8-naming]
+# libcst dispatches to `visit_<Node>` / `leave_<Node>` hooks, so the CapWords
+# suffix is required by the framework, not a naming slip.
+extend-ignore-names = ["visit_*", "leave_*"]
+
+[tool.ruff.lint.mccabe]
+# Ratchets, not aspirations: each limit is the current worst case in the tree
+# (`_plan_line`), so existing code passes and new growth has to justify itself.
+max-complexity = 27
+
+[tool.ruff.lint.pylint]
+max-branches = 27
+max-returns = 11
+max-statements = 62
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# Type checking. Ruff does no type inference, so these back up the `py.typed`
+# marker. See tests/test_typecheck_baseline.py for the enforced budgets.
+# ---------------------------------------------------------------------------
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 strict = true
+
+[tool.pyright]
+include = ["src/cleanporter"]
+pythonVersion = "3.12"
+# Not "strict": that mode reports 60+ `reportUnknown*` diagnostics that all
+# originate in libcst's partially-typed surface rather than in this code.
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
