@@ -9,9 +9,9 @@ excluded file is taken as deliberate.
 from __future__ import annotations
 
 import fnmatch
-from pathlib import Path
+import pathlib
 
-from .config import Config
+from cleanporter import config
 
 ALWAYS_SKIP_DIRS = frozenset(
     {
@@ -28,7 +28,7 @@ def _is_skipped_dir(name: str) -> bool:
     return name.startswith(".") or name in ALWAYS_SKIP_DIRS
 
 
-def _excluded(path: Path, config: Config) -> bool:
+def _excluded(path: pathlib.Path, config: config.Config) -> bool:
     resolved = path.resolve()
     abs_posix = resolved.as_posix()
     try:
@@ -46,8 +46,8 @@ def _excluded(path: Path, config: Config) -> bool:
     return False
 
 
-def _walk(directory: Path, config: Config) -> list[Path]:
-    found: list[Path] = []
+def _walk(directory: pathlib.Path, config: config.Config) -> list[pathlib.Path]:
+    found: list[pathlib.Path] = []
     for child in sorted(directory.iterdir()):
         if child.is_dir():
             if _is_skipped_dir(child.name) or _excluded(child, config):
@@ -58,13 +58,15 @@ def _walk(directory: Path, config: Config) -> list[Path]:
     return found
 
 
-def iter_python_files(paths: list[Path], config: Config) -> tuple[list[Path], list[str]]:
+def iter_python_files(
+    paths: list[pathlib.Path], config: config.Config
+) -> tuple[list[pathlib.Path], list[str]]:
     """Expand *paths* into a de-duplicated sorted file list plus warnings."""
     warnings: list[str] = []
-    seen: set[Path] = set()
-    out: list[Path] = []
+    seen: set[pathlib.Path] = set()
+    out: list[pathlib.Path] = []
     for raw in paths:
-        path = Path(raw)
+        path = pathlib.Path(raw)
         if not path.exists():
             warnings.append(f"path does not exist: {path}")
             continue

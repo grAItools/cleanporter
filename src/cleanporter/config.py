@@ -9,9 +9,9 @@ Everything is configurable under ``[tool.cleanporter]`` in the nearest
 
 from __future__ import annotations
 
+import dataclasses
+import pathlib
 import tomllib
-from dataclasses import dataclass, field
-from pathlib import Path
 
 # Modules whose members may be imported directly by name.
 DEFAULT_EXEMPT_MODULES: frozenset[str] = frozenset(
@@ -29,10 +29,10 @@ class ConfigError(ValueError):
     """Raised when [tool.cleanporter] is malformed."""
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Config:
     #: Directory of the pyproject.toml this config came from (or cwd).
-    root: Path = field(default_factory=Path.cwd)
+    root: pathlib.Path = dataclasses.field(default_factory=pathlib.Path.cwd)
     #: Glob patterns matched against project-relative POSIX paths.
     exclude: tuple[str, ...] = ()
     #: ``all`` or ``first-party``.
@@ -63,7 +63,7 @@ def _str_list(table: dict[str, object], key: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _parse_table(table: dict[str, object], root: Path) -> Config:
+def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
     unknown = set(table) - _KNOWN_KEYS
     if unknown:
         raise ConfigError(f"unknown tool.cleanporter keys: {sorted(unknown)}")
@@ -100,7 +100,7 @@ def _parse_table(table: dict[str, object], root: Path) -> Config:
     return Config(**kwargs)  # type: ignore[arg-type]
 
 
-def find_pyproject(start: Path) -> Path | None:
+def find_pyproject(start: pathlib.Path) -> pathlib.Path | None:
     """Walk upward from *start* looking for a pyproject.toml."""
     current = start.resolve()
     if current.is_file():
@@ -115,7 +115,7 @@ def find_pyproject(start: Path) -> Path | None:
         current = parent
 
 
-def load_config(start: Path) -> Config:
+def load_config(start: pathlib.Path) -> Config:
     """Load configuration walking upward from *start*; defaults if absent."""
     anchor = start.resolve()
     pyproject = find_pyproject(anchor)

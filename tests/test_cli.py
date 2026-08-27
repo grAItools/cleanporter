@@ -183,8 +183,9 @@ def test_internal_rewrite_error_does_not_write_a_broken_file(project, monkeypatc
             [Finding(rec.path, 1, 0, "?", "?", Status.SKIPPED, "internal error")],
         )
 
-    # cli imports fix_record by name, so patch it there.
-    monkeypatch.setattr("cleanporter.cli.fix_record", fake)
+    # cli calls `rewrite.fix_record`, resolving the attribute at call time,
+    # so patch it on the module that owns it.
+    monkeypatch.setattr("cleanporter.rewrite.fix_record", fake)
     assert main(["--fix", str(project / "src")]) == 1
     assert target.read_text(encoding="utf-8") == before
 

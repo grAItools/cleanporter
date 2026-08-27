@@ -16,25 +16,24 @@ modules.
 
 from __future__ import annotations
 
-from pathlib import Path
+import pathlib
 
-from ._bindings import top_level_bindings
-from .model import Kind
+from cleanporter import _bindings, model
 
 #: Suffixes CPython will import as an extension module.
 EXTENSION_SUFFIXES = frozenset({".so", ".pyd"})
 
 
-def _module_stem(path: Path) -> str:
+def _module_stem(path: pathlib.Path) -> str:
     """``accel.cpython-314-x86_64-linux-gnu.so`` -> ``accel``."""
     return path.name.split(".")[0]
 
 
-def _is_importable_file(path: Path) -> bool:
+def _is_importable_file(path: pathlib.Path) -> bool:
     return path.suffix == ".py" or path.suffix in EXTENSION_SUFFIXES
 
 
-def _is_pkg_dir(d: Path) -> bool:
+def _is_pkg_dir(d: pathlib.Path) -> bool:
     if (d / "__init__.py").is_file():
         return True
     # PEP 420 namespace package: a directory that contributes submodules.
@@ -43,7 +42,7 @@ def _is_pkg_dir(d: Path) -> bool:
     )
 
 
-def _root_for(path: Path) -> Path:
+def _root_for(path: pathlib.Path) -> pathlib.Path:
     """Return the directory that would be on ``sys.path`` for ``path``.
 
     Walk upward while the parent still looks like a package, so a file deep in a
@@ -57,7 +56,7 @@ def _root_for(path: Path) -> Path:
     return d.parent if (d / "__init__.py").is_file() else d
 
 
-def _nesting_warnings(roots: list[Path]) -> list[str]:
+def _nesting_warnings(roots: list[pathlib.Path]) -> list[str]:
     """One warning per pair of inferred roots where one contains the other.
 
     Nested roots are legitimate (a ``src/`` layout plus a ``tests/`` package
@@ -87,29 +86,31 @@ class ModuleMap:
     see `qualname_for`.
     """
 
-    def __init__(self, roots: list[Path], declared: tuple[Path, ...] = ()) -> None:
+    def __init__(self, roots: list[pathlib.Path], declared: tuple[pathlib.Path, ...] = ()) -> None:
         self.roots = [r.resolve() for r in roots]
         #: Roots the user declared, which outrank inferred ones.
-        self.declared: frozenset[Path] = frozenset(d.resolve() for d in declared)
+        self.declared: frozenset[pathlib.Path] = frozenset(d.resolve() for d in declared)
         self.roots += [d for d in sorted(self.declared) if d not in self.roots]
         #: Human-readable notes about the root set itself (see `_nesting_warnings`).
         self.warnings: list[str] = _nesting_warnings(self.roots)
         #: Roots another file has shown to be a package (see `demote_roots`).
-        self._demoted: set[Path] = set()
+        self._demoted: set[pathlib.Path] = set()
         self._modules: set[str] = set()  # dotted names of .py modules
         self._packages: set[str] = set()  # dotted names of packages
-        self._inits: dict[str, Path] = {}  # dotted package -> its __init__.py
+        self._inits: dict[str, pathlib.Path] = {}  # dotted package -> its __init__.py
         for root in self.roots:
             self._scan(root, root)
 
     @classmethod
-    def from_paths(cls, paths: list[Path], declared: tuple[Path, ...] = ()) -> ModuleMap:
-        roots: set[Path] = set()
+    def from_paths(
+        cls, paths: list[pathlib.Path], declared: tuple[pathlib.Path, ...] = ()
+    ) -> ModuleMap:
+        roots: set[pathlib.Path] = set()
         for p in paths:
             roots.add(_root_for(p.resolve()))
         return cls(sorted(roots), declared=declared)
 
-    def demote_roots(self, evidence: dict[str, list[Path]]) -> None:
+    def demote_roots(self, evidence: dict[str, list[pathlib.Path]]) -> None:
         """Rank down inferred roots that some *other* file imports as a package.
 
         ``evidence`` maps a top-level name imported absolutely (``import
@@ -138,7 +139,7 @@ class ModuleMap:
             if any(not f.resolve().is_relative_to(root) for f in evidence.get(root.name, ())):
                 self._demoted.add(root)
 
-    def _scan(self, root: Path, directory: Path) -> None:
+    def _scan(self, root: pathlib.Path, directory: pathlib.Path) -> None:
         for child in sorted(directory.iterdir()):
             if child.name == "__pycache__" or child.name.startswith("."):
                 continue
@@ -155,7 +156,7 @@ class ModuleMap:
                     self._modules.add(self._dotted(root, child.with_name(stem)))
 
     @staticmethod
-    def _dotted(root: Path, path: Path) -> str:
+    def _dotted(root: pathlib.Path, path: pathlib.Path) -> str:
         return ".".join(path.relative_to(root).parts)
 
     # -- queries -----------------------------------------------------------
@@ -165,21 +166,21 @@ class ModuleMap:
             (root / top).exists() or (root / f"{top}.py").exists() for root in self.roots
         )
 
-    def classify(self, parent: str, name: str) -> Kind | None:
+    def classify(self, parent: str, name: str) -> model.Kind | None:
         """First-party answer, or ``None`` if ``parent`` is not first-party."""
         if not self.is_first_party(parent):
             return None
         full = f"{parent}.{name}"
         on_disk = full in self._packages or full in self._modules
         init = self._inits.get(parent)
-        shadowed = init is not None and name in top_level_bindings(str(init))
+        shadowed = init is not None and name in _bindings.top_level_bindings(str(init))
         if on_disk and shadowed:
-            return Kind.AMBIGUOUS
+            return model.Kind.AMBIGUOUS
         if on_disk:
-            return Kind.MODULE
-        return Kind.OBJECT
+            return model.Kind.MODULE
+        return model.Kind.OBJECT
 
-    def qualname_for(self, path: Path, relative_level: int = 0) -> str | None:
+    def qualname_for(self, path: pathlib.Path, relative_level: int = 0) -> str | None:
         """Dotted module name for a source file, for relative-import resolution.
 
         Roots routinely nest -- a ``src/`` layout plus a ``tests/__init__.py``

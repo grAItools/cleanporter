@@ -33,7 +33,7 @@ import importlib
 import importlib.util
 import json
 import sys
-from types import ModuleType
+import types
 
 _MISSING = object()
 
@@ -72,7 +72,7 @@ def classify(parent: str, name: str) -> bool | None:
         # when PARENT is a package (then the name is genuinely not a module);
         # otherwise it may be dynamically created -> undetermined.
         return False if hasattr(pkg, "__path__") else None
-    return isinstance(obj, ModuleType)
+    return isinstance(obj, types.ModuleType)
 
 
 def classify_many(pairs: list[tuple[str, str]]) -> dict[str, bool | None]:

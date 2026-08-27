@@ -27,31 +27,21 @@ names in a mixed statement are kept in place.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
+import dataclasses
 
 import libcst as cst
-from libcst.metadata import (
-    BaseAssignment,
-    ClassScope,
-    GlobalScope,
-    PositionProvider,
-    Scope,
-    ScopeProvider,
-)
+from libcst import metadata
+
+from cleanporter import analyze, config, model, resolver
 
 from . import _imports, guards
-from .analyze import FileRecord
-from .config import Config
-from .guards import Hit
-from .model import Finding, Status
-from .resolver import Resolver
 
 
-@dataclass
+@dataclasses.dataclass
 class _Plan:
-    line_repl: dict[int, list[cst.BaseStatement]] = field(default_factory=dict)
-    name_repl: dict[int, cst.BaseExpression] = field(default_factory=dict)
-    string_repl: dict[int, str] = field(default_factory=dict)
+    line_repl: dict[int, list[cst.BaseStatement]] = dataclasses.field(default_factory=dict)
+    name_repl: dict[int, cst.BaseExpression] = dataclasses.field(default_factory=dict)
+    string_repl: dict[int, str] = dataclasses.field(default_factory=dict)
     fixed: int = 0
 
 
@@ -427,16 +417,20 @@ def _rewrite_string_content(
 
 
 class _Fixer(cst.CSTTransformer):
-    METADATA_DEPENDENCIES = (ScopeProvider, PositionProvider)
+    METADATA_DEPENDENCIES = (metadata.ScopeProvider, metadata.PositionProvider)
 
-    def __init__(self, rec: FileRecord, resolver: Resolver, config: Config) -> None:
+    def __init__(
+        self, rec: analyze.FileRecord, resolver: resolver.Resolver, config: config.Config
+    ) -> None:
         super().__init__()
         self._rec = rec
         self._resolver = resolver
         self._config = config
         self.plan = _Plan()
-        self.blockers: list[Hit] = []
-        self._module_binding: dict[tuple[Scope, str], str] = {}  # (scope, parent) -> bound token
+        self.blockers: list[guards.Hit] = []
+        self._module_binding: dict[
+            tuple[metadata.Scope, str], str
+        ] = {}  # (scope, parent) -> bound token
         self._existing: dict[str, str] = {}  # already-imported module -> its name
         #: Names bound at module scope. Kept *live*: grows as `_binding_for`
         #: allocates new module-level tokens, so a later function scope's
@@ -444,7 +438,7 @@ class _Fixer(cst.CSTTransformer):
         self._global_names: set[str] = set()
         #: Per-scope cache of `_local_names`, mutated in place by
         #: `_binding_for` for the same reason `_global_names` is live.
-        self._scope_locals: dict[Scope, set[str]] = {}
+        self._scope_locals: dict[metadata.Scope, set[str]] = {}
         self._tc_ids: set[int] = set()
         #: Names appearing as a ``del`` target (see `_deleted_names`).
         self._del_names: set[str] = set()
@@ -454,7 +448,7 @@ class _Fixer(cst.CSTTransformer):
         #: (binding scope) -> {local name -> "token.name"}, for lazy string
         #: annotations (Task 16). Keyed by scope, because a rename is only
         #: valid for annotation strings that can actually *see* that binding.
-        self._string_targets: dict[Scope, dict[str, str]] = {}
+        self._string_targets: dict[metadata.Scope, dict[str, str]] = {}
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
@@ -466,7 +460,7 @@ class _Fixer(cst.CSTTransformer):
         # GlobalScope-scoped import line at all, and gating on one would
         # silently leave `_global_names` empty (fix-round-1 Critical 1).
         for _line, imp in self._import_lines(node):
-            scope = self.get_metadata(ScopeProvider, imp, None)
+            scope = self.get_metadata(metadata.ScopeProvider, imp, None)
             if scope is not None:
                 self._global_names = {a.name for a in scope.globals.assignments}
                 break
@@ -503,7 +497,7 @@ class _Fixer(cst.CSTTransformer):
         self._run_guards(node)
 
     def _line_of(self, node: cst.CSTNode) -> int:
-        position = self.get_metadata(PositionProvider, node, None)
+        position = self.get_metadata(metadata.PositionProvider, node, None)
         return position.start.line if position is not None else 0
 
     def _run_guards(self, node: cst.Module) -> None:
@@ -545,7 +539,7 @@ class _Fixer(cst.CSTTransformer):
             # target set leaves the string untouched, which is the safe
             # direction: it then stays visible to the string-mention guard.
             targets = self._targets_visible_from(
-                self.get_metadata(ScopeProvider, string_node, None)
+                self.get_metadata(metadata.ScopeProvider, string_node, None)
             )
             if not targets:
                 continue
@@ -563,7 +557,7 @@ class _Fixer(cst.CSTTransformer):
                 self.plan.string_repl[ident] = rewritten.value
         return frozenset(self.plan.string_repl)
 
-    def _targets_visible_from(self, scope: Scope | None) -> dict[str, str]:
+    def _targets_visible_from(self, scope: metadata.Scope | None) -> dict[str, str]:
         """Merge the string-rename tables of every scope *scope* can read.
 
         Walks outward from *scope* to module scope, nearer bindings winning,
@@ -576,10 +570,10 @@ class _Fixer(cst.CSTTransformer):
         current = scope
         own = True
         while current is not None:
-            if own or not isinstance(current, ClassScope):
+            if own or not isinstance(current, metadata.ClassScope):
                 for local, target in self._string_targets.get(current, {}).items():
                     merged.setdefault(local, target)
-            if isinstance(current, GlobalScope):
+            if isinstance(current, metadata.GlobalScope):
                 break
             own = False
             current = current.parent
@@ -590,8 +584,8 @@ class _Fixer(cst.CSTTransformer):
         for _line, imp in self._import_lines(node):
             if _imports.is_star(imp) or id(imp) in self._tc_ids:
                 continue
-            scope = self.get_metadata(ScopeProvider, imp, None)
-            if not isinstance(scope, GlobalScope):
+            scope = self.get_metadata(metadata.ScopeProvider, imp, None)
+            if not isinstance(scope, metadata.GlobalScope):
                 continue
             parent = _imports.resolve_parent(imp, self._rec.base_pkg)
             if parent is None:
@@ -601,8 +595,8 @@ class _Fixer(cst.CSTTransformer):
                     self._existing[f"{parent}.{name}"] = asname or name
         # plain ``import a`` / ``import a as z`` (top-level modules only)
         for plain in _collect_imports(node):
-            scope = self.get_metadata(ScopeProvider, plain, None)
-            if not isinstance(scope, GlobalScope):
+            scope = self.get_metadata(metadata.ScopeProvider, plain, None)
+            if not isinstance(scope, metadata.GlobalScope):
                 continue
             for alias in plain.names:
                 mod = _imports.dotted(alias.name)
@@ -628,7 +622,7 @@ class _Fixer(cst.CSTTransformer):
     def _plan_line(self, line: cst.SimpleStatementLine, imp: cst.ImportFrom) -> None:
         if _imports.is_star(imp):
             return
-        scope = self.get_metadata(ScopeProvider, imp, None)
+        scope = self.get_metadata(metadata.ScopeProvider, imp, None)
         if scope is None:
             return
         parent = _imports.resolve_parent(imp, self._rec.base_pkg)
@@ -681,7 +675,7 @@ class _Fixer(cst.CSTTransformer):
         # would silently resolve to the local instead of the new import
         # (fix-round-2 downward shadowing -- the mirror of fix-round-1's
         # ancestor check, but for scopes *below* where the binding lands).
-        rewrites: list[tuple[str, str, list[BaseAssignment]]] = []
+        rewrites: list[tuple[str, str, list[metadata.BaseAssignment]]] = []
         extra_avoid: set[str] = set()
         for name, asname in fix:
             bound = asname or name
@@ -722,7 +716,7 @@ class _Fixer(cst.CSTTransformer):
             rewrites.append((name, bound, ours))
             for assignment in ours:
                 for ref in assignment.references:
-                    access_scope: Scope = ref.scope
+                    access_scope: metadata.Scope = ref.scope
                     if access_scope is not scope:
                         extra_avoid |= self._shadow_names_between(access_scope, scope)
 
@@ -799,7 +793,7 @@ class _Fixer(cst.CSTTransformer):
             return
         self.plan.line_repl[id(line)] = new_lines
 
-    def _local_names(self, scope: Scope) -> set[str]:
+    def _local_names(self, scope: metadata.Scope) -> set[str]:
         """Names assigned directly in *scope*, ignoring enclosing scopes.
 
         Cached and mutated in place: `_binding_for` adds each token it
@@ -811,7 +805,7 @@ class _Fixer(cst.CSTTransformer):
             self._scope_locals[scope] = {a.name for a in scope.assignments}
         return self._scope_locals[scope]
 
-    def _ancestor_local_names(self, scope: Scope) -> set[str]:
+    def _ancestor_local_names(self, scope: metadata.Scope) -> set[str]:
         """Names assigned in *scope* or any enclosing function/class scope.
 
         Walks ``scope.parent`` upward, unioning `_local_names` at each
@@ -824,12 +818,12 @@ class _Fixer(cst.CSTTransformer):
         """
         names: set[str] = set()
         current = scope
-        while not isinstance(current, GlobalScope):
+        while not isinstance(current, metadata.GlobalScope):
             names |= self._local_names(current)
             current = current.parent
         return names
 
-    def _names_in_scope(self, scope: Scope) -> set[str]:
+    def _names_in_scope(self, scope: metadata.Scope) -> set[str]:
         """Names a new binding in *scope* must not collide with.
 
         That is, names assigned in *scope* itself, in any enclosing
@@ -837,7 +831,9 @@ class _Fixer(cst.CSTTransformer):
         """
         return self._ancestor_local_names(scope) | self._global_names
 
-    def _shadow_names_between(self, access_scope: Scope, upper_scope: Scope) -> set[str]:
+    def _shadow_names_between(
+        self, access_scope: metadata.Scope, upper_scope: metadata.Scope
+    ) -> set[str]:
         """Names assigned in *access_scope*, or strictly between it and *upper_scope*.
 
         The scopes are walked ``.parent`` upward.
@@ -858,12 +854,14 @@ class _Fixer(cst.CSTTransformer):
         """
         names: set[str] = set()
         current = access_scope
-        while current is not upper_scope and not isinstance(current, GlobalScope):
+        while current is not upper_scope and not isinstance(current, metadata.GlobalScope):
             names |= self._local_names(current)
             current = current.parent
         return names
 
-    def _binding_for(self, scope: Scope, parent: str, extra_avoid: set[str]) -> tuple[str, bool]:
+    def _binding_for(
+        self, scope: metadata.Scope, parent: str, extra_avoid: set[str]
+    ) -> tuple[str, bool]:
         """Token to qualify *this line's* references through.
 
         Also reports whether a new import statement must be emitted for it.
@@ -921,7 +919,7 @@ class _Fixer(cst.CSTTransformer):
                 or existing in self._del_names
                 or self._rebound_at_module_scope(scope, existing)
                 or (
-                    not isinstance(scope, GlobalScope)
+                    not isinstance(scope, metadata.GlobalScope)
                     and existing in self._ancestor_local_names(scope)
                 )
             )
@@ -933,7 +931,7 @@ class _Fixer(cst.CSTTransformer):
         self._module_binding[key] = bind
         return bind, True
 
-    def _rebound_at_module_scope(self, scope: Scope, name: str) -> bool:
+    def _rebound_at_module_scope(self, scope: metadata.Scope, name: str) -> bool:
         """True when *name* has more than one assignment at module scope.
 
         Every entry in `_existing` is bound at module scope (`_build_existing`
@@ -944,7 +942,7 @@ class _Fixer(cst.CSTTransformer):
         """
         return len(list(scope.globals[name])) > 1
 
-    def _allocate_token(self, scope: Scope, parent: str, extra_avoid: set[str]) -> str:
+    def _allocate_token(self, scope: metadata.Scope, parent: str, extra_avoid: set[str]) -> str:
         """Pick a fresh, collision-free token for a new import of *parent* in *scope*.
 
         Records the choice in the live name set(s) `_names_in_scope` reads
@@ -961,7 +959,7 @@ class _Fixer(cst.CSTTransformer):
         while bind in taken:
             bind = f"{token}_{counter}"
             counter += 1
-        if isinstance(scope, GlobalScope):
+        if isinstance(scope, metadata.GlobalScope):
             self._global_names.add(bind)
         else:
             self._local_names(scope).add(bind)
@@ -1005,7 +1003,7 @@ class _Fixer(cst.CSTTransformer):
         return original_node if self.blockers else updated_node
 
 
-@dataclass
+@dataclasses.dataclass
 class FixOutcome:
     """Result of attempting to fix one file.
 
@@ -1016,11 +1014,13 @@ class FixOutcome:
 
     status: str  # "fixed" | "clean" | "skipped" | "error"
     source: str
-    blockers: list[Finding] = field(default_factory=list)
+    blockers: list[model.Finding] = dataclasses.field(default_factory=list)
     fixed: int = 0
 
 
-def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> FixOutcome:
+def fix_record(
+    rec: analyze.FileRecord, resolver: resolver.Resolver, config: config.Config
+) -> FixOutcome:
     """Rewrite one file, or leave it exactly as it was and say why."""
     wrapper = cst.MetadataWrapper(rec.tree, unsafe_skip_copy=True)
     fixer = _Fixer(rec, resolver, config)
@@ -1031,7 +1031,7 @@ def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> FixOutcom
             "skipped",
             rec.source,
             [
-                Finding(rec.path, line, 0, "?", "?", Status.SKIPPED, reason)
+                model.Finding(rec.path, line, 0, "?", "?", model.Status.SKIPPED, reason)
                 for line, reason in sorted(set(fixer.blockers))
             ],
         )
@@ -1048,13 +1048,13 @@ def fix_record(rec: FileRecord, resolver: Resolver, config: Config) -> FixOutcom
             "error",
             rec.source,
             [
-                Finding(
+                model.Finding(
                     rec.path,
                     getattr(exc, "lineno", None) or 0,
                     0,
                     "?",
                     "?",
-                    Status.SKIPPED,
+                    model.Status.SKIPPED,
                     "internal error: the rewrite did not parse; reverted",
                 )
             ],

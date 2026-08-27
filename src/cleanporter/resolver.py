@@ -18,13 +18,13 @@ and native-library crashes are contained.
 from __future__ import annotations
 
 import json
+import pathlib
 import subprocess
 import sys
-from pathlib import Path
+
+from cleanporter import firstparty, model
 
 from . import _probe
-from .firstparty import ModuleMap
-from .model import Kind
 
 #: Wall-clock budget for one out-of-process probe batch. A probe that
 #: outlives it is killed and its whole batch reported undetermined.
@@ -35,18 +35,20 @@ _NOT_IMPORTABLE = "'{parent}' is not importable in the target interpreter"
 
 
 class Resolver:
-    def __init__(self, module_map: ModuleMap, python: str | None = None) -> None:
+    def __init__(self, module_map: firstparty.ModuleMap, python: str | None = None) -> None:
         self._map = module_map
         self._python = python or sys.executable
-        self._in_process = Path(self._python).resolve() == Path(sys.executable).resolve()
+        self._in_process = (
+            pathlib.Path(self._python).resolve() == pathlib.Path(sys.executable).resolve()
+        )
         self._cache: dict[tuple[str, str], bool | None] = {}
         self._notes: dict[tuple[str, str], str] = {}
-        self._probe_path = str(Path(_probe.__file__).resolve())
+        self._probe_path = str(pathlib.Path(_probe.__file__).resolve())
 
-    def _from_kind(self, key: tuple[str, str], kind: Kind) -> bool | None:
-        if kind is Kind.MODULE:
+    def _from_kind(self, key: tuple[str, str], kind: model.Kind) -> bool | None:
+        if kind is model.Kind.MODULE:
             self._cache[key] = True
-        elif kind is Kind.OBJECT:
+        elif kind is model.Kind.OBJECT:
             self._cache[key] = False
         else:
             self._cache[key] = None

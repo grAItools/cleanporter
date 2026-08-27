@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import enum
-from dataclasses import dataclass
-from pathlib import Path
+import pathlib
 
 
 class Kind(enum.Enum):
@@ -27,9 +27,9 @@ class Status(enum.Enum):
     SKIPPED = "skipped"
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Finding:
-    path: Path
+    path: pathlib.Path
     line: int
     column: int
     parent: str

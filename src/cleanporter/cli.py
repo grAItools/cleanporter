@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import difflib
 import os
+import pathlib
 import sys
-from dataclasses import replace
-from pathlib import Path
 
 import libcst as cst
 
-from . import __version__
-from .analyze import FileRecord, analyze_record, build
-from .config import Config, ConfigError, load_config
-from .model import Finding, Status
-from .rewrite import fix_record
+import cleanporter
+from cleanporter import analyze, model, rewrite
+from cleanporter import config as config_lib
 
 #: Printed to stderr after `--fix` writes anything (see `run`).
 _CROSS_FILE_NOTE = (
@@ -75,11 +73,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--strict", action="store_true", help="also fail on imports that could not be classified"
     )
-    parser.add_argument("--version", action="version", version=f"cleanporter {__version__}")
+    parser.add_argument(
+        "--version", action="version", version=f"cleanporter {cleanporter.__version__}"
+    )
     return parser
 
 
-def _diff_path(path: Path) -> str:
+def _diff_path(path: pathlib.Path) -> str:
     """*path* as a diff header should spell it: relative to the cwd, POSIX.
 
     Headers used to be built as ``f"a/{path}"`` straight from the record,
@@ -88,14 +88,14 @@ def _diff_path(path: Path) -> str:
     patch could not be applied from anywhere.
     """
     try:
-        relative = os.path.relpath(path, Path.cwd())
+        relative = os.path.relpath(path, pathlib.Path.cwd())
     except ValueError:  # pragma: no cover - different drive on Windows
-        return Path(path).as_posix().lstrip("/")
-    return Path(relative).as_posix()
+        return pathlib.Path(path).as_posix().lstrip("/")
+    return pathlib.Path(relative).as_posix()
 
 
-def _apply_overrides(config: Config, args: argparse.Namespace) -> Config:
-    return replace(
+def _apply_overrides(config: config_lib.Config, args: argparse.Namespace) -> config_lib.Config:
+    return dataclasses.replace(
         config,
         exempt_modules=config.exempt_modules | frozenset(args.exempt),
         source_roots=config.source_roots + tuple(args.root),
@@ -105,10 +105,10 @@ def _apply_overrides(config: Config, args: argparse.Namespace) -> Config:
 
 
 def run(args: argparse.Namespace) -> int:
-    anchor = Path(args.paths[0]).resolve()
+    anchor = pathlib.Path(args.paths[0]).resolve()
     try:
-        config = _apply_overrides(load_config(anchor), args)
-    except ConfigError as exc:
+        config = _apply_overrides(config_lib.load_config(anchor), args)
+    except config_lib.ConfigError as exc:
         print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
         return _EXIT_ERROR
 
@@ -118,20 +118,20 @@ def run(args: argparse.Namespace) -> int:
     # plain check mode there is no patch, so the report stays on stdout.
     report = sys.stderr if (args.fix or args.diff) else sys.stdout
 
-    paths = [Path(p) for p in args.paths]
-    records, resolver, parse_errors, warnings = build(paths, config)
+    paths = [pathlib.Path(p) for p in args.paths]
+    records, resolver, parse_errors, warnings = analyze.build(paths, config)
     for warning in warnings:
         print(f"cleanporter: warning: {warning}", file=report)
 
     for error in sorted(parse_errors, key=lambda f: (str(f.path), f.line)):
         print(error.format(), file=report)
 
-    findings: list[Finding] = []
+    findings: list[model.Finding] = []
     changed = 0
     for rec in records:
         current = rec
         if args.fix or args.diff:
-            outcome = fix_record(current, resolver, config)
+            outcome = rewrite.fix_record(current, resolver, config)
             if outcome.status == "fixed":
                 changed += 1
                 # Diff first: current.source is still the original here.
@@ -149,7 +149,7 @@ def run(args: argparse.Namespace) -> int:
                     # Report against what is now on disk.
                     current = _reparse(current, outcome.source)
             findings.extend(outcome.blockers)
-        findings.extend(analyze_record(current, resolver, config))
+        findings.extend(analyze.analyze_record(current, resolver, config))
 
     if args.fix and changed:
         # The one place the tool changes something it cannot fully check: a
@@ -164,9 +164,9 @@ def run(args: argparse.Namespace) -> int:
     for finding in findings:
         print(finding.format(), file=report)
 
-    violations = sum(f.status is Status.VIOLATION for f in findings)
-    skipped = sum(f.status is Status.SKIPPED for f in findings)
-    unresolved = sum(f.status is Status.UNRESOLVED for f in findings)
+    violations = sum(f.status is model.Status.VIOLATION for f in findings)
+    skipped = sum(f.status is model.Status.SKIPPED for f in findings)
+    unresolved = sum(f.status is model.Status.UNRESOLVED for f in findings)
     print(file=report)
     print(
         f"checked {len(records)} file(s)"
@@ -182,8 +182,8 @@ def run(args: argparse.Namespace) -> int:
     return _EXIT_VIOLATIONS if hard else _EXIT_OK
 
 
-def _reparse(rec: FileRecord, source: str) -> FileRecord:
-    return FileRecord(rec.path, source, cst.parse_module(source), rec.base_pkg)
+def _reparse(rec: analyze.FileRecord, source: str) -> analyze.FileRecord:
+    return analyze.FileRecord(rec.path, source, cst.parse_module(source), rec.base_pkg)
 
 
 def main(argv: list[str] | None = None) -> int:

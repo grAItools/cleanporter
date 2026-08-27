@@ -7,8 +7,8 @@ exists as a submodule on disk. Parsing only -- nothing is imported.
 from __future__ import annotations
 
 import ast
-from functools import lru_cache
-from pathlib import Path
+import functools
+import pathlib
 
 _TRY_TYPES: tuple[type[ast.AST], ...] = (ast.Try,) + (
     (ast.TryStar,) if hasattr(ast, "TryStar") else ()
@@ -76,7 +76,7 @@ def _collect(body: list[ast.stmt], names: set[str], submodule_imports: set[str])
             _collect(stmt.body, names, submodule_imports)
 
 
-@lru_cache(maxsize=1024)
+@functools.lru_cache(maxsize=1024)
 def top_level_bindings(path: str) -> frozenset[str]:
     """Names bound at the top level of *path*, excluding self-submodule imports.
 
@@ -88,7 +88,7 @@ def top_level_bindings(path: str) -> frozenset[str]:
     about the fixer's current narrow scope, not an enforced invariant.
     """
     try:
-        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
     except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
         return frozenset()
     names: set[str] = set()

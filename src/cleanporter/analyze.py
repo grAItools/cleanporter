@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
+import dataclasses
+import pathlib
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
-from pathlib import Path
 
 import libcst as cst
-from libcst.metadata import CodeRange, MetadataWrapper, PositionProvider
+from libcst import metadata
+
+from cleanporter import config, discover, firstparty, model
+from cleanporter import resolver as resolver_lib
 
 from . import _imports
-from .config import Config
-from .discover import iter_python_files
-from .firstparty import ModuleMap
-from .model import Finding, Status
-from .resolver import Resolver
 
 
-@dataclass
+@dataclasses.dataclass
 class ImportUnit:
     node: cst.ImportFrom
     parent: str | None  # resolved absolute module, or None if unresolved
@@ -27,14 +25,14 @@ class ImportUnit:
     star: bool
 
 
-@dataclass
+@dataclasses.dataclass
 class FileRecord:
-    path: Path
+    path: pathlib.Path
     source: str
     tree: cst.Module
     base_pkg: str
-    _units: list[ImportUnit] | None = field(default=None, repr=False, compare=False)
-    _positions: Mapping[cst.CSTNode, CodeRange] | None = field(
+    _units: list[ImportUnit] | None = dataclasses.field(default=None, repr=False, compare=False)
+    _positions: Mapping[cst.CSTNode, metadata.CodeRange] | None = dataclasses.field(
         default=None, repr=False, compare=False
     )
 
@@ -46,16 +44,18 @@ class FileRecord:
         return self._units
 
     @property
-    def positions(self) -> Mapping[cst.CSTNode, CodeRange]:
+    def positions(self) -> Mapping[cst.CSTNode, metadata.CodeRange]:
         """``PositionProvider`` mapping for this tree. Resolved once."""
         if self._positions is None:
-            self._positions = MetadataWrapper(self.tree, unsafe_skip_copy=True).resolve(
-                PositionProvider
+            self._positions = metadata.MetadataWrapper(self.tree, unsafe_skip_copy=True).resolve(
+                metadata.PositionProvider
             )
         return self._positions
 
 
-def package_of(path: Path, module_map: ModuleMap, relative_level: int = 0) -> str:
+def package_of(
+    path: pathlib.Path, module_map: firstparty.ModuleMap, relative_level: int = 0
+) -> str:
     """Package containing ``path`` (``""`` for a top-level module).
 
     ``relative_level`` is the deepest relative import in the file; it tells
@@ -129,35 +129,37 @@ def collect_pairs(records: list[FileRecord]) -> list[tuple[str, str]]:
     return sorted(pairs)
 
 
-def analyze_record(rec: FileRecord, resolver: Resolver, config: Config) -> list[Finding]:
+def analyze_record(
+    rec: FileRecord, resolver: resolver_lib.Resolver, config: config.Config
+) -> list[model.Finding]:
     positions = rec.positions
-    findings: list[Finding] = []
+    findings: list[model.Finding] = []
     for unit in rec.units:
         pos = positions[unit.node].start
         line, col = pos.line, pos.column
 
         if unit.star:
             findings.append(
-                Finding(
+                model.Finding(
                     rec.path,
                     line,
                     col,
                     unit.parent or "?",
                     "*",
-                    Status.SKIPPED,
+                    model.Status.SKIPPED,
                     "wildcard import cannot be rewritten to a module import",
                 )
             )
             continue
         if unit.parent is None:
             findings.append(
-                Finding(
+                model.Finding(
                     rec.path,
                     line,
                     col,
                     "?",
                     unit.name,
-                    Status.UNRESOLVED,
+                    model.Status.UNRESOLVED,
                     "relative import could not be anchored to a package",
                 )
             )
@@ -172,51 +174,53 @@ def analyze_record(rec: FileRecord, resolver: Resolver, config: Config) -> list[
             continue  # importing a module -> compliant
         if verdict is None:
             findings.append(
-                Finding(
+                model.Finding(
                     rec.path,
                     line,
                     col,
                     unit.parent,
                     unit.name,
-                    Status.UNRESOLVED,
+                    model.Status.UNRESOLVED,
                     resolver.reason(unit.parent, unit.name),
                 )
             )
             continue
-        findings.append(Finding(rec.path, line, col, unit.parent, unit.name, Status.VIOLATION))
+        findings.append(
+            model.Finding(rec.path, line, col, unit.parent, unit.name, model.Status.VIOLATION)
+        )
     return findings
 
 
 def build(
-    paths: list[Path], config: Config
-) -> tuple[list[FileRecord], Resolver, list[Finding], list[str]]:
+    paths: list[pathlib.Path], config: config.Config
+) -> tuple[list[FileRecord], resolver_lib.Resolver, list[model.Finding], list[str]]:
     """Expand paths, parse files, build the resolver and warm its cache.
 
     Returns the parsed records, the resolver, any parse-error findings, and
     any warnings produced while expanding ``paths`` (e.g. missing paths).
     """
-    files, warnings = iter_python_files(paths, config)
+    files, warnings = discover.iter_python_files(paths, config)
     roots = tuple(config.root / r for r in config.source_roots)
-    module_map = ModuleMap.from_paths(files, declared=roots)
+    module_map = firstparty.ModuleMap.from_paths(files, declared=roots)
     warnings.extend(module_map.warnings)
-    resolver = Resolver(module_map, python=config.python)
+    resolver = resolver_lib.Resolver(module_map, python=config.python)
 
-    parsed: list[tuple[Path, str, cst.Module]] = []
-    errors: list[Finding] = []
-    evidence: dict[str, list[Path]] = {}
+    parsed: list[tuple[pathlib.Path, str, cst.Module]] = []
+    errors: list[model.Finding] = []
+    evidence: dict[str, list[pathlib.Path]] = {}
     for f in files:
         source = f.read_text(encoding="utf-8")
         try:
             tree = cst.parse_module(source)
         except cst.ParserSyntaxError as exc:  # pragma: no cover - defensive
             errors.append(
-                Finding(
+                model.Finding(
                     f,
                     exc.raw_line,
                     exc.raw_column,
                     "?",
                     "?",
-                    Status.UNRESOLVED,
+                    model.Status.UNRESOLVED,
                     f"parse error: {exc.message}",
                 )
             )
