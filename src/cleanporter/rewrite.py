@@ -319,12 +319,11 @@ def _rewrite_string_content(
     Raises `_UnrenderableAnnotation` -- never caught here, only by the
     single outermost call -- when the content cannot be safely classified
     or re-rendered at all: it is not decodable text (e.g. a bytes literal),
-    it does not parse as an expression, or the rewritten result cannot be
-    safely re-wrapped in the original quote character (`node.quote`
-    reappearing inside `rendered` would silently terminate the string
-    early -- fix-round-3 New 1). "Never guess: unclassifiable means
-    reported, not rewritten" applies here exactly as it does to an import
-    the resolver cannot classify.
+    it does not parse as an expression, or the rewritten result re-wrapped
+    in the original prefix/quote does not round-trip back to exactly that
+    result (fix-round-4, subsuming fix-round-3 New 1). "Never guess:
+    unclassifiable means reported, not rewritten" applies here exactly as
+    it does to an import the resolver cannot classify.
     """
     content = node.evaluated_value
     if not isinstance(content, str):
@@ -337,17 +336,24 @@ def _rewrite_string_content(
     if not changed:
         return None
     rendered = cst.Module(body=[]).code_for_node(new_expr)
-    if node.quote in rendered:
-        # An escaped occurrence of the outer quote character survives
-        # `evaluated_value`'s decoding but has no escaping left to give it
-        # once re-wrapped raw in that same character -- e.g. the content
-        # `list['Thing']` inside an outer `'...'`-quoted string, where the
-        # inner quotes were originally escaped (`'list[\'Thing\']'`).
-        # Re-wrapping naively would terminate the string early and corrupt
-        # the file (round 1's regex, working on the raw token text, never
-        # had this problem; parsing the decoded content introduced it).
-        raise _UnrenderableAnnotation("rendered value contains the original quote character")
-    return node.with_changes(value=f"{node.prefix}{node.quote}{rendered}{node.quote}")
+    # `evaluated_value` *decodes* the content, so any escape it resolved is
+    # gone by the time `rendered` exists: an escaped occurrence of the outer
+    # quote character, a `\n` that is now a real newline, a quote that lands
+    # adjacent to a triple-quote boundary. Re-wrapping raw in `node.quote`
+    # can therefore produce text that no longer means what it did. Rather
+    # than enumerate which characters are unsafe -- a moving target that has
+    # been under-approximated twice -- verify that the re-wrapped value
+    # actually round-trips: it must parse, parse *as a string*, and carry
+    # exactly the content we intended (fix-round-4). Anything else is
+    # unrenderable and falls back to the ordinary string-mention guard.
+    new_value = f"{node.prefix}{node.quote}{rendered}{node.quote}"
+    try:
+        check = cst.parse_expression(new_value)
+    except cst.ParserSyntaxError as exc:
+        raise _UnrenderableAnnotation("re-wrapped value does not parse") from exc
+    if not isinstance(check, cst.SimpleString) or check.evaluated_value != rendered:
+        raise _UnrenderableAnnotation("re-wrapped value does not round-trip")
+    return node.with_changes(value=new_value)
 
 
 class _Fixer(cst.CSTTransformer):

@@ -1059,3 +1059,56 @@ def test_nested_unparseable_element_blocks_whole_annotation():
     assert result.status == "skipped"
     assert result.source == src
     assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_triple_quoted_escaped_quote_annotation_blocks_instead_of_erroring():
+    # The round-3 containment check (`node.quote in rendered`) only covers
+    # the shape it was written against. Here `node.quote` is `'''` while the
+    # render is `'mod.Thing'` -- the *three*-character quote never appears in
+    # it, so the check passes, yet re-wrapping produces `''''mod.Thing''''`,
+    # which does not parse: the escaped inner quotes are adjacent to the
+    # triple-quote boundary. Round-trip verification of the re-wrapped value
+    # catches this where enumerating unsafe characters cannot.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: '''\\'Thing\\'''') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_newline_in_annotation_string_blocks_instead_of_erroring():
+    # `evaluated_value` decodes the `\n` escape into a real newline, which
+    # survives re-rendering. The quote character never appears in the render,
+    # so the containment check passes -- and a raw newline gets re-wrapped in
+    # single quotes, which does not parse. The general class is "any escape
+    # that survives decoding and cannot be re-emitted raw"; the quote
+    # character is only one member of it.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: 'list[\\n\"Thing\"]') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_triple_quoted_plain_annotation_is_still_rewritten():
+    # The round-trip check must not over-block: a triple-quoted annotation
+    # with nothing problematic in it re-wraps and round-trips fine.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: '''Thing''') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "def g(a: '''mod.Thing''') -> None: ..." in result.source
