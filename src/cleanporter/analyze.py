@@ -143,6 +143,7 @@ def build(
     files, warnings = iter_python_files(paths, config)
     roots = [config.root / r for r in config.source_roots]
     module_map = ModuleMap.from_paths(files + roots)
+    warnings.extend(module_map.warnings)
     resolver = Resolver(module_map, python=config.python)
 
     records: list[FileRecord] = []

@@ -58,11 +58,33 @@ def _root_for(path: Path) -> Path:
     return d.parent if (d / "__init__.py").is_file() else d
 
 
+def _nesting_warnings(roots: list[Path]) -> list[str]:
+    """One warning per pair of inferred roots where one contains the other.
+
+    Nested roots are legitimate (a ``src/`` layout plus a ``tests/`` package
+    infers both ``src`` and the repo root), but they make the same file
+    reachable under two different dotted names, so it is worth saying out
+    loud which one won -- that ambiguity is what once produced
+    ``from src.mypkg import helpers``.
+    """
+    out: list[str] = []
+    for outer in roots:
+        for inner in roots:
+            if inner is not outer and inner.is_relative_to(outer):
+                out.append(
+                    f"import roots nest: '{outer}' contains '{inner}'; each file is "
+                    "qualified against the most specific root that contains it"
+                )
+    return out
+
+
 class ModuleMap:
     """Enumerates first-party packages/modules under a set of import roots."""
 
     def __init__(self, roots: list[Path]) -> None:
         self.roots = [r.resolve() for r in roots]
+        #: Human-readable notes about the root set itself (see `_nesting_warnings`).
+        self.warnings: list[str] = _nesting_warnings(self.roots)
         self._modules: set[str] = set()  # dotted names of .py modules
         self._packages: set[str] = set()  # dotted names of packages
         self._inits: dict[str, Path] = {}  # dotted package -> its __init__.py
@@ -118,9 +140,18 @@ class ModuleMap:
         return Kind.OBJECT
 
     def qualname_for(self, path: Path) -> str | None:
-        """Dotted module name for a source file, for relative-import resolution."""
+        """Dotted module name for a source file, for relative-import resolution.
+
+        The **most specific** (deepest) matching root wins. Roots routinely
+        nest -- a ``src/`` layout plus a ``tests/__init__.py`` infers both
+        ``src`` and the repo root -- and only the deepest one is actually on
+        ``sys.path`` for this file. Picking any other produces a dotted name
+        that does not exist at runtime (``src.mypkg.consumer``), which
+        ``--fix`` then writes into the file as ``from src.mypkg import
+        helpers``: code that compiles and raises ``ModuleNotFoundError``.
+        """
         path = path.resolve()
-        for root in self.roots:
+        for root in sorted(self.roots, key=lambda r: len(r.parts), reverse=True):
             try:
                 rel = path.relative_to(root)
             except ValueError:

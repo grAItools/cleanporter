@@ -111,3 +111,43 @@ def test_bare_annotation_does_not_bind_and_is_not_ambiguous(tmp_path):
     )
     mm = ModuleMap([root])
     assert mm.classify("amb", "mod") is Kind.MODULE
+
+
+# -- nested import roots (final review, Critical 1) --------------------------
+
+
+def _src_layout(tmp_path: Path) -> Path:
+    """A src-layout project whose ``tests/__init__.py`` drags the repo root in."""
+    (tmp_path / "src" / "mypkg").mkdir(parents=True)
+    (tmp_path / "src" / "mypkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "mypkg" / "helpers.py").write_text("Widget = object\n", encoding="utf-8")
+    (tmp_path / "src" / "mypkg" / "consumer.py").write_text(
+        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "test_it.py").write_text("", encoding="utf-8")
+    return tmp_path
+
+
+def test_the_most_specific_root_wins_for_qualname(tmp_path):
+    root = _src_layout(tmp_path)
+    mm = ModuleMap([root, root / "src"])
+    assert mm.qualname_for(root / "src" / "mypkg" / "consumer.py") == "mypkg.consumer"
+
+
+def test_from_paths_on_a_src_layout_still_qualifies_against_src(tmp_path):
+    root = _src_layout(tmp_path)
+    # What `cleanporter` with no path arguments does: every file under `.`.
+    files = sorted(root.rglob("*.py"))
+    mm = ModuleMap.from_paths(files)
+    assert {r.name for r in mm.roots} == {root.name, "src"}, "both roots are inferred"
+    assert mm.qualname_for(root / "src" / "mypkg" / "consumer.py") == "mypkg.consumer"
+    assert mm.qualname_for(root / "src" / "mypkg" / "__init__.py") == "mypkg"
+
+
+def test_nesting_roots_is_reported_as_a_warning(tmp_path):
+    root = _src_layout(tmp_path)
+    mm = ModuleMap([root, root / "src"])
+    assert any("nest" in w for w in mm.warnings)
+    assert ModuleMap([root / "src"]).warnings == []
