@@ -175,11 +175,12 @@ def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
 class _UnrenderableAnnotation(Exception):
     """A (possibly nested) forward-reference string cannot be safely
     re-rendered -- either its content does not parse as an expression, or
-    the rewritten result cannot be safely re-wrapped in the original quote
-    character (fix-round-3 New 1: re-wrapping a decoded, unescaped render
-    in a raw quote character would silently terminate the string early if
-    that character reappears inside the render, e.g. an escaped-quote
-    forward reference nested inside a subscript).
+    the rewritten result, re-wrapped in the original prefix/quote, does not
+    round-trip back to exactly that result (fix-round-4: re-wrapping a
+    decoded, unescaped render raw in the original quote character can
+    change what the string means -- an escaped quote, a newline, or a
+    quote landing adjacent to a triple-quote boundary -- so the wrapped
+    text is re-parsed and compared rather than assumed safe).
 
     Always caught at the single outermost `_rewrite_string_content` call --
     the one `_plan_annotation_strings` makes directly -- never partway

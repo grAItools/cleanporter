@@ -3376,6 +3376,11 @@ codes stay in sync with the code."
 
 Every behaviour the spec requires, and the test that proves it. Run this list against the finished tree before calling the merge done.
 
+**Reconciled 2026-08-27 (Task 17), tree at 166/170 tests:** every row below was
+checked against `uv run pytest --collect-only -q` node IDs, not just `grep`
+text matches. All 19 rows still name real tests, verbatim, with no renames
+needed. No coverage gap was found.
+
 | Spec requirement | Test |
 | --- | --- |
 | 1 exemptions | `test_cli.py::test_typing_imports_are_exempt`, `test_config.py::test_exempt_modules_extends_rather_than_replaces_defaults` |

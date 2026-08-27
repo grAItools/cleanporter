@@ -66,7 +66,14 @@ class Resolver:
         return result
 
     def is_first_party(self, dotted: str) -> bool:
-        """True when *dotted* lives under one of the analysis roots."""
+        """True when *dotted*'s top-level component is one of the analysis roots.
+
+        Only the first dotted component is checked against the module map, so
+        ``is_first_party("pkg.nonexistent")`` is ``True`` whenever ``pkg`` is
+        first-party -- it does not verify that the full dotted path exists.
+        This fails safe: such a name is still reported when unresolvable, it
+        is just never mis-rewritten as third-party.
+        """
         return self._map.is_first_party(dotted)
 
     def reason(self, parent: str, name: str) -> str:
