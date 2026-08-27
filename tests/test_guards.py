@@ -119,3 +119,27 @@ def test_declaration_of_an_unrelated_name_is_not_a_hit():
 def test_multiple_names_in_one_declaration_are_reported_together():
     hits = _decl_hits("def f():\n    global A, B\n", {"A", "B"})
     assert len(hits) == 1 and "A/B" in hits[0][1]
+
+
+def test_match_captures_flags_every_binding_form():
+    tree = cst.parse_module(
+        "def f(x):\n"
+        "    match x:\n"
+        "        case Thing:\n"
+        "            return 1\n"
+        "        case [*Other]:\n"
+        "            return Other\n"
+        "        case {**Rest}:\n"
+        "            return Rest\n"
+        "        case Thing():\n"
+        "            return 2\n"
+    )
+    hits = guards.find_match_captures(tree, {"Thing", "Other", "Rest"}, lambda n: 0)
+    assert sorted({h[1].split("'")[1] for h in hits}) == ["Other", "Rest", "Thing"]
+    # the class pattern `case Thing():` is a reference, not a binding
+    assert len(hits) == 3
+
+
+def test_match_captures_ignores_unrelated_names():
+    tree = cst.parse_module("def f(x):\n    match x:\n        case other:\n            return 1\n")
+    assert guards.find_match_captures(tree, {"Thing"}, lambda n: 0) == []

@@ -1224,3 +1224,32 @@ def test_trivia_inside_an_annotation_string_is_never_dropped():
     assert result.source == src
 
 
+def test_a_match_capture_pattern_naming_a_rewritten_local_blocks():
+    """Important 2: `case VAL:` binds, it does not compare."""
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "def f(x):\n"
+        "    match x:\n"
+        "        case Thing:\n"
+        "            return 1\n"
+        "    return Thing\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert "capture pattern" in result.blockers[0].detail
+
+
+def test_a_match_value_pattern_is_still_rewritten():
+    """No over-block: `case Thing():` is a genuine value/class reference."""
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        "def f(x):\n"
+        "    match x:\n"
+        "        case Thing():\n"
+        "            return 1\n"
+        "    return 0\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "case mod.Thing():" in result.source

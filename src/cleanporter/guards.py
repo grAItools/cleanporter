@@ -108,6 +108,52 @@ def find_string_mentions(
     return hits
 
 
+def find_match_captures(
+    tree: cst.Module, names: Collection[str], line_of: LineOf
+) -> list[Hit]:
+    """``match`` patterns that *bind* a rewritten local rather than read it.
+
+    ``case VAL:`` is a capture pattern: it always matches and binds ``VAL``.
+    Qualifying it into ``case mod.VAL:`` turns it into a *value* pattern,
+    which matches only when the subject equals ``mod.VAL`` -- a silent
+    change of control flow. libcst reports the captured name as an access
+    of the import, so nothing else in the fixer can tell the two apart.
+    ``case Thing():`` (a class pattern) and ``case mod.Thing:`` (already a
+    value pattern) are genuine references and are left to be rewritten
+    normally.
+
+    The same reasoning covers the other binding forms a pattern can use:
+    ``case [*rest]`` and ``case {**rest}``.
+    """
+    hits: list[Hit] = []
+    if not names:
+        return hits
+    wanted = set(names)
+
+    class V(cst.CSTVisitor):
+        def visit_MatchAs(self, node: cst.MatchAs) -> None:
+            self._record(node, node.name)
+
+        def visit_MatchStar(self, node: cst.MatchStar) -> None:
+            self._record(node, node.name)
+
+        def visit_MatchMapping(self, node: cst.MatchMapping) -> None:
+            self._record(node, node.rest)
+
+        def _record(self, node: cst.CSTNode, name: cst.Name | None) -> None:
+            if name is not None and name.value in wanted:
+                hits.append(
+                    (
+                        line_of(node),
+                        f"'{name.value}' is bound by a match capture pattern; "
+                        "qualifying it would turn it into a value pattern",
+                    )
+                )
+
+    tree.visit(V())
+    return hits
+
+
 def find_scope_declarations(
     tree: cst.Module, names: Collection[str], line_of: LineOf
 ) -> list[Hit]:

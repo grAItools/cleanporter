@@ -516,6 +516,9 @@ class _Fixer(cst.CSTTransformer):
         self.blockers.extend(
             guards.find_scope_declarations(node, self._fixed_locals, self._line_of)
         )
+        self.blockers.extend(
+            guards.find_match_captures(node, self._fixed_locals, self._line_of)
+        )
 
     def _plan_annotation_strings(self, node: cst.Module) -> frozenset[int]:
         """Rename locals inside lazy string annotations; return their ids.
