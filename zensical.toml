@@ -1,0 +1,76 @@
+[project]
+site_name = "cleanporter"
+site_url = "https://graitools.github.io/cleanporter/"
+site_description = "Check that from-imports follow Google Python Style Guide section 2.2 (import modules only), and auto-fix the violations."
+
+copyright = "Copyright &copy; 2026 grAItools"
+
+repo_url = "https://github.com/grAItools/cleanporter"
+repo_name = "grAItools/cleanporter"
+edit_uri = "edit/main/docs/"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Usage" = "usage.md" },
+  { "Configuration" = "configuration.md" },
+  { "How it works" = "how-it-works.md" },
+  { "Safety and limitations" = "safety.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  # An "Edit this page" pencil, backed by `edit_uri` above.
+  "content.action.edit",
+  # Copy button on every code block -- the docs are full of commands.
+  "content.code.copy",
+  # Tabbed blocks stay in sync across the page (uv / pip install tabs).
+  "content.tabs.link",
+  "navigation.footer",
+  "navigation.top",
+  "navigation.tracking",
+  # Highlight the search term on the page you land on.
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/grAItools/cleanporter"
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+md_in_html = {}
+tables = {}
+toc.permalink = true
+pymdownx.betterem = {}
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.magiclink = {}
+pymdownx.superfences = {}
+pymdownx.tabbed.alternate_style = true
+pymdownx.tabbed.combine_header_slug = true
