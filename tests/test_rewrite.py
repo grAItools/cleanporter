@@ -1011,3 +1011,51 @@ def test_double_quoted_lazy_annotation_keeps_its_quote_style():
     assert result.status == "fixed"
     assert 'a: "mod.Thing"' in result.source
     assert "'mod.Thing'" not in result.source
+
+
+def test_escaped_quote_annotation_blocks_instead_of_corrupting():
+    # `_rewrite_string_content` decodes the string via `evaluated_value`
+    # (unescaping `\'` to `'`), renames, and re-wraps the render in the
+    # *original* quote character. If that character reappears inside the
+    # render -- as it does here, since the content is `list['Thing']` and
+    # the outer quote is also `'` -- naively re-wrapping would silently
+    # terminate the string early and corrupt the file (fix-round-3 New 1).
+    # Before this fix, `fix_record`'s own re-parse safety net caught the
+    # resulting syntax error and reverted to "error" status; the correct
+    # outcome is a real CP003 block, not an internal-error revert -- a
+    # previously reachable, if regex-fragile, fix should degrade to
+    # "reported", not to "crashed and recovered".
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: 'list[\\'Thing\\']') -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)
+
+
+def test_nested_unparseable_element_blocks_whole_annotation():
+    # `"dict['Thing', 'Thing[']"` parses fine as a whole (both elements are
+    # syntactically valid string literals within the outer dict[...]
+    # expression); the first element's own *content* ("Thing") parses and
+    # renames correctly, but the second's content ("Thing[") does not parse
+    # at all. If that nested failure merely left the second element
+    # untouched while keeping the first element's rename, the whole
+    # annotation would be recorded as fixed with an unclassifiable `'Thing['`
+    # surviving -- referencing a name whose import was just rewritten away,
+    # and hidden from the string-mention guard by the very `skip_ids` entry
+    # that rename produced (fix-round-3 New 2). The nested failure must
+    # abort the entire candidate string's rewrite instead.
+    src = (
+        "from __future__ import annotations\n"
+        + _TC_HEAD
+        + "    from pkg.sub.mod import Thing\n"
+        "def g(a: \"dict['Thing', 'Thing[']\") -> None: ...\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert any("string literal" in b.detail for b in result.blockers)

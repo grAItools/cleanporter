@@ -172,6 +172,29 @@ def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
     return found
 
 
+class _UnrenderableAnnotation(Exception):
+    """A (possibly nested) forward-reference string cannot be safely
+    re-rendered -- either its content does not parse as an expression, or
+    the rewritten result cannot be safely re-wrapped in the original quote
+    character (fix-round-3 New 1: re-wrapping a decoded, unescaped render
+    in a raw quote character would silently terminate the string early if
+    that character reappears inside the render, e.g. an escaped-quote
+    forward reference nested inside a subscript).
+
+    Always caught at the single outermost `_rewrite_string_content` call --
+    the one `_plan_annotation_strings` makes directly -- never partway
+    through a nested structure. A failure anywhere inside a candidate
+    string (at any depth) must abort that *entire* candidate's rewrite
+    rather than record a partially-rewritten value with an unclassifiable
+    leftover fragment nobody checked (fix-round-3 New 2: a `dict['Thing',
+    'Thing[']` where the second element fails to parse must not let the
+    first element's successful rename slip into `plan.string_repl` on its
+    own -- the surviving, untouched `'Thing['` would then be hidden from
+    the string-mention guard by the very `skip_ids` entry that rename
+    produced).
+    """
+
+
 def _rewrite_type_expr(
     expr: cst.BaseExpression, targets: dict[str, str]
 ) -> tuple[cst.BaseExpression, bool]:
@@ -199,7 +222,10 @@ def _rewrite_type_expr(
       reached only after parsing an outer string) is a forward reference in
       its own right and is recursed into via `_rewrite_string_content`, so
       a doubly-stringified annotation is handled exactly like a
-      singly-stringified one.
+      singly-stringified one. Its failure -- `_UnrenderableAnnotation` --
+      is deliberately not caught here: it must propagate past every
+      enclosing ``Subscript``/``Attribute``/... frame uncaught, all the way
+      to the one call site that is allowed to swallow it.
 
     Returns ``(expr, False)`` unchanged when nothing needed renaming, so a
     caller can tell "nothing to do" from "rewrote to something identical".
@@ -244,10 +270,11 @@ def _rewrite_type_expr(
         new_base, base_changed = _rewrite_type_expr(expr.value, targets)
         slice_changed = False
         new_slice: list[cst.SubscriptElement] = list(expr.slice)
-        if base == "Literal":
-            pass  # the whole slice is opaque values, never touched
-        elif base == "Annotated":
-            if expr.slice:
+        if base in _OPAQUE_SUBSCRIPT_BASES:
+            # "Literal": the whole slice holds opaque values, never
+            # touched. "Annotated": only the first slice element (the real
+            # type) is walked; the rest (metadata) is left alone.
+            if base == "Annotated" and expr.slice:
                 first = expr.slice[0]
                 if isinstance(first.slice, cst.Index):
                     new_value, changed = _rewrite_type_expr(first.slice.value, targets)
@@ -284,24 +311,42 @@ def _rewrite_string_content(
     """Re-parse *node*'s content as a type expression and rename it via
     `_rewrite_type_expr`.
 
-    Returns ``None`` -- meaning "leave this string alone, let it stay
-    subject to the ordinary string-mention guard" -- both when the content
-    does not parse as an expression at all (never guess: unclassifiable
-    means reported, not rewritten) and when parsing succeeds but nothing in
-    it actually needed renaming (e.g. it is a `Literal`/`Annotated`
-    payload, or mentions the name only after a ``.``).
+    Returns ``None`` when the content parses fine but nothing in it needed
+    renaming (e.g. it is a `Literal`/`Annotated` payload, or mentions the
+    name only after a ``.``) -- a genuinely inert string, safe to leave
+    exactly as it is.
+
+    Raises `_UnrenderableAnnotation` -- never caught here, only by the
+    single outermost call -- when the content cannot be safely classified
+    or re-rendered at all: it is not decodable text (e.g. a bytes literal),
+    it does not parse as an expression, or the rewritten result cannot be
+    safely re-wrapped in the original quote character (`node.quote`
+    reappearing inside `rendered` would silently terminate the string
+    early -- fix-round-3 New 1). "Never guess: unclassifiable means
+    reported, not rewritten" applies here exactly as it does to an import
+    the resolver cannot classify.
     """
     content = node.evaluated_value
     if not isinstance(content, str):
-        return None
+        raise _UnrenderableAnnotation("non-text string content (e.g. bytes)")
     try:
         parsed = cst.parse_expression(content)
-    except cst.ParserSyntaxError:
-        return None
+    except cst.ParserSyntaxError as exc:
+        raise _UnrenderableAnnotation("content does not parse as an expression") from exc
     new_expr, changed = _rewrite_type_expr(parsed, targets)
     if not changed:
         return None
     rendered = cst.Module(body=[]).code_for_node(new_expr)
+    if node.quote in rendered:
+        # An escaped occurrence of the outer quote character survives
+        # `evaluated_value`'s decoding but has no escaping left to give it
+        # once re-wrapped raw in that same character -- e.g. the content
+        # `list['Thing']` inside an outer `'...'`-quoted string, where the
+        # inner quotes were originally escaped (`'list[\'Thing\']'`).
+        # Re-wrapping naively would terminate the string early and corrupt
+        # the file (round 1's regex, working on the raw token text, never
+        # had this problem; parsing the decoded content introduced it).
+        raise _UnrenderableAnnotation("rendered value contains the original quote character")
     return node.with_changes(value=f"{node.prefix}{node.quote}{rendered}{node.quote}")
 
 
@@ -412,7 +457,16 @@ class _Fixer(cst.CSTTransformer):
         if not (self._future_annotations and self._string_targets):
             return frozenset()
         for ident, string_node in _annotation_strings(node).items():
-            rewritten = _rewrite_string_content(string_node, self._string_targets)
+            # This is the one call site allowed to swallow
+            # `_UnrenderableAnnotation`: it means *this* candidate string
+            # (possibly via a nested one, arbitrarily deep) could not be
+            # safely classified or re-rendered at all, so it is left
+            # exactly as it is, for the ordinary string-mention guard to
+            # judge on its own.
+            try:
+                rewritten = _rewrite_string_content(string_node, self._string_targets)
+            except _UnrenderableAnnotation:
+                continue
             if rewritten is not None:
                 self.plan.string_repl[ident] = rewritten.value
         return frozenset(self.plan.string_repl)
