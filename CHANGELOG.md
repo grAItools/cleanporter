@@ -55,6 +55,11 @@ stack. The Python floor moves to 3.12, which is why this is a minor bump.
 
 ### Changed
 
+- **cleanporter now complies with the rule it enforces.** `cleanporter --fix`
+  was applied to its own `src/` and `tests/`, removing 128 violations. The
+  public-API re-exports in `__init__.py` remain and are reported: the fixer
+  declines that file because the names appear in `__all__` as string literals,
+  and the finding is left visible rather than silenced with an `exclude`.
 - **Ruff is now the sole linter and formatter**, with the full rule set enabled
   (`select = ["ALL"]`) and every exception carrying its justification.
   `ruff format` is enforced at a 100-column line length. There is deliberately no

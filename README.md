@@ -90,6 +90,20 @@ works as-is.
 | `CP002` | `UNRESOLVED` | could not determine whether the symbol is a module; never rewritten |
 | `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely — reported in every mode and, like `CP001`, fails the run |
 
+## Dogfooding
+
+cleanporter is run over its own source. `src/` and `tests/` are compliant,
+with one deliberate exception: the package's public API is re-exported from
+`cleanporter/__init__.py`, so `cleanporter .` reports those re-exports as
+`CP001` and exits 1.
+
+That is not an oversight, and it is not silenced with an `exclude`. The
+findings are true — the package really does import objects by name there —
+and the fixer declines to rewrite the file on its own terms: the names appear
+in `__all__` as string literals, so rewriting the imports would leave those
+strings naming attributes the module no longer binds. It is a fair
+demonstration of both the rule and the guard that keeps the fixer honest.
+
 ## Documentation
 
 Full documentation lives at **<https://graitools.github.io/cleanporter/>**:

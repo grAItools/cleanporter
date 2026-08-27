@@ -88,6 +88,12 @@ uv sync --group zuban && uv run --group zuban zuban mypy --strict src/cleanporte
   giving the reason.
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `test:`, `perf:`,
   `refactor:`, `chore:`). Subject in the imperative, describing the effect.
+- **The package complies with its own rule.** `src/` and `tests/` are clean
+  under `cleanporter`; keep them that way -- write `from cleanporter import
+  model` and `model.Status`, not `from cleanporter.model import Status`. The
+  sole exception is the public-API re-export block in `__init__.py`, which the
+  string-mention guard blocks and which is deliberately *not* silenced with an
+  `exclude`. Do not add one.
 - **`libcst` is the only runtime dependency.** Keep it that way; tooling belongs
   in a dependency group.
 - Docstrings follow the Google convention (shape enforced; not required on every
