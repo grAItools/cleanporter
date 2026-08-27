@@ -151,3 +151,104 @@ def test_nesting_roots_is_reported_as_a_warning(tmp_path):
     mm = ModuleMap([root, root / "src"])
     assert any("nest" in w for w in mm.warnings)
     assert ModuleMap([root / "src"]).warnings == []
+
+
+# -- PEP 420 namespace packages (re-review blocker) --------------------------
+#
+# `_root_for` stops walking up at the first directory without `__init__.py`,
+# so a namespace-package directory is itself inferred as an import root. That
+# bogus root is *deeper* than the real one, so the longest-match rule above
+# would pick it and truncate the file's dotted name -- and a truncated anchor
+# resolves relative imports to the wrong absolute parent. Two disqualifiers
+# keep it out: the file's own relative-import depth, and a declared root.
+
+
+def _flat_namespace(tmp_path: Path) -> Path:
+    """``mypkg/`` with no ``__init__.py``; ``tests/`` drags in the repo root."""
+    (tmp_path / "mypkg").mkdir()
+    (tmp_path / "mypkg" / "helpers.py").write_text("Widget = object\n", encoding="utf-8")
+    (tmp_path / "mypkg" / "consumer.py").write_text(
+        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    return tmp_path
+
+
+def _nested_namespace(tmp_path: Path) -> Path:
+    """``pkg/__init__.py`` plus a namespace subpackage ``pkg/sub/``."""
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "sub" / "other.py").write_text("Thing = object\n", encoding="utf-8")
+    (tmp_path / "pkg" / "sub" / "mod.py").write_text(
+        "from .other import Thing\nt = Thing()\n", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_a_flat_namespace_package_is_not_mistaken_for_an_import_root(tmp_path):
+    root = _flat_namespace(tmp_path)
+    mm = ModuleMap.from_paths(sorted(root.rglob("*.py")))
+    assert root / "mypkg" in mm.roots, "the bogus root is still inferred"
+    # ... but a file holding `from .helpers import ...` cannot be top-level.
+    consumer = root / "mypkg" / "consumer.py"
+    assert mm.qualname_for(consumer, relative_level=1) == "mypkg.consumer"
+
+
+def test_a_namespace_subpackage_is_not_mistaken_for_an_import_root(tmp_path):
+    root = _nested_namespace(tmp_path)
+    mm = ModuleMap.from_paths(sorted(root.rglob("*.py")))
+    assert mm.qualname_for(root / "pkg" / "sub" / "mod.py", relative_level=1) == "pkg.sub.mod"
+
+
+def test_a_deeper_relative_import_pushes_the_root_further_up(tmp_path):
+    root = _nested_namespace(tmp_path)
+    (root / "pkg" / "sub" / "mod.py").write_text(
+        "from ..other import Thing\n", encoding="utf-8"
+    )
+    mm = ModuleMap.from_paths(sorted(root.rglob("*.py")))
+    # `from ..x` needs two packages above it, which only the repo root gives.
+    assert mm.qualname_for(root / "pkg" / "sub" / "mod.py", relative_level=2) == "pkg.sub.mod"
+
+
+def test_a_namespace_package_init_is_qualified_against_its_parent(tmp_path):
+    root = _nested_namespace(tmp_path)
+    (root / "pkg" / "sub" / "__init__.py").write_text(
+        "from .other import Thing\n", encoding="utf-8"
+    )
+    mm = ModuleMap.from_paths(sorted(root.rglob("*.py")))
+    assert mm.qualname_for(root / "pkg" / "sub" / "__init__.py", relative_level=1) == "pkg.sub"
+
+
+def test_an_unanchorable_relative_import_still_gets_a_qualname(tmp_path):
+    """No root satisfies the floor -> best effort, so CP002 is still reported."""
+    root = _flat_namespace(tmp_path)
+    mm = ModuleMap([root])
+    assert mm.qualname_for(root / "mypkg" / "consumer.py", relative_level=9) == "mypkg.consumer"
+
+
+def _declared_namespace(tmp_path: Path) -> Path:
+    """A src layout whose package is a PEP 420 namespace package."""
+    (tmp_path / "src" / "mypkg").mkdir(parents=True)
+    (tmp_path / "src" / "mypkg" / "other.py").write_text("Thing = object\n", encoding="utf-8")
+    (tmp_path / "src" / "mypkg" / "mod.py").write_text(
+        "from .other import Thing\nt = Thing()\n", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_a_declared_root_outranks_a_deeper_inferred_one(tmp_path):
+    root = _declared_namespace(tmp_path)
+    mm = ModuleMap.from_paths(
+        sorted(root.rglob("*.py")), declared=(root / "src",)
+    )
+    assert root / "src" in mm.roots, "a declared root is always in the root set"
+    # Even with no relative import to set a floor, `--root src` is the answer.
+    assert mm.qualname_for(root / "src" / "mypkg" / "mod.py") == "mypkg.mod"
+
+
+def test_a_declared_root_is_kept_even_when_no_file_implies_it(tmp_path):
+    root = _declared_namespace(tmp_path)
+    mm = ModuleMap([], declared=(root / "src",))
+    assert mm.roots == [(root / "src").resolve()]
+    assert mm.classify("mypkg", "other") is Kind.MODULE

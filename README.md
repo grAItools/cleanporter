@@ -202,11 +202,23 @@ first-party root — is reported `CP002` rather than guessed at):
    interpreter, or the probe otherwise failed. Reported `CP002`, never
    rewritten.
 
-Import roots are inferred from the paths given (plus any `source_roots`), and
-each file is qualified against the **most specific** root that contains it — a
-`src/` layout with a `tests/__init__.py` infers both `src/` and the repo root,
-and only the former is really on `sys.path` for `src/mypkg/consumer.py`. When
-inferred roots nest, cleanporter says so as a warning.
+Import roots are inferred from the paths given, plus any `source_roots` /
+`--root`. When several roots contain the same file, they are ranked:
+
+1. A root that would place the file too shallow for its own relative imports is
+   discarded — `from ..x import y` in a file means it sits at least two
+   packages deep. This is what keeps a PEP 420 namespace directory (which has
+   no `__init__.py`, so root inference stops there) from being mistaken for an
+   import root.
+2. A **declared** root (`--root`, `source_roots`) beats an inferred one — so
+   declare the directory that is really on `sys.path`, not one that merely
+   contains it (`--root .` on a `src/` layout would qualify the package as
+   `src.mypkg`, which is what the nesting warning is telling you).
+3. Otherwise the **most specific** (deepest) root wins — a `src/` layout with a
+   `tests/__init__.py` infers both `src/` and the repo root, and only the
+   former is really on `sys.path` for `src/mypkg/consumer.py`.
+
+When roots nest, cleanporter says so as a warning.
 
 Results are cached per `(module, symbol)` pair; each file's syntax tree is
 parsed and walked once per run, not once per finding-generating pass.

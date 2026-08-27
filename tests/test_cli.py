@@ -296,3 +296,95 @@ def test_check_mode_still_reports_on_stdout(project, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "CP001" in captured.out
     assert "checked 3 file(s)" in captured.out
+
+
+# -- PEP 420 namespace packages (re-review blocker) --------------------------
+
+
+def _runs(project: Path, module: str, root: Path) -> subprocess.CompletedProcess[str]:
+    """Import *module* with only *root* on sys.path, from outside the tree."""
+    return subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True, text=True, cwd=project,
+        env=dict(os.environ, PYTHONPATH=str(root)),
+    )
+
+
+@pytest.fixture()
+def declared_namespace(tmp_path: Path) -> Path:
+    """A src layout whose package is a namespace package: `--root src` is the
+    only thing that says where the import root is."""
+    (tmp_path / "src" / "mypkg").mkdir(parents=True)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "mypkg"\nversion = "0"\n', encoding="utf-8"
+    )
+    (tmp_path / "src" / "mypkg" / "other.py").write_text(
+        "class Thing:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "src" / "mypkg" / "mod.py").write_text(
+        "from .other import Thing\nt = Thing()\n", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_an_explicit_root_beats_a_namespace_package_inferred_below_it(
+    declared_namespace, monkeypatch, capsys
+):
+    project = declared_namespace
+    monkeypatch.chdir(project)
+    assert _runs(project, "mypkg.mod", project / "src").returncode == 0, "must import first"
+
+    main(["--fix", "--root", "src", "."])
+    capsys.readouterr()
+
+    # Not `import other`, which compiles and then raises ModuleNotFoundError.
+    assert (project / "src" / "mypkg" / "mod.py").read_text(encoding="utf-8") == (
+        "from mypkg import other\nt = other.Thing()\n"
+    )
+    proc = _runs(project, "mypkg.mod", project / "src")
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_a_flat_namespace_package_stays_importable_after_fix(tmp_path, monkeypatch, capsys):
+    (tmp_path / "mypkg").mkdir()
+    (tmp_path / "mypkg" / "helpers.py").write_text(
+        "class Widget:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "mypkg" / "consumer.py").write_text(
+        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    main(["--fix", "."])
+    capsys.readouterr()
+
+    assert (tmp_path / "mypkg" / "consumer.py").read_text(encoding="utf-8") == (
+        "from mypkg import helpers\nw = helpers.Widget()\n"
+    )
+    proc = _runs(tmp_path, "mypkg.consumer", tmp_path)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_a_namespace_subpackage_reuses_its_existing_relative_import(tmp_path, monkeypatch, capsys):
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "sub" / "other.py").write_text(
+        "class Thing:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "pkg" / "sub" / "mod.py").write_text(
+        "from . import other\nfrom .other import Thing\nt = Thing()\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    main(["--fix", "."])
+    captured = capsys.readouterr()
+
+    # The existing binding is reused: no `other_2` alias, and no bogus CP002.
+    assert (tmp_path / "pkg" / "sub" / "mod.py").read_text(encoding="utf-8") == (
+        "from . import other\nt = other.Thing()\n"
+    )
+    assert "CP002" not in captured.out + captured.err
+    proc = _runs(tmp_path, "pkg.sub.mod", tmp_path)
+    assert proc.returncode == 0, proc.stderr

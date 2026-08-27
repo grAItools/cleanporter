@@ -73,16 +73,26 @@ def _nesting_warnings(roots: list[Path]) -> list[str]:
             if inner is not outer and inner.is_relative_to(outer):
                 out.append(
                     f"import roots nest: '{outer}' contains '{inner}'; each file is "
-                    "qualified against the most specific root that contains it"
+                    "qualified against the most specific root that can hold it, "
+                    "and a declared root beats an inferred one"
                 )
     return out
 
 
 class ModuleMap:
-    """Enumerates first-party packages/modules under a set of import roots."""
+    """Enumerates first-party packages/modules under a set of import roots.
 
-    def __init__(self, roots: list[Path]) -> None:
+    ``declared`` names the roots the user stated outright (``--root`` /
+    ``source_roots``); the rest were inferred from the filesystem. The
+    distinction only matters when several roots contain the same file --
+    see `qualname_for`.
+    """
+
+    def __init__(self, roots: list[Path], declared: tuple[Path, ...] = ()) -> None:
         self.roots = [r.resolve() for r in roots]
+        #: Roots the user declared, which outrank inferred ones.
+        self.declared: frozenset[Path] = frozenset(d.resolve() for d in declared)
+        self.roots += [d for d in sorted(self.declared) if d not in self.roots]
         #: Human-readable notes about the root set itself (see `_nesting_warnings`).
         self.warnings: list[str] = _nesting_warnings(self.roots)
         self._modules: set[str] = set()  # dotted names of .py modules
@@ -92,11 +102,11 @@ class ModuleMap:
             self._scan(root, root)
 
     @classmethod
-    def from_paths(cls, paths: list[Path]) -> ModuleMap:
+    def from_paths(cls, paths: list[Path], declared: tuple[Path, ...] = ()) -> ModuleMap:
         roots: set[Path] = set()
         for p in paths:
             roots.add(_root_for(p.resolve()))
-        return cls(sorted(roots))
+        return cls(sorted(roots), declared=declared)
 
     def _scan(self, root: Path, directory: Path) -> None:
         for child in sorted(directory.iterdir()):
@@ -139,25 +149,55 @@ class ModuleMap:
             return Kind.MODULE
         return Kind.OBJECT
 
-    def qualname_for(self, path: Path) -> str | None:
+    def qualname_for(self, path: Path, relative_level: int = 0) -> str | None:
         """Dotted module name for a source file, for relative-import resolution.
 
-        The **most specific** (deepest) matching root wins. Roots routinely
-        nest -- a ``src/`` layout plus a ``tests/__init__.py`` infers both
-        ``src`` and the repo root -- and only the deepest one is actually on
-        ``sys.path`` for this file. Picking any other produces a dotted name
-        that does not exist at runtime (``src.mypkg.consumer``), which
-        ``--fix`` then writes into the file as ``from src.mypkg import
-        helpers``: code that compiles and raises ``ModuleNotFoundError``.
+        Roots routinely nest -- a ``src/`` layout plus a ``tests/__init__.py``
+        infers both ``src`` and the repo root -- and only one of them is
+        actually on ``sys.path`` for this file. Picking the wrong one produces
+        a dotted name that does not exist at runtime, which ``--fix`` then
+        writes into the file: code that compiles and raises
+        ``ModuleNotFoundError``. Candidates are ranked by three rules, in
+        order:
+
+        1. **The file's own relative-import depth is a floor.** A file whose
+           deepest relative import is ``from ..x import y`` (*level* 2) cannot
+           be a top-level module: Python requires it to sit at least *level*
+           packages deep, so any root that would give it fewer components is
+           impossible. This matters for PEP 420 namespace packages, where
+           `_root_for` stops its upward walk at the namespace directory and so
+           infers a bogus root one level too deep -- the source text is
+           evidence about the file's position that the directory tree alone
+           does not carry.
+        2. **A declared root outranks an inferred one.** ``--root src`` is the
+           user telling us the answer; inferring past it is never right.
+        3. **The most specific (deepest) root wins** among what is left. That
+           is what keeps a ``src`` layout from being qualified against the repo
+           root as ``src.mypkg.consumer``.
+
+        If *every* candidate is below the floor the file has an unanchorable
+        relative import; the best-ranked candidate is returned anyway so the
+        import is reported as CP002 rather than vanishing.
         """
         path = path.resolve()
-        for root in sorted(self.roots, key=lambda r: len(r.parts), reverse=True):
+        best: tuple[tuple[bool, int], str] | None = None
+        floored: tuple[tuple[bool, int], str] | None = None
+        for root in self.roots:
             try:
                 rel = path.relative_to(root)
             except ValueError:
                 continue
             parts = list(rel.with_suffix("").parts)
+            # Rule 1: `__init__` counts as the component a relative import
+            # anchors on, so it is counted here and dropped afterwards.
+            deep_enough = len(parts) > relative_level
             if parts and parts[-1] == "__init__":
                 parts.pop()
-            return ".".join(parts)
-        return None
+            rank = (root in self.declared, len(root.parts))  # rules 2 then 3
+            candidate = (rank, ".".join(parts))
+            if best is None or rank > best[0]:
+                best = candidate
+            if deep_enough and (floored is None or rank > floored[0]):
+                floored = candidate
+        winner = floored or best
+        return None if winner is None else winner[1]

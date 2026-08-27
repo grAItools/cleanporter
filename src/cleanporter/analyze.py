@@ -52,9 +52,15 @@ class FileRecord:
         return self._positions
 
 
-def package_of(path: Path, module_map: ModuleMap) -> str:
-    """Package containing ``path`` (``""`` for a top-level module)."""
-    qn = module_map.qualname_for(path)
+def package_of(path: Path, module_map: ModuleMap, relative_level: int = 0) -> str:
+    """Package containing ``path`` (``""`` for a top-level module).
+
+    ``relative_level`` is the deepest relative import in the file; it tells
+    `ModuleMap.qualname_for` how deep this file must sit, which is the only
+    evidence that separates a real import root from a PEP 420 namespace
+    directory that merely looks like one.
+    """
+    qn = module_map.qualname_for(path, relative_level)
     if qn is None:
         return ""
     if path.name == "__init__.py":
@@ -71,6 +77,13 @@ def iter_units(tree: cst.Module, base_pkg: str):
             continue
         for name, asname, alias in _imports.imported_names(node):
             yield ImportUnit(node, parent, name, asname, alias, star=False)
+
+
+def max_relative_level(tree: cst.Module) -> int:
+    """Deepest ``from ... import`` dot count in *tree* (0 if none are relative)."""
+    return max(
+        (_imports.relative_level(node) for node in _walk_import_froms(tree)), default=0
+    )
 
 
 def _walk_import_froms(tree: cst.Module) -> list[cst.ImportFrom]:
@@ -141,8 +154,8 @@ def build(
     any warnings produced while expanding ``paths`` (e.g. missing paths).
     """
     files, warnings = iter_python_files(paths, config)
-    roots = [config.root / r for r in config.source_roots]
-    module_map = ModuleMap.from_paths(files + roots)
+    roots = tuple(config.root / r for r in config.source_roots)
+    module_map = ModuleMap.from_paths(files, declared=roots)
     warnings.extend(module_map.warnings)
     resolver = Resolver(module_map, python=config.python)
 
@@ -156,7 +169,9 @@ def build(
             errors.append(Finding(f, exc.raw_line, exc.raw_column, "?", "?",
                                   Status.UNRESOLVED, f"parse error: {exc.message}"))
             continue
-        records.append(FileRecord(f, source, tree, package_of(f, module_map)))
+        records.append(
+            FileRecord(f, source, tree, package_of(f, module_map, max_relative_level(tree)))
+        )
 
     resolver.warm(collect_pairs(records))
     return records, resolver, errors, warnings
