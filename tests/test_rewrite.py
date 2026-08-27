@@ -1176,3 +1176,51 @@ def test_an_annotation_inside_the_importing_scope_is_still_rewritten():
     assert 'def inner(x: "mod.Thing") -> None: ...' in result.source
 
 
+def test_a_comment_inside_a_parenthesized_import_blocks_the_file():
+    """Important 1: regenerating the kept-names line would discard it."""
+    src = (
+        "from pkg.sub.mod import (\n"
+        "    Thing,   # the important thing\n"
+        "    go,\n"
+        ")\n"
+        "x = Thing()\n"
+        "y = go()\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src, "a blocked file must be byte-identical"
+    assert "comment" in result.blockers[0].detail
+
+
+def test_a_noqa_comment_on_one_imported_name_blocks_the_file():
+    src = (
+        "from pkg.sub.mod import (\n"
+        "    Thing,  # noqa: F401\n"
+        ")\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_an_import_with_no_interior_comment_still_fixes():
+    src = "from pkg.sub.mod import (\n    Thing,\n    go,\n)\nx = Thing()\ny = go()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == "from pkg.sub import mod\nx = mod.Thing()\ny = mod.go()\n"
+
+
+def test_trivia_inside_an_annotation_string_is_never_dropped():
+    """Important 1 (same family): 'Thing  # note' must not become 'mod.Thing'."""
+    src = (
+        "from __future__ import annotations\n"
+        "from pkg.sub.mod import Thing\n"
+        'def f(x: "Thing  # note") -> None: ...\n'
+        "y = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+

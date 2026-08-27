@@ -123,6 +123,29 @@ def _deleted_names(tree: cst.Module) -> set[str]:
     return names
 
 
+def _interior_comments(node: cst.CSTNode) -> bool:
+    """Any comment sitting *inside* this node's own whitespace.
+
+    The kept-names line is regenerated from text via `cst.parse_statement`,
+    which cannot carry interior trivia across, so a comment inside a
+    parenthesized multi-line import -- including a per-name ``# noqa:`` or
+    ``# type: ignore`` -- would be silently dropped. Line-level trivia
+    (``leading_lines`` / ``trailing_whitespace``) belongs to the enclosing
+    `SimpleStatementLine`, is carried over explicitly, and is checked
+    separately; this looks only at what the regenerated statement would
+    lose.
+    """
+    found = False
+
+    class V(cst.CSTVisitor):
+        def visit_Comment(self, comment: cst.Comment) -> None:
+            nonlocal found
+            found = True
+
+    node.visit(V())
+    return found
+
+
 def _collect_imports(node: cst.CSTNode) -> list[cst.Import]:
     found: list[cst.Import] = []
 
@@ -370,6 +393,16 @@ def _rewrite_string_content(
     new_expr, changed = _rewrite_type_expr(parsed, targets)
     if not changed:
         return None
+    # Rendering a parsed expression drops anything the parse did not attach
+    # to a node -- notably a trailing comment: `'Thing  # note'` parses to a
+    # bare `Name` and renders back as `'Thing'`, silently deleting the
+    # author's note. Rather than enumerate what can be lost, re-render the
+    # *original* parse and require it to reproduce the content exactly; if
+    # it cannot, this string is unrenderable and blocks, exactly as it would
+    # if it had failed to parse. (Same defect family as the interior-comment
+    # check on import lines: content loss is worse than declining the fix.)
+    if cst.Module(body=[]).code_for_node(parsed) != content:
+        raise _UnrenderableAnnotation("content carries trivia that re-rendering would drop")
     rendered = cst.Module(body=[]).code_for_node(new_expr)
     # `evaluated_value` *decodes* the content, so any escape it resolved is
     # gone by the time `rendered` exists: an escaped occurrence of the outer
@@ -613,6 +646,19 @@ class _Fixer(cst.CSTTransformer):
         if not fix:
             return
         self._fixed_locals.update(asname or name for name, asname in fix)
+        if _interior_comments(imp):
+            # The kept-names line is regenerated from text and the whole
+            # statement is replaced, so any comment *inside* the import
+            # would vanish. Same ruling as the line-level comment check
+            # below: silently discarding an author's comment is worse than
+            # declining to fix the file.
+            self.blockers.append(
+                (
+                    self._line_of(imp),
+                    "rewriting this import would discard a comment inside it",
+                )
+            )
+            return
         if id(imp) in self._tc_ids and not self._future_annotations:
             self.blockers.append(
                 (
