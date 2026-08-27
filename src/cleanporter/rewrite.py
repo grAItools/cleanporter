@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 import libcst as cst
 from libcst.metadata import (
     BaseAssignment,
+    ClassScope,
     GlobalScope,
     PositionProvider,
     Scope,
@@ -415,8 +416,10 @@ class _Fixer(cst.CSTTransformer):
         #: Local names this run would rewrite -- the input to every guard.
         self._fixed_locals: set[str] = set()
         self._future_annotations = False
-        #: local name -> "token.name", for lazy string annotations (Task 16).
-        self._string_targets: dict[str, str] = {}
+        #: (binding scope) -> {local name -> "token.name"}, for lazy string
+        #: annotations (Task 16). Keyed by scope, because a rename is only
+        #: valid for annotation strings that can actually *see* that binding.
+        self._string_targets: dict[Scope, dict[str, str]] = {}
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
@@ -500,6 +503,18 @@ class _Fixer(cst.CSTTransformer):
         if not (self._future_annotations and self._string_targets):
             return frozenset()
         for ident, string_node in _annotation_strings(node).items():
+            # Only renames the *enclosing scope of this string* can actually
+            # see. `plan.name_repl` has always been scope-aware; this path
+            # was not, and a flat table let a function-local alias be
+            # written into a module-level annotation, naming a binding that
+            # does not exist there (final review Critical 4). An empty
+            # target set leaves the string untouched, which is the safe
+            # direction: it then stays visible to the string-mention guard.
+            targets = self._targets_visible_from(
+                self.get_metadata(ScopeProvider, string_node, None)
+            )
+            if not targets:
+                continue
             # This is the one call site allowed to swallow
             # `_UnrenderableAnnotation`: it means *this* candidate string
             # (possibly via a nested one, arbitrarily deep) could not be
@@ -507,12 +522,34 @@ class _Fixer(cst.CSTTransformer):
             # exactly as it is, for the ordinary string-mention guard to
             # judge on its own.
             try:
-                rewritten = _rewrite_string_content(string_node, self._string_targets)
+                rewritten = _rewrite_string_content(string_node, targets)
             except _UnrenderableAnnotation:
                 continue
             if rewritten is not None:
                 self.plan.string_repl[ident] = rewritten.value
         return frozenset(self.plan.string_repl)
+
+    def _targets_visible_from(self, scope: Scope | None) -> dict[str, str]:
+        """Merge the string-rename tables of every scope *scope* can read.
+
+        Walks outward from *scope* to module scope, nearer bindings winning,
+        mirroring ordinary Python name resolution: a class body's names are
+        *not* visible to scopes nested inside it, so a `ClassScope` only
+        contributes when it is the string's own scope. A `None` scope (no
+        metadata) contributes nothing, so the string is left alone.
+        """
+        merged: dict[str, str] = {}
+        current = scope
+        own = True
+        while current is not None:
+            if own or not isinstance(current, ClassScope):
+                for local, target in self._string_targets.get(current, {}).items():
+                    merged.setdefault(local, target)
+            if isinstance(current, GlobalScope):
+                break
+            own = False
+            current = current.parent
+        return merged
 
     def _build_existing(self, node: cst.Module) -> None:
         """Map already-imported modules to the simple name they are bound to."""
@@ -659,7 +696,7 @@ class _Fixer(cst.CSTTransformer):
                     self.plan.name_repl[id(ref.node)] = cst.Attribute(
                         value=cst.Name(bind), attr=cst.Name(name)
                     )
-            self._string_targets[bound] = f"{bind}.{name}"
+            self._string_targets.setdefault(scope, {})[bound] = f"{bind}.{name}"
             self.plan.fixed += 1
 
         # carry the original line's leading comments/blank lines onto the first

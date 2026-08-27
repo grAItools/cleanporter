@@ -1141,3 +1141,38 @@ def test_deleting_a_rewritten_local_blocks_the_file():
     assert "del" in result.blockers[0].detail
 
 
+def test_a_function_local_alias_never_leaks_into_a_module_level_annotation():
+    """Critical 4: `_string_targets` must be scope-aware."""
+    src = (
+        "from __future__ import annotations\n"
+        "\n"
+        "def f():\n"
+        "    from pkg.sub.mod import Thing\n"
+        "    return Thing()\n"
+        "\n"
+        "class Thing:\n"
+        "    pass\n"
+        "\n"
+        'def g(x: "Thing") -> None: ...\n'
+    )
+    result = outcome(src)
+    assert "mod.Thing" not in result.source.split("def g")[-1]
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_an_annotation_inside_the_importing_scope_is_still_rewritten():
+    """The scope key must not over-block: same-scope annotations still fix."""
+    src = (
+        "from __future__ import annotations\n"
+        "\n"
+        "def f():\n"
+        "    from pkg.sub.mod import Thing\n"
+        "    def inner(x: \"Thing\") -> None: ...\n"
+        "    return inner, Thing\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert 'def inner(x: "mod.Thing") -> None: ...' in result.source
+
+
