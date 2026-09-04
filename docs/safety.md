@@ -294,6 +294,46 @@ reported. cleanporter never hands back source it cannot compile.
     evidence either, for the same reason those strings are opaque to the
     string guard. Both make the re-export *look* unused, and it is then
     fixed — the same string-opacity family as the accepted limitations below.
+- **A module-level name in `pkg/__init__.py` is the attribute
+  `pkg.<name>`,** and that makes two things unsafe there that are fine
+  anywhere else.
+
+    A new binding must not take the name of one of `pkg`'s **own
+    submodules**. Rewriting `from kombu.serialization import loads` inside
+    `celery/security/__init__.py` to `from kombu import serialization` put
+    *kombu's* module in the slot belonging to
+    `celery.security.serialization` — where it sits, unremarked, until the
+    first `import celery.security.serialization` anywhere replaces the
+    attribute and this file's own `serialization.loads` starts resolving
+    against the wrong module. So the alias allocator treats a sibling
+    submodule's name as taken and picks `serialization_2` instead. Nothing is
+    declined for this; it only changes which name is chosen. Binding a
+    submodule under *its own* name is the one case with nothing to collide —
+    the global and the attribute would hold the same object — so
+    `from pkg import serialization` inside `pkg/__init__.py` is still spelled
+    without an alias.
+
+    The same rule governs *reuse*. An import the author already wrote under a
+    sibling submodule's name is no more durable than one the fixer would
+    allocate there, so references are never qualified through it; a fresh
+    alias is bound instead and their import is left untouched. Their binding
+    was harmless while nothing depended on it, and qualifying through it is
+    exactly what would have made it load-bearing.
+
+    Second, `from pkg import S` written inside `pkg/__init__.py` is not a
+    reliable way to reach the submodule `pkg.S`. `from X import Y` imports
+    `X`, binds `getattr(X, "Y")`, and falls back to importing the submodule
+    *only when that attribute is absent* — so any top-level `S` already bound
+    in this file wins, silently. When that competing binding is the author's,
+    aliasing cannot help: it has to stay. That import alone is reported
+    `CP003` and kept exactly as written, while the rest of the file is still
+    fixed. Whether `pkg.S` is reachable is decided by the same rule the
+    resolver uses for `CP002` — a name that is both a submodule on disk and a
+    top-level binding in the package's `__init__` is ambiguous, never guessed.
+
+    The identical hazard exists for a `from pkg import S` emitted into a file
+    that is *not* `pkg`, since `pkg/__init__.py` shadows `S` for every
+    importer alike. That case is **not** currently detected.
 - **A file is blocked outright, not partially fixed**, whenever a rewritten
   name is referenced by a non-docstring string literal, appears inside a
   doctest, or when removing an import would discard its comment. See the

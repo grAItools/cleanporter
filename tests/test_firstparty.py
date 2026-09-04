@@ -137,6 +137,27 @@ def test_a_name_neither_claimant_reexports_is_not_a_reexport(tmp_path):
     assert mm.is_reexport("amb", "absent") is False
 
 
+# -- a package's own submodule names ------------------------------------------
+
+
+def test_submodules_lists_the_immediate_children(tmp_path):
+    root = _pkg(tmp_path)
+    (root / "amb" / "deep").mkdir()
+    (root / "amb" / "deep" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "amb" / "deep" / "buried.py").write_text("", encoding="utf-8")
+    (root / "amb" / "accel.abi3.so").touch()
+    mm = firstparty.ModuleMap([root])
+    assert mm.submodules("amb") == frozenset({"mod", "deep", "accel"})
+    assert mm.submodules("amb.deep") == frozenset({"buried"})
+
+
+def test_submodules_of_a_plain_module_is_empty(tmp_path):
+    """What makes this safe to ask about any file: a module has no children."""
+    mm = firstparty.ModuleMap([_pkg(tmp_path)])
+    assert mm.submodules("amb.mod") == frozenset()
+    assert mm.submodules("not.a.thing") == frozenset()
+
+
 # -- nested import roots (final review, Critical 1) --------------------------
 
 

@@ -274,6 +274,22 @@ def analyze_record(
                 )
             )
             continue
+        if resolver.self_import_unreachable(rec.qualname, unit.parent):
+            token = unit.parent.rsplit(".", 1)[-1]
+            findings.append(
+                model.Finding(
+                    rec.path,
+                    line,
+                    col,
+                    unit.parent,
+                    unit.name,
+                    model.Status.SKIPPED,
+                    f"'{token}' is a submodule of this module and also bound in it, so "
+                    f"the replacement 'from {rec.qualname} import {token}' would bind "
+                    "the existing name instead of the submodule",
+                )
+            )
+            continue
         if _imports.is_explicit_reexport(unit.name, unit.asname):
             findings.append(
                 model.Finding(

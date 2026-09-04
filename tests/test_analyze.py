@@ -288,3 +288,38 @@ def test_the_consumer_of_a_shadowed_reexport_is_still_a_violation(
     """Protecting the package's ``__init__`` is what keeps the consumer fixable."""
     by_file = _findings_by_file(_shadowed_package_tree(tmp_path))
     assert [f.code for f in by_file["consumer.py"]] == ["CP001"]
+
+
+def _self_shadowing_tree(tmp_path: pathlib.Path, init: str) -> pathlib.Path:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "serialization.py").write_text('MARK = "pkg"\n')
+    (pkg / "__init__.py").write_text(init)
+    return pkg
+
+
+def test_an_import_of_a_submodule_its_own_init_shadows_is_skipped(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The replacement would bind the shadowing name, not the submodule.
+
+    ``from pkg import serialization`` inside ``pkg/__init__.py`` binds
+    ``getattr(pkg, 'serialization')`` and only imports the submodule when
+    that attribute is absent -- so the module-level ``serialization = 42``
+    wins. Reported rather than silently left as a ``CP001`` nothing will
+    ever clear.
+    """
+    pkg = _self_shadowing_tree(
+        tmp_path, "serialization = 42\nfrom pkg.serialization import MARK\nx = MARK\n"
+    )
+    findings = _findings_by_file(pkg)["__init__.py"]
+    assert [f.code for f in findings] == ["CP003"]
+    assert "would bind the existing name instead of the submodule" in findings[0].detail
+
+
+def test_the_same_import_is_an_ordinary_violation_without_the_shadow(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Self-reference alone is not the problem; only the competing binding is."""
+    pkg = _self_shadowing_tree(tmp_path, "from pkg.serialization import MARK\nx = MARK\n")
+    assert [f.code for f in _findings_by_file(pkg)["__init__.py"]] == ["CP001"]

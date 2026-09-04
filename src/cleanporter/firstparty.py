@@ -114,6 +114,10 @@ class ModuleMap:
         #: absent: there is no source to parse, so `is_reexport` cannot
         #: answer for them and says no.
         self._sources: dict[str, list[pathlib.Path]] = {}
+        #: dotted package -> the leaf names of its immediate children. Built
+        #: while scanning because `submodules` is asked once per rewritten
+        #: file and deriving it by filtering `_modules` would be quadratic.
+        self._children: dict[str, set[str]] = {}
         for root in self.roots:
             self._scan(root, root)
 
@@ -162,6 +166,7 @@ class ModuleMap:
             if child.is_dir() and _is_pkg_dir(child):
                 dotted = self._dotted(root, child)
                 self._packages.add(dotted)
+                self._note_child(dotted)
                 init = child / "__init__.py"
                 if init.is_file():
                     self._inits.setdefault(dotted, []).append(init)
@@ -172,8 +177,14 @@ class ModuleMap:
                 if stem and stem != "__init__":
                     dotted = self._dotted(root, child.with_name(stem))
                     self._modules.add(dotted)
+                    self._note_child(dotted)
                     if child.suffix == ".py":
                         self._sources.setdefault(dotted, []).append(child)
+
+    def _note_child(self, dotted: str) -> None:
+        package, _, leaf = dotted.rpartition(".")
+        if package:
+            self._children.setdefault(package, set()).add(leaf)
 
     @staticmethod
     def _dotted(root: pathlib.Path, path: pathlib.Path) -> str:
@@ -200,6 +211,28 @@ class ModuleMap:
         if on_disk:
             return model.Kind.MODULE
         return model.Kind.OBJECT
+
+    def submodules(self, dotted: str) -> frozenset[str]:
+        """Leaf names of the modules and subpackages directly under *dotted*.
+
+        Empty for anything that is not a package on disk, which is what makes
+        this safe to ask about any file: a plain module has no children, so
+        the answer is "nothing to avoid".
+
+        The caller is the fixer, and what it needs this for is that inside
+        ``P/__init__.py`` a module-level name *is* an attribute of ``P``. A
+        binding the fixer introduces there under the name of one of ``P``'s
+        own submodules occupies that submodule's attribute slot until the
+        first `import P.SUB` anywhere replaces it -- silently, and long after
+        the rewrite. See `rewrite._Fixer._allocate_token`.
+
+        Only the filesystem is consulted, so a submodule that exists solely in
+        another namespace-package portion outside the analysed roots is not
+        listed. That under-approximates, which is the one direction this
+        cannot be conservative in; it is the same boundary every other
+        first-party answer has.
+        """
+        return frozenset(self._children.get(dotted, ()))
 
     def is_reexport(self, parent: str, name: str) -> bool:
         """True when first-party ``parent`` only *re-exports* ``name``.

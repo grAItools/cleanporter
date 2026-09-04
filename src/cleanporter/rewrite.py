@@ -615,6 +615,13 @@ class _Fixer(cst.CSTTransformer):
         self._del_names: set[str] = set()
         #: Local names this run would rewrite -- the input to every guard.
         self._fixed_locals: set[str] = set()
+        #: Leaf names of this module's own submodules. Non-empty only when
+        #: this file is a package ``__init__`` (a plain module has no
+        #: children), which is exactly when a module-level name here is also
+        #: an attribute of that package -- see `_allocate_token`.
+        self._sibling_modules: frozenset[str] = (
+            resolver.submodules(rec.qualname) if rec.qualname else frozenset()
+        )
         self._future_annotations = False
         #: (binding scope) -> {local name -> "token.name"}, for lazy string
         #: annotations (Task 16). Keyed by scope, because a rename is only
@@ -831,9 +838,11 @@ class _Fixer(cst.CSTTransformer):
         """
         keep: list[str] = []
         fix: list[tuple[str, str | None]] = []
+        unreachable = self._resolver.self_import_unreachable(self._rec.qualname, parent)
         for name, asname, _alias in _imports.imported_names(imp):
             if (
-                self._config.is_exempt(parent, name)
+                unreachable
+                or self._config.is_exempt(parent, name)
                 or _imports.is_explicit_reexport(name, asname)
                 or (
                     self._rec.qualname
@@ -1131,9 +1140,17 @@ class _Fixer(cst.CSTTransformer):
             # `path.join(path, "x")` (final review Critical 2). Only
             # `_allocate_token` avoided module-level names; this path
             # bypassed that entirely.
+            # A binding the *author* already made under a sibling submodule's
+            # name is no more durable than one this run would allocate there
+            # (`_submodule_slots`): the first `import P.<name>` replaces it.
+            # It was harmless while nothing depended on it; qualifying
+            # references through it is what would make it load-bearing. Fall
+            # through to a fresh alias instead -- their import stays, this
+            # run just does not lean on it.
             shadowed = (
                 existing in extra_avoid
                 or existing in self._del_names
+                or existing in self._submodule_slots(parent)
                 or self._rebound_at_module_scope(scope, existing)
                 or (
                     not isinstance(scope, metadata.GlobalScope)
@@ -1147,6 +1164,31 @@ class _Fixer(cst.CSTTransformer):
         bind = self._allocate_token(scope, parent, extra_avoid)
         self._module_binding[key] = bind
         return bind, True
+
+    def _submodule_slots(self, parent: str) -> set[str]:
+        """Names a module-scope binding of *parent* must not occupy.
+
+        Inside ``P/__init__.py`` a module-level name *is* the attribute
+        ``P.<name>``, so a binding named after one of ``P``'s own submodules
+        sits in that submodule's slot -- and the first ``import P.<name>``
+        anywhere, in any file, replaces it. Whatever this file bound there is
+        then gone, and its own qualified references start resolving against
+        the submodule instead. Nothing raises where the mistake is.
+
+        Binding a submodule under *its own* name is the one case with nothing
+        to collide: the global and the attribute hold the same object, which
+        is what the import system puts there anyway. Excluding it keeps
+        ``from pkg import serialization`` inside ``pkg/__init__.py`` spelled
+        without a needless alias.
+
+        Empty for every file that is not a package ``__init__``, since a plain
+        module has no submodules and its globals are nobody's attributes.
+        """
+        return {
+            sibling
+            for sibling in self._sibling_modules
+            if f"{self._rec.qualname}.{sibling}" != parent
+        }
 
     def _rebound_at_module_scope(self, scope: metadata.Scope, name: str) -> bool:
         """True when *name* has more than one assignment at module scope.
@@ -1168,9 +1210,28 @@ class _Fixer(cst.CSTTransformer):
         ancestor -- avoids it too. Does *not* touch `_module_binding`: that
         is the caller's job, since a fix-round-3 collision reallocation
         deliberately leaves the original memoized entry alone.
+
+        A module-scope token in ``P/__init__.py`` must additionally avoid the
+        names of ``P``'s *own submodules* (`_sibling_modules`), because there
+        a global is not merely a name: it is the attribute ``P.<name>``.
+        Rewriting ``from kombu.serialization import loads`` to ``from kombu
+        import serialization`` inside ``celery/security/__init__.py`` put
+        ``kombu.serialization`` in the slot belonging to
+        ``celery.security.serialization``, and nothing complains until the
+        first ``import celery.security.serialization`` anywhere replaces the
+        attribute -- after which this file's own ``serialization.loads``
+        resolves against the wrong module. It also made the very next
+        rewritten line read that slot instead of importing the submodule
+        (`resolver.Resolver.self_import_unreachable`), which is how the corpus
+        found it.
+
+        The avoidance applies at `GlobalScope` only: a function-local or class
+        body name is not an attribute of the module.
         """
         token = parent.rsplit(".", 1)[-1]
         taken = self._names_in_scope(scope) | extra_avoid
+        if isinstance(scope, metadata.GlobalScope):
+            taken = taken | self._submodule_slots(parent)
         bind = token
         counter = 2
         while bind in taken:

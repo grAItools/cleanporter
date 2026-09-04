@@ -524,3 +524,221 @@ def test_a_namespace_package_holding_a_subpackage_is_not_rewritten_to_stdlib(
     )
     proc = _runs(tmp_path, "analytics.io", tmp_path)
     assert proc.returncode == 0, proc.stderr
+
+
+# -- a name that is also one of the package's own submodules ----------------
+#
+# Inside `pkg/__init__.py` a module-level name *is* the attribute
+# `pkg.<name>`, which makes two things unsafe there that are fine anywhere
+# else. Every test in this section asserts on what the rewritten package
+# *evaluates to*, never on its text alone: the character of the bug is that
+# the output looks reasonable, imports without error, and is wrong.
+
+
+def _package_values(project: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    """Report what `pkg` bound, at both of the timings that can differ.
+
+    `VALUE` is read straight after `import pkg`, and `use()` is called after
+    `import pkg.serialization`. That second import is the whole point:
+    importing a submodule sets it as an attribute of its parent, so a global
+    sitting in that attribute's slot is silently replaced right there -- long
+    after the rewrite, and in a file that need not be the rewritten one.
+    """
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import pkg; before = pkg.VALUE\nimport pkg.serialization\nprint(before, pkg.use())",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=project,
+        env=dict(os.environ, PYTHONPATH=str(project)),
+    )
+
+
+def _two_serializations(tmp_path: pathlib.Path, init: str) -> pathlib.Path:
+    """`pkg` and `kombu` each holding a `serialization` submodule."""
+    (tmp_path / "kombu").mkdir()
+    (tmp_path / "kombu" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "kombu" / "serialization.py").write_text(
+        'MARK = "kombu"\n\n\ndef loads(x):\n    return x\n', encoding="utf-8"
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "serialization.py").write_text('MARK = "pkg"\n', encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text(init, encoding="utf-8")
+    return tmp_path
+
+
+def test_fix_does_not_bind_another_module_over_a_submodules_name(tmp_path, monkeypatch, capsys):
+    """A new global in `pkg/__init__.py` must not take `pkg.serialization`'s slot.
+
+    Rewriting `from kombu.serialization import loads` to `from kombu import
+    serialization` puts *kombu's* module in the attribute belonging to
+    `pkg.serialization`. The next line's `from pkg import serialization` then
+    reads that attribute instead of importing the submodule -- `from X import
+    Y` falls back to importing the submodule only when `X` has no attribute
+    `Y` -- so it silently binds the wrong module. Nothing raises. Found in the
+    corpus as `celery/security/__init__.py`, where the name meant for
+    `celery.security.serialization` became `kombu.serialization`.
+    """
+    project = _two_serializations(
+        tmp_path,
+        "from kombu.serialization import loads\n"
+        "from pkg.serialization import MARK\n"
+        "\n"
+        "VALUE = MARK\n"
+        "\n"
+        "\n"
+        "def use():\n"
+        "    return loads(1)\n",
+    )
+    before = _package_values(project)
+    assert before.stdout.split() == ["pkg", "1"], before.stderr
+
+    monkeypatch.chdir(project)
+    cli.main(["--fix", "."])
+    capsys.readouterr()
+
+    after = _package_values(project)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.split() == ["pkg", "1"], (
+        f"the rewrite changed what the package evaluates to:\n"
+        f"{(project / 'pkg' / '__init__.py').read_text(encoding='utf-8')}"
+    )
+
+
+def test_fix_does_not_qualify_through_a_binding_already_in_a_submodules_slot(
+    tmp_path, monkeypatch, capsys
+):
+    """Reusing a binding is subject to the same rule as allocating one.
+
+    The author's `from kombu import serialization` already sits in
+    `pkg.serialization`'s slot, and that was harmless only while nothing
+    depended on it. Qualifying `loads` through it is what would make it
+    load-bearing -- and the first `import pkg.serialization` anywhere
+    replaces it, after which `serialization.loads` raises. A fresh alias is
+    bound instead, and the author's own import is left untouched.
+    """
+    project = _two_serializations(
+        tmp_path,
+        "from kombu import serialization\n"
+        "from kombu.serialization import loads\n"
+        "\n"
+        'VALUE = "pkg"\n'
+        "\n"
+        "\n"
+        "def use():\n"
+        "    return loads(1)\n",
+    )
+    before = _package_values(project)
+    assert before.stdout.split() == ["pkg", "1"], before.stderr
+
+    monkeypatch.chdir(project)
+    cli.main(["--fix", "."])
+    capsys.readouterr()
+
+    after = _package_values(project)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.split() == ["pkg", "1"], (
+        f"the rewrite leaned on a binding the import system overwrites:\n"
+        f"{(project / 'pkg' / '__init__.py').read_text(encoding='utf-8')}"
+    )
+
+
+def test_a_self_referential_import_is_still_rewritten_when_nothing_shadows_it(
+    tmp_path, monkeypatch, capsys
+):
+    """The decline must be about the shadowing, not about self-reference.
+
+    With no competing binding, `from pkg import serialization` inside
+    `pkg/__init__.py` finds no such attribute, imports the submodule, and is
+    exactly right -- and it needs no alias either, because the name it binds
+    is the same object the import system puts in that attribute anyway.
+    """
+    project = _two_serializations(
+        tmp_path,
+        "from pkg.serialization import MARK\n\nVALUE = MARK\n\n\ndef use():\n    return 1\n",
+    )
+    monkeypatch.chdir(project)
+    cli.main(["--fix", "."])
+    capsys.readouterr()
+
+    assert (
+        (project / "pkg" / "__init__.py")
+        .read_text(encoding="utf-8")
+        .startswith("from pkg import serialization\n")
+    ), "a self-referential import nothing shadows is fixed, and without an alias"
+    after = _package_values(project)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.split() == ["pkg", "1"]
+
+
+def test_a_binding_the_author_wrote_over_a_submodule_name_is_declined(
+    tmp_path, monkeypatch, capsys
+):
+    """When the shadowing name is the author's, no alias can help.
+
+    The binding has to stay, so `from pkg import serialization` would keep
+    reading it. That one import is reported `CP003` and kept byte-identical.
+    """
+    project = _two_serializations(
+        tmp_path,
+        "serialization = 42\n"
+        "from pkg.serialization import MARK\n"
+        "\n"
+        "VALUE = MARK\n"
+        "\n"
+        "\n"
+        "def use():\n"
+        "    return 1\n",
+    )
+    monkeypatch.chdir(project)
+    cli.main(["--fix", "."])
+    captured = capsys.readouterr()
+
+    assert "CP003" in captured.err
+    assert "would bind the existing name instead of the submodule" in captured.err
+    assert "from pkg.serialization import MARK" in (project / "pkg" / "__init__.py").read_text(
+        encoding="utf-8"
+    )
+    after = _package_values(project)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.split() == ["pkg", "1"]
+
+
+def test_fix_aliases_a_top_level_import_that_collides_with_a_submodule(
+    tmp_path, monkeypatch, capsys
+):
+    """The undotted `import json` branch is subject to the same rule.
+
+    A package with its own `json.py` gets `import json as json_2`; plain
+    `import json` would put the stdlib module in `pkg.json`'s slot, and the
+    first `import pkg.json` then replaces it, leaving `json.dumps` an
+    `AttributeError` inside this very file.
+    """
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "json.py").write_text('MARK = "pkg-json"\n', encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text(
+        "from json import dumps\n\nVALUE = dumps([1])\n\n\ndef use():\n    return dumps([2])\n",
+        encoding="utf-8",
+    )
+    probe = [
+        sys.executable,
+        "-c",
+        "import pkg; before = pkg.VALUE\nimport pkg.json\nprint(before, pkg.use())",
+    ]
+    env = dict(os.environ, PYTHONPATH=str(tmp_path))
+    before = subprocess.run(probe, capture_output=True, text=True, cwd=tmp_path, env=env)
+    assert before.stdout.split() == ["[1]", "[2]"], before.stderr
+
+    monkeypatch.chdir(tmp_path)
+    cli.main(["--fix", "."])
+    capsys.readouterr()
+
+    after = subprocess.run(probe, capture_output=True, text=True, cwd=tmp_path, env=env)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.split() == ["[1]", "[2]"], (
+        f"the stdlib module was bound over `pkg.json`:\n"
+        f"{(tmp_path / 'pkg' / '__init__.py').read_text(encoding='utf-8')}"
+    )

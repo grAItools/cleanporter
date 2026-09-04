@@ -111,6 +111,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   working code. Found by the corpus check, where `click_plugins.py` (2.0dev)
   beside `click_plugins/` (1.1.1.2) broke `celery.bin.celery`.
 
+- **A new binding in `pkg/__init__.py` no longer takes a submodule's name.**
+  There a module-level name *is* the attribute `pkg.<name>`, so rewriting
+  `from kombu.serialization import loads` to `from kombu import serialization`
+  inside `celery/security/__init__.py` put kombu's module in the slot owned by
+  `celery.security.serialization`. Two things then go wrong, and neither
+  raises at the point of the mistake: the next `from celery.security import
+  serialization` read that attribute instead of importing the submodule — the
+  submodule fallback only runs when the attribute is *absent* — so it bound
+  `kombu.serialization` under a name meant for celery's; and once anything
+  imports the real submodule, the attribute is replaced and this file's own
+  `serialization.loads` starts resolving against the wrong module. Code that
+  imports, runs, and is wrong.
+
+    The alias allocator now treats a sibling submodule's name as taken, so it
+  picks `serialization_2`. Nothing is declined for this — only the chosen name
+  changes — and binding a submodule under its *own* name is excluded, since
+  the global and the attribute would then hold the same object. Binding *reuse*
+  follows the same rule: an import the author already wrote under a sibling
+  submodule's name is no more durable than one the fixer would allocate there,
+  so references are no longer qualified through it.
+
+    When the shadowing name is the author's rather than one the fixer would
+  introduce, no alias can help: that binding stays, so `from pkg import S`
+  would keep reading it. That import alone is now reported `CP003` and kept
+  verbatim, while the rest of the file is still fixed. Reachability is decided
+  by the rule already behind `CP002` — a name that is both a submodule on disk
+  and a top-level binding in the package's `__init__` is ambiguous and never
+  guessed — rather than by a second rule that could drift from it.
+
+    Found by the corpus check, which is also where the earlier fix stopped
+  masking it: `celery.security` went from failing with a swallowed
+  `ModuleNotFoundError` to raising `ImproperlyConfigured` out of
+  `pkgutil.walk_packages`. The same hazard for a `from pkg import S` emitted
+  into a file that is *not* `pkg` is a known gap, recorded in `docs/safety.md`.
+
 - **A plain `import x` inside `if TYPE_CHECKING:` is no longer treated as a
   runtime binding.** Such a block is `GlobalScope` to libCST exactly like the
   module body, so the fixer harvested the import as an already-available

@@ -101,6 +101,57 @@ class Resolver:
         """Dotted module name of *path*, or None when it is not under a root."""
         return self._map.qualname_for(path, relative_level)
 
+    def self_import_unreachable(self, module: str, parent: str) -> bool:
+        """True when ``from P import S`` written *inside P itself* would miss ``P.S``.
+
+        *module* is the dotted name of the file being rewritten and *parent*
+        the import's resolved parent. The answer is only ever True for a
+        **self-referential** import -- one where ``P`` is that very module --
+        because that is the case where ``P``'s attributes are the file's own
+        module-level names.
+
+        ``from P import S`` imports ``P``, binds ``getattr(P, 'S')``, and
+        falls back to importing the submodule *only if that attribute is
+        absent*. So a top-level ``S`` in this file wins, and the replacement
+        import silently binds it instead of the submodule. In
+        ``celery/security/__init__.py`` that produced ``kombu.serialization``
+        under a name meant for ``celery.security.serialization``: code that
+        imports, runs, and is wrong.
+
+        Whether ``P.S`` is reachable as an attribute of ``P`` is the question
+        `is_module` already answers, by the settled rule -- a name that is
+        both a submodule on disk and a top-level binding in the package's
+        ``__init__`` is `model.Kind.AMBIGUOUS`, never guessed. Asking it here
+        rather than inventing a second rule keeps the two from drifting.
+        Anything short of a firm "yes, a module" means the replacement cannot
+        be trusted, and the import is kept exactly as written.
+
+        Reading the ``__init__`` is a parse of what is *on disk*, so this sees
+        bindings the author wrote, not ones this run is about to introduce.
+        Those are prevented at source instead, by
+        `rewrite._Fixer._allocate_token` refusing to allocate a submodule's
+        name at module scope in the first place.
+
+        The same hazard exists for a ``from P import S`` emitted into a file
+        that is *not* ``P``, since ``P``'s ``__init__`` shadows ``S`` for
+        every importer alike. That is a separate finding and deliberately not
+        decided here.
+        """
+        package, _, token = parent.rpartition(".")
+        if not package or not module or package != module:
+            return False
+        # `package` is the module under analysis, hence first-party, so this
+        # is answered from the filesystem map and never costs a probe.
+        return self.is_module(package, token) is not True
+
+    def submodules(self, dotted: str) -> frozenset[str]:
+        """Leaf names of *dotted*'s own submodules; empty when it has none.
+
+        First-party only, and deliberately so: the fixer asks this about the
+        module it is *rewriting*, which is always a file under analysis.
+        """
+        return self._map.submodules(dotted)
+
     def is_load_bearing(self, module: str, name: str) -> bool:
         """True when ``module.name`` is a re-export another analysed file needs.
 
