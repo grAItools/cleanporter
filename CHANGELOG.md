@@ -209,12 +209,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pull request running different linters. `tests/test_toolchain_pins.py` fails
   when they diverge.
 
-- **The informational zuban CI job no longer marks commits as failed.** It
-  carried `continue-on-error: true`, which makes the *workflow run* conclude
-  `success` but leaves the job's own check run at `failure` — and the commit
-  list renders check runs, so main showed a red X on every commit beside a
-  green CI. The job now reports a disagreement as a warning annotation and a
-  job summary, and exits 0.
+- **Commits on `main` no longer carry a spurious failed check.** The zuban job
+  carried `continue-on-error: true`, which does not do what it looks like: the
+  *workflow run* concludes `success`, but the job keeps a check run of its own
+  and that still concludes `failure`. Commit lists and commit pages render
+  check runs, not workflow runs, so every commit wore a red X beside a green
+  CI. Worth knowing before reaching for that setting again: the only thing
+  that decides a job's check run is whether its steps exit non-zero. The job
+  was first rewritten to exit 0 on every path, and has since been folded into
+  the lint job, where zuban gates for real (above).
 
 - **The string-mention guard now distinguishes a reference from prose.** It used
   to block a file whenever a rewritten name appeared as a whole word in any
