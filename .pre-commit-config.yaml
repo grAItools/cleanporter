@@ -4,7 +4,7 @@
 #     uv run prek install
 #
 # Deliberately small: ruff is the only linter and formatter in this project,
-# and the two blocking type checkers run through `uv run` so they use the
+# and the four blocking type checkers run through `uv run` so they use the
 # versions pinned in uv.lock rather than a second, drifting copy.
 #
 # This file is the single definition of what lint and type checking mean here.
@@ -24,10 +24,15 @@ repos:
 
   - repo: local
     hooks:
-      # `types: [python]` keeps these from firing on commits that touch no
-      # Python. Filenames are not passed: both checkers read their scope from
-      # pyproject.toml (`files` for mypy, `include` for pyright), so a
-      # per-file invocation would check less than a commit is judged on.
+      # Four type checkers, all of them gates. Filenames are not passed: each
+      # reads its own scope from pyproject.toml (`[tool.mypy] files`,
+      # `[tool.pyright] include`, `[tool.zuban] files`, `[tool.pyrefly]
+      # project-includes`), so a per-file invocation would check less than a
+      # commit is judged on -- and the scopes differ, mypy and pyright taking
+      # `src/cleanporter` while zuban and pyrefly also take `tests`.
+      #
+      # `types: [python]` keeps them from firing on commits that touch no
+      # Python.
       - id: mypy
         name: mypy --strict
         entry: uv run mypy --strict
@@ -45,18 +50,24 @@ repos:
         types: [python]
         pass_filenames: false
 
-      # zuban is an informational second opinion, not a gate: it lives in the
-      # `manual` stage only, so it never runs on commit. Run it on demand with:
-      #
-      #     uv run --group zuban prek run --all-files --stage manual zuban
-      #
-      # `--all-files` is not optional there. `prek run` otherwise considers
-      # only *staged* files, and with nothing staged this hook reports
-      # "(no files to check) Skipped", which reads just like a pass.
+      # No `--strict` on the entry: unlike mypy, zuban is configured by its own
+      # `[tool.zuban]` section, which sets `strict` along with the wider scope
+      # and the relaxations that make `tests/` checkable without a signature on
+      # every test function. Without that section zuban would read
+      # `[tool.mypy]` and inherit mypy's source-only scope.
       - id: zuban
-        name: zuban (informational)
-        entry: uv run --group zuban zuban mypy --strict
+        name: zuban
+        entry: uv run zuban mypy
         language: system
         types: [python]
         pass_filenames: false
-        stages: [manual]
+
+      # pyrefly reads `[tool.pyrefly]` in pyproject.toml. `check` with no
+      # paths is project mode -- with paths it would ignore `project-excludes`
+      # and check the fixtures.
+      - id: pyrefly
+        name: pyrefly
+        entry: uv run pyrefly check
+        language: system
+        types: [python]
+        pass_filenames: false

@@ -215,12 +215,14 @@ def test_two_imports_of_the_same_name_both_get_blocked():
 
 
 def test_unparseable_rewrite_is_reverted_and_reported(monkeypatch):
-    import cleanporter.rewrite as rewrite_mod
+    # `rewrite` calls `ast.parse` through its own module-level import, which is
+    # this same module object -- patching it here is what the fixer sees.
+    import ast
 
     def boom(source):
         raise SyntaxError("simulated bad output")
 
-    monkeypatch.setattr(rewrite_mod.ast, "parse", boom)
+    monkeypatch.setattr(ast, "parse", boom)
 
     src = "from pkg.sub.mod import Thing\nx = Thing()\n"
     result = outcome(src)
@@ -237,12 +239,12 @@ def test_valid_rewrite_passes_verification():
 def test_parse_error_with_valueerror_is_handled(monkeypatch):
     # On CPython <3.12, ast.parse raises ValueError for embedded null bytes.
     # This test covers that path regardless of the Python version running.
-    import cleanporter.rewrite as rewrite_mod
+    import ast
 
     def boom(source):
         raise ValueError("source code string cannot contain null bytes")
 
-    monkeypatch.setattr(rewrite_mod.ast, "parse", boom)
+    monkeypatch.setattr(ast, "parse", boom)
 
     src = "from pkg.sub.mod import Thing\nx = Thing()\n"
     result = outcome(src)

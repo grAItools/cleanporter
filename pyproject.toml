@@ -42,12 +42,11 @@ dev = [
     "ruff>=0.16.4",
     "mypy>=2.3",
     "pyright>=1.1.411",
+    "zuban>=0.9.2",
+    "pyrefly>=1.2",
     "prek>=0.5",
 ]
 docs = ["zensical>=0.0.57"]
-# Optional, non-blocking cross-check. Not in `dev`: install with
-# `uv sync --group zuban` when you want a second opinion on the type errors.
-zuban = ["zuban>=0.9.2"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cleanporter"]
@@ -177,8 +176,26 @@ docstring-code-format = true
 
 # ---------------------------------------------------------------------------
 # Type checking. Ruff does no type inference, so these back up the `py.typed`
-# marker. Both must be clean; they run as git hooks (.pre-commit-config.yaml),
-# and CI runs those same hooks.
+# marker. Four checkers run, and all four are gates: they run as git hooks
+# (.pre-commit-config.yaml), and CI runs those same hooks. Any diagnostic from
+# any of them is a regression.
+#
+# They are split by generation, because the two generations disagree about
+# what an unannotated function means:
+#
+#   mypy, pyright     -- `src/cleanporter` only. `mypy --strict` over the test
+#                        suite is 250-odd `no-untyped-def` reports on
+#                        unannotated test functions, and pyright without them
+#                        adds little that the newer pair does not already say.
+#   zuban, pyrefly    -- `src/cleanporter` *and* `tests`. They are fast enough
+#                        to cover both, and each is configured below so that
+#                        the test suite is checked without demanding a
+#                        signature on every test function.
+#
+# `tests/fixtures` is excluded from both of the wide-scope checkers, for the
+# same reason ruff excludes it: fixtures are input data for the tool --
+# arbitrary user code it must handle -- not project code. A fixture written to
+# exercise a weird shape must not be able to fail the lint job.
 # ---------------------------------------------------------------------------
 
 [tool.mypy]
@@ -189,19 +206,46 @@ python_version = "3.12"
 strict = true
 
 [tool.pyright]
-# `tests` is included for pyright but deliberately not for mypy: `--strict`
-# over the test suite is 250+ `no-untyped-def` reports on test functions, which
-# is a different project. pyright in "standard" mode does not demand those
-# annotations, so it covers the tests for free.
-include = ["src/cleanporter", "tests"]
-# ... except the fixtures, for the same reason ruff excludes them above: they
-# are input data for the tool, arbitrary user code it must handle, not project
-# code. A fixture written to exercise a weird shape must not be able to fail
-# the lint job.
-exclude = ["tests/fixtures"]
+# Source only, like mypy: `tests` is zuban's and pyrefly's job. Scope lives
+# here rather than in the hook entry, so `uv run pyright` checks the same
+# thing however it is invoked.
+include = ["src/cleanporter"]
 pythonVersion = "3.12"
 # Not "strict": that mode reports 60+ `reportUnknown*` diagnostics that all
 # originate in libcst's partially-typed surface rather than in this code.
 typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"
+
+[tool.zuban]
+# zuban reads `[tool.mypy]` when this section is absent, which would tie its
+# scope to mypy's. It is here precisely so the two can differ: zuban also
+# covers `tests`. Everything mypy needs is repeated rather than inherited --
+# this section replaces `[tool.mypy]` for zuban, it does not extend it.
+files = ["src/cleanporter", "tests"]
+# A regular expression matched against the path, not a glob: mypy's `exclude`
+# syntax, which zuban implements.
+exclude = ["^tests/fixtures/"]
+python_version = "3.12"
+strict = true
+
+[[tool.zuban.overrides]]
+# `--strict` over the test suite is 250-odd `no-untyped-def` reports demanding
+# `-> None` on every test function. Annotating them would add no information:
+# pytest calls them, nothing else does, and their arguments are fixtures. What
+# is worth having over `tests/` is the rest of strict mode -- the bad
+# comparisons, the wrong argument types, the narrowing failures -- so only the
+# "annotate every definition" family is relaxed, and the bodies are still
+# checked.
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+
+[tool.pyrefly]
+project-includes = ["src/cleanporter", "tests"]
+project-excludes = ["tests/fixtures/**"]
+python-version = "3.12"
+# No `python-interpreter` here: pyrefly finds the project's `.venv` on its own,
+# and naming an interpreter path would hard-code a POSIX layout.
