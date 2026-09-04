@@ -16,10 +16,6 @@ import ast
 import functools
 import pathlib
 
-_TRY_TYPES: tuple[type[ast.AST], ...] = (ast.Try,) + (
-    (ast.TryStar,) if hasattr(ast, "TryStar") else ()
-)
-
 
 def _collect(
     body: list[ast.stmt],
@@ -86,7 +82,7 @@ def _collect(
             # and this limit is stated rather than silently assumed.
             for case in stmt.cases:
                 _collect(case.body, defined, imported, submodule_imports)
-        elif isinstance(stmt, _TRY_TYPES):
+        elif isinstance(stmt, (ast.Try, ast.TryStar)):
             _collect(stmt.body, defined, imported, submodule_imports)
             _collect(stmt.orelse, defined, imported, submodule_imports)
             _collect(stmt.finalbody, defined, imported, submodule_imports)

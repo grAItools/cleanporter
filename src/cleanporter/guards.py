@@ -173,7 +173,7 @@ def _docstring_ids(tree: cst.Module) -> set[int]:
     """
     ids: set[int] = set()
 
-    def _check(statements: Collection[cst.BaseStatement]) -> None:
+    def _check(statements: Collection[cst.CSTNode]) -> None:
         first = next(iter(statements), None)
         if not isinstance(first, cst.SimpleStatementLine) or len(first.body) != 1:
             return
@@ -326,7 +326,7 @@ def find_scope_declarations(tree: cst.Module, names: Collection[str], line_of: L
         def visit_Nonlocal(self, node: cst.Nonlocal) -> None:
             self._record(node, "nonlocal")
 
-        def _record(self, node: cst.CSTNode, keyword: str) -> None:
+        def _record(self, node: cst.Global | cst.Nonlocal, keyword: str) -> None:
             clashing = [i.name.value for i in node.names if i.name.value in wanted]
             if clashing:
                 hits.append((line_of(node), f"'{'/'.join(sorted(clashing))}' declared {keyword}"))

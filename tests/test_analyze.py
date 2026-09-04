@@ -24,7 +24,7 @@ def _fix(source: str, path: pathlib.Path) -> str:
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
     resolver = resolver_lib.Resolver(mm)
     rec = _record(source, path, mm)
-    resolver.warm([(u.parent, u.name) for u in _units(rec)])
+    resolver.warm(_warm_pairs(rec))
     return rewrite.fix_record(rec, resolver, config.Config()).source
 
 
@@ -34,11 +34,15 @@ def _units(rec: analyze.FileRecord):
     return [u for u in analyze_lib.iter_units(rec.tree, rec.base_pkg) if u.parent and not u.star]
 
 
+def _warm_pairs(rec: analyze.FileRecord) -> list[tuple[str, str]]:
+    return [(u.parent, u.name) for u in _units(rec) if u.parent]
+
+
 def _analyze(source: str, path: pathlib.Path):
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
     resolver = resolver_lib.Resolver(mm)
     rec = _record(source, path, mm)
-    resolver.warm([(u.parent, u.name) for u in _units(rec)])
+    resolver.warm(_warm_pairs(rec))
     return analyze.analyze_record(rec, resolver, config.Config())
 
 

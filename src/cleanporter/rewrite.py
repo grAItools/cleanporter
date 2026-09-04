@@ -783,7 +783,12 @@ class _Fixer(cst.CSTTransformer):
                 continue
             for alias in plain.names:
                 mod = _imports.dotted(alias.name)
-                bound = alias.asname.name.value if alias.asname else None
+                # `AsName.name` is `Name | Tuple | List` because the node is
+                # shared with `with`/`except` as-clauses; an import as-clause
+                # is always a plain `Name`. Same narrowing as
+                # `_imports.imported_names`.
+                as_node = alias.asname.name if alias.asname else None
+                bound = as_node.value if isinstance(as_node, cst.Name) else None
                 if bound is not None:
                     self._existing[mod] = bound
                 elif "." not in mod:
