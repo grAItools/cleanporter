@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **A corpus check** (`corpus/run.py`, `corpus/packages.txt`, and a weekly
+- **A corpus check** (`corpus/run.py`, `corpus/packages.txt`, and a daily
   `Corpus` workflow). It runs `--fix` over a pinned set of real third-party
   packages, then *imports and executes* the result, comparing every failure
   against the same probe run on the pristine copy. All three fixes below were
@@ -79,6 +79,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `UsageError` elsewhere in the same file.
 
 ### Changed
+
+- **The source is now clean under every type checker.** `mypy --strict`,
+  `pyright` and `zuban` each reported the same nine errors, all of them
+  narrowing failures rather than genuine unsoundness: a runtime-built
+  `isinstance` tuple (`_TRY_TYPES`, kept for an `ast.TryStar` that has existed
+  since 3.11 and so is unconditional at this package's 3.12 floor), two libcst
+  unions whose members are siblings rather than subtypes, and one signature
+  written wider than its only call sites. All nine are fixed without a
+  `cast` or an `Any` -- which is what made the error budget below removable.
+
+- **Lint and type checking now have one definition.**
+  `.pre-commit-config.yaml` is it. mypy and pyright used to run through
+  `tests/test_typecheck_baseline.py`, a pytest wrapper that counted their
+  errors and compared the total against a pinned budget; that only existed
+  because the raw tools always exited non-zero. With the budget at zero the
+  wrapper bought nothing, so it is deleted and both run as plain local hooks
+  next to `zuban`. CI's lint job is now `uv run prek run --all-files` rather
+  than its own spelling of the same commands, so it cannot drift from the git
+  hooks. Scope moved into `pyproject.toml` for all three checkers
+  (`[tool.mypy] files`, `[tool.pyright] include`), so no invocation needs a
+  path argument. `pyright` now also covers `tests/` (excluding
+  `tests/fixtures/`, which is input data rather than project code), which
+  turned up two narrowing failures in `tests/test_analyze.py`; `mypy --strict`
+  still checks `src/cleanporter` only.
+
+- **The two ruff pins are now asserted to agree.** Ruff is installed twice and
+  unavoidably: `uv run ruff check` uses `uv.lock`'s copy, while the git hook --
+  and so CI, which runs the hooks -- uses the one built from `rev:` in
+  `.pre-commit-config.yaml`. Nothing made them match, so a `uv lock --upgrade`
+  could silently leave the documented local command and the check that gates a
+  pull request running different linters. `tests/test_toolchain_pins.py` fails
+  when they diverge.
+
+- **The informational zuban CI job no longer marks commits as failed.** It
+  carried `continue-on-error: true`, which makes the *workflow run* conclude
+  `success` but leaves the job's own check run at `failure` — and the commit
+  list renders check runs, so main showed a red X on every commit beside a
+  green CI. The job now reports a disagreement as a warning annotation and a
+  job summary, and exits 0.
 
 - **The string-mention guard now distinguishes a reference from prose.** It used
   to block a file whenever a rewritten name appeared as a whole word in any

@@ -47,6 +47,11 @@ Thumbs.db
 # Coding-agent scratch and machine-local overrides
 .superpowers/
 .claude/settings.local.json
+# Agent worktrees are checkouts of this same repository nested inside it.
+# Being untracked is not enough: ruff walks the directory tree, so it would
+# lint and format another agent's checkout, and a bare `ruff format` would
+# rewrite files that are not ours to touch.
+.claude/worktrees/
 
 # Corpus check scratch trees (corpus/run.py); hundreds of MB of third-party
 # code plus a rewritten copy of it.

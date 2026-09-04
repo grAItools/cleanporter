@@ -33,23 +33,34 @@ jobs:
       - name: Sync the locked environment
         run: uv sync --locked
 
-      - name: ruff check
-        run: uv run ruff check
+      # The hook environments (the pinned ruff-pre-commit repo) are the only
+      # thing prek fetches; the local hooks reuse the uv environment above.
+      #
+      # The key names this job. The zuban job caches the same path but
+      # populates almost nothing into it -- it runs a single `language: system`
+      # hook -- and the two run concurrently, so a shared key would let
+      # whichever finished first claim it and leave the other restoring a
+      # cache that saves it no work.
+      - name: Cache the prek hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prek
+          key: prek-lint-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
-      - name: ruff format --check
-        run: uv run ruff format --check
-
-      # mypy and pyright both exit non-zero on *any* diagnostic, and this
-      # project accepts a small pinned budget of errors that all originate in
-      # libcst's partially-typed surface. Running the raw tools here would
-      # therefore fail forever. tests/test_typecheck_baseline.py is the single
-      # definition of what is acceptable, so run that instead -- it invokes
-      # both checkers and compares their counts to the budget.
+      # One step, and not a re-spelling of the hooks: .pre-commit-config.yaml
+      # is the single definition of what lint and type checking mean here, and
+      # running anything else would let CI and the git hooks drift in their
+      # options. This covers ruff-check, ruff-format, mypy and pyright.
+      #
+      # The ruff hooks run with `--fix`, so on a violation they rewrite the
+      # file and prek fails the run because a hook modified it.
+      # `--show-diff-on-failure` prints what it changed, which is the actual
+      # answer to "why did lint fail".
       #
       # The pyright PyPI wrapper fetches its own Node runtime on first use.
       # That works on GitHub-hosted runners; it just costs a few seconds.
-      - name: mypy and pyright, against the pinned budget
-        run: uv run pytest -m typecheck -v
+      - name: prek (ruff, mypy, pyright)
+        run: uv run prek run --all-files --show-diff-on-failure
 
   test:
     name: Tests (Python ${{ matrix.python-version }})
@@ -71,19 +82,29 @@ jobs:
       - name: Sync the locked environment
         run: uv sync --locked
 
-      # `-m "not typecheck"` leaves the type-checker budget tests to the lint
-      # job, which runs once. They are not per-Python-version checks, and
-      # pyright would fetch its Node runtime again in every matrix leg.
       - name: pytest
-        run: uv run pytest -m "not typecheck"
+        run: uv run pytest
 
-  # Informational only. zuban is a second, independent type checker; its
+  # Informational only. zuban is a third, independent type checker; its
   # findings are a cross-check on mypy and pyright, never a merge gate.
-  # `continue-on-error` keeps a red X here from failing the workflow.
+  #
+  # The steps below must not be able to mark a commit red, and job-level
+  # `continue-on-error: true` does NOT achieve that -- it was tried here and
+  # it does not work. It makes the *workflow run* conclude `success`, but the
+  # job keeps its own check run, and that check run still concludes
+  # `failure`. The commit list and the commit page render check runs, not
+  # workflow runs, so every commit on main wore a red X while the workflow
+  # beside it said green.
+  #
+  # The only thing that actually decides the check run is whether the steps
+  # exit non-zero, so the step below swallows its own exit status and reports
+  # what zuban said as a warning annotation plus a job summary instead. To
+  # promote zuban to a real gate later, drop the `if` wrapper and run the two
+  # commands plainly -- zuban reports zero on this tree today, same as mypy
+  # and pyright, so it would pass.
   zuban:
     name: zuban (informational, non-blocking)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -93,8 +114,53 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Sync the locked environment with the zuban group
-        run: uv sync --locked --group zuban
+      # Separate key from the lint job's: see the note there.
+      - name: Cache the prek hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prek
+          key: prek-zuban-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
+      # The two commands are separate so that "the environment would not
+      # install" and "zuban reported something" get different messages. They
+      # are both swallowed, because a red X here would be indistinguishable,
+      # on the commit list, from a real failure in the jobs that do gate --
+      # but reporting a stale lockfile as "zuban disagrees" would send the
+      # reader after the wrong thing entirely.
+      #
+      # This only covers the steps' own exit status. The actions above it
+      # (checkout, setup-uv, cache) can still fail this job and redden the
+      # commit; that is accepted, an infrastructure failure is not a zuban
+      # finding and should look different.
+      #
+      # Through prek, for the same reason the lint job goes through prek: the
+      # hook in .pre-commit-config.yaml is the definition, and this should not
+      # be a second copy of it. `--all-files` is required -- `prek run`
+      # otherwise considers only staged files, and on a fresh checkout with
+      # nothing staged the hook reports "(no files to check) Skipped", which
+      # this step would then report as clean having checked nothing.
+      #
+      # `tee` keeps the output in the log as well as the summary: the summary
+      # has a 1 MiB cap, and the log is what survives hitting it. That does put
+      # captured output on stdout, where a line starting with `::` would be
+      # read as a workflow command -- acceptable here, because $output is this
+      # repository's own type-checker diagnostics and not untrusted input.
       - name: zuban mypy --strict (informational)
-        run: uv run --group zuban zuban mypy --strict src/cleanporter
+        run: |
+          if ! output=$(uv sync --locked --group zuban 2>&1); then
+            echo "::warning title=zuban::could not install the zuban group; zuban did not run"
+            title="zuban: did not run (environment)"
+          elif ! output=$(uv run --group zuban prek run --all-files --stage manual zuban 2>&1); then
+            echo "::warning title=zuban::zuban disagrees with mypy and pyright; see the job summary"
+            title="zuban: disagrees with mypy and pyright"
+          else
+            echo "### zuban: clean" >> "$GITHUB_STEP_SUMMARY" || true
+            exit 0
+          fi
+          {
+            echo "### $title"
+            echo
+            echo '```'
+            echo "$output"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY" || true

@@ -37,11 +37,10 @@ group pins because it is faster.
 | Lint with autofix | `uv run ruff check --fix` |
 | Format | `uv run ruff format` |
 | Check formatting only | `uv run ruff format --check` |
-| Type check against the budget | `uv run pytest -m typecheck` |
-| Type check, raw output | `uv run mypy --strict src/cleanporter` |
-| Type check, raw output | `uv run pyright` |
-| Type check (optional) | `uv sync --group zuban && uv run --group zuban zuban mypy --strict src/cleanporter` |
-| All local hooks | `uv run prek run --all-files` |
+| Type check | `uv run mypy --strict` |
+| Type check | `uv run pyright` |
+| Type check (optional) | `uv sync --group zuban && uv run --group zuban prek run --all-files --stage manual zuban` |
+| Every blocking hook | `uv run prek run --all-files` |
 | Preview the docs | `uv run --group docs zensical serve` |
 | Build the docs | `uv run --group docs zensical build` |
 | Run the tool itself | `uv run cleanporter --help` |
@@ -52,11 +51,15 @@ Two notes on the type checkers:
   on first invocation. Subsequent runs are fast; if the first one seems to hang,
   it is fetching Node.
 - **`zuban` is optional and non-blocking.** It is a third type checker kept in its
-  own dependency group as an informational cross-check — a second opinion on
-  whether an accepted error is genuinely unavoidable. It is not in `dev` and never
-  gates a merge. Note that `uv sync --group zuban` makes the environment match
-  *exactly* that set of groups, so it will drop the `docs` group; re-run
-  `uv sync --group docs` when you want the docs tooling back.
+  own dependency group as an informational cross-check. It is not in `dev`, its
+  hook lives in the `manual` stage so it never runs on commit, and it never gates
+  a merge. Run it with
+  `uv run --group zuban prek run --all-files --stage manual zuban` —
+  `--all-files` is required, because `prek run` otherwise judges only *staged*
+  files and reports `(no files to check) Skipped`, which reads just like a pass.
+  Note that `uv sync --group zuban` makes the environment match *exactly* that
+  set of groups, so it will drop the `docs` group; re-run `uv sync --group docs`
+  when you want the docs tooling back.
 
 ## Code style
 
@@ -75,34 +78,35 @@ Two notes on the type checkers:
   are ratchets set to the current worst case in the tree. Existing code passes;
   new growth has to justify itself. Do not raise them casually.
 
-## The type-check budget
+## Type checking
 
-`mypy --strict` and `pyright` both report a small number of errors on this tree.
-They are accepted, and they all originate in the same place: libcst's
-partially-typed surface, where union shapes (`Name | Tuple | List`,
-`BaseExpression`, the typed-visitor base classes) cannot be narrowed by a strict
-checker. They are not sloppiness in cleanporter's own logic.
+`mypy --strict`, `pyright` and `zuban` all report **zero** errors on this tree,
+so any diagnostic you see is something your change introduced.
 
-A test in `tests/` pins those counts. **The pinned number is a ceiling, not a
-floor:**
+That was not always true. There used to be nine accepted errors, all blamed on
+libcst's partially-typed surface — union shapes like `Name | Tuple | List` that
+a strict checker cannot narrow. On inspection every one of them was a narrowing
+failure that the code could state properly: a runtime-built `isinstance` tuple,
+two unions whose members are siblings rather than subtypes, and one signature
+written wider than its only call sites. None needed a `cast`. Treat "this is
+just libcst" as a hypothesis to test, not an explanation.
 
-> The budget only ever goes down. If you fix one of the accepted errors, lower the
-> number in the same commit. Never raise it to accommodate new code.
+If your change adds an error, the fix is to type your code correctly — not a
+`# type: ignore`, a `cast`, an `Any`, or a loosened setting. If you genuinely
+believe you have hit an unavoidable libcst shape, say so explicitly in the PR
+description and expect to be asked to prove it.
 
-If your change adds an error, the fix is to type your code correctly — not to
-edit the budget upward. If you genuinely believe you have hit a new unavoidable
-libcst shape, say so explicitly in the PR description and expect to be asked to
-prove it.
+Run `uv run mypy --strict` and `uv run pyright` directly, or
+`uv run prek run --all-files` for those plus ruff. None of them take a path:
+scope comes from `pyproject.toml` (`[tool.mypy] files`, `[tool.pyright]
+include`), so every invocation checks the same thing.
 
-Run `uv run pytest -m typecheck` to check yourself against it. Note that
-invoking `mypy` or `pyright` directly always exits non-zero here, because both
-report the accepted errors — that is expected, and it is why CI and the git
-hooks run the budget test rather than the raw tools.
-
-The source of truth for the current numbers is
-`tests/test_typecheck_baseline.py`. This document deliberately does not repeat
-them, because a number written here would go stale the first time somebody
-tightens a signature.
+`pyright` also covers `tests/` — except `tests/fixtures/`, which is excluded
+for the same reason ruff excludes it: fixtures are input data for the tool, not
+project code, and one written to exercise a weird shape must not be able to
+fail the lint job. `mypy --strict` does not cover `tests/` at all, because
+`--strict` over the test suite is 250-odd `no-untyped-def` reports on
+unannotated test functions and that is a separate piece of work.
 
 ## Documentation and the anti-drift tests
 
@@ -203,9 +207,9 @@ Before you open a PR:
 - [ ] `uv run pytest` passes.
 - [ ] `uv run ruff check` is clean.
 - [ ] `uv run ruff format --check` is clean (or you ran `uv run ruff format`).
-- [ ] `uv run pytest -m typecheck` passes — and if you fixed an accepted
-      error, you lowered the budget in the same commit.
-- [ ] `uv run prek run --all-files` is clean.
+- [ ] `uv run prek run --all-files` is clean — that is ruff, ruff format, mypy
+      and pyright, the same four checks CI runs. (It does not run `zuban`,
+      which is manual-stage.)
 - [ ] New or changed CLI flags, config keys and finding codes are documented in
       `docs/` (the anti-drift tests will tell you if they are not).
 - [ ] New behaviour has a test; a bug fix has a test that fails without the fix.
@@ -213,9 +217,18 @@ Before you open a PR:
 - [ ] Commits follow Conventional Commits.
 - [ ] `CHANGELOG.md`'s `## [Unreleased]` section mentions user-visible changes.
 
-CI runs lint, formatting and both blocking type checkers once, and the test suite
-on Python 3.12, 3.13 and 3.14. The zuban job is informational and is allowed to
-fail.
+CI runs `uv run prek run --all-files` once — the same hooks you run locally,
+which is the point: CI does not re-spell the commands, so it cannot drift from
+`.pre-commit-config.yaml` in its options. The test suite runs separately on
+Python 3.12, 3.13 and 3.14.
+
+The zuban job is informational: it reports a disagreement as a warning
+annotation and a job summary, and always exits 0. That is deliberate and it is
+not the same thing as `continue-on-error: true`, which the job used to carry.
+`continue-on-error` only makes the *workflow run* green; the job keeps a check
+run of its own that still concludes `failure`, and the commit list renders
+check runs — which is why every commit on main used to show a red X next to a
+green CI run. A job that must never gate has to exit 0.
 
 ## Reporting bugs
 

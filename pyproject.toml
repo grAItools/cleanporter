@@ -56,9 +56,6 @@ packages = ["src/cleanporter"]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config"]
 xfail_strict = true
-markers = [
-    "typecheck: shells out to an external type checker and compares its error count to the pinned budget",
-]
 
 # ---------------------------------------------------------------------------
 # Ruff is the only linter and formatter in this project. Everything it can
@@ -180,15 +177,28 @@ docstring-code-format = true
 
 # ---------------------------------------------------------------------------
 # Type checking. Ruff does no type inference, so these back up the `py.typed`
-# marker. See tests/test_typecheck_baseline.py for the enforced budgets.
+# marker. Both must be clean; they run as git hooks (.pre-commit-config.yaml),
+# and CI runs those same hooks.
 # ---------------------------------------------------------------------------
 
 [tool.mypy]
+# Scope lives here rather than in the hook entry, so `uv run mypy --strict`
+# checks the same thing however it is invoked.
+files = ["src/cleanporter"]
 python_version = "3.12"
 strict = true
 
 [tool.pyright]
-include = ["src/cleanporter"]
+# `tests` is included for pyright but deliberately not for mypy: `--strict`
+# over the test suite is 250+ `no-untyped-def` reports on test functions, which
+# is a different project. pyright in "standard" mode does not demand those
+# annotations, so it covers the tests for free.
+include = ["src/cleanporter", "tests"]
+# ... except the fixtures, for the same reason ruff excludes them above: they
+# are input data for the tool, arbitrary user code it must handle, not project
+# code. A fixture written to exercise a weird shape must not be able to fail
+# the lint job.
+exclude = ["tests/fixtures"]
 pythonVersion = "3.12"
 # Not "strict": that mode reports 60+ `reportUnknown*` diagnostics that all
 # originate in libcst's partially-typed surface rather than in this code.

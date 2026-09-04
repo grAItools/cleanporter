@@ -6,10 +6,16 @@
 # Deliberately small: ruff is the only linter and formatter in this project,
 # and the two blocking type checkers run through `uv run` so they use the
 # versions pinned in uv.lock rather than a second, drifting copy.
+#
+# This file is the single definition of what lint and type checking mean here.
+# CI does not re-spell these commands; its lint job runs
+# `uv run prek run --all-files`, so local and CI cannot drift in options.
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    # Keep in step with the `ruff` pin in uv.lock.
+    # Keep in step with the `ruff` pin in uv.lock; this is a *second* ruff
+    # install, in prek's own environment, and CI runs this one.
+    # tests/test_toolchain_pins.py fails if the two drift apart.
     rev: v0.16.4
     hooks:
       - id: ruff-check
@@ -18,18 +24,23 @@ repos:
 
   - repo: local
     hooks:
-      # Run the budget test rather than the raw checkers. mypy and pyright
-      # both exit non-zero on any diagnostic, and this project accepts a
-      # pinned budget of libcst-induced errors -- invoking them directly here
-      # would block every single commit. The test invokes both and compares
-      # their counts to the budget, so this hook fails only on real new debt.
-      #
-      # `types: [python]` keeps it from firing on commits that touch no
-      # Python; filenames are not passed because both checkers read their
-      # scope from pyproject.toml.
-      - id: typecheck
-        name: mypy and pyright (pinned budget)
-        entry: uv run pytest -m typecheck
+      # `types: [python]` keeps these from firing on commits that touch no
+      # Python. Filenames are not passed: both checkers read their scope from
+      # pyproject.toml (`files` for mypy, `include` for pyright), so a
+      # per-file invocation would check less than a commit is judged on.
+      - id: mypy
+        name: mypy --strict
+        entry: uv run mypy --strict
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      # The pyright PyPI wrapper downloads its own Node runtime the first time
+      # it runs. If this hook seems to hang on a fresh checkout, that is what
+      # it is doing; it is fast afterwards.
+      - id: pyright
+        name: pyright
+        entry: uv run pyright
         language: system
         types: [python]
         pass_filenames: false
@@ -37,10 +48,14 @@ repos:
       # zuban is an informational second opinion, not a gate: it lives in the
       # `manual` stage only, so it never runs on commit. Run it on demand with:
       #
-      #     prek run --hook-stage manual zuban
+      #     uv run --group zuban prek run --all-files --stage manual zuban
+      #
+      # `--all-files` is not optional there. `prek run` otherwise considers
+      # only *staged* files, and with nothing staged this hook reports
+      # "(no files to check) Skipped", which reads just like a pass.
       - id: zuban
         name: zuban (informational)
-        entry: uv run --group zuban zuban mypy --strict src/cleanporter
+        entry: uv run --group zuban zuban mypy --strict
         language: system
         types: [python]
         pass_filenames: false

@@ -56,10 +56,9 @@ uv run prek install                       # local git hooks (.pre-commit-config.
 uv run pytest                             # tests
 uv run ruff check                         # lint (the only linter)
 uv run ruff format                        # format (the only formatter, 100 cols)
-uv run pytest -m typecheck                # mypy + pyright vs the pinned budget
-uv run mypy --strict src/cleanporter      # raw output (always exits 1: see budget)
-uv run pyright                            # raw output (fetches Node on first run)
-uv run prek run --all-files               # all local hooks
+uv run mypy --strict                      # type check (scope from pyproject.toml)
+uv run pyright                            # type check (fetches Node on first run)
+uv run prek run --all-files               # every blocking hook: the above four
 uv run --group docs zensical serve        # docs preview
 uv run --group docs zensical build        # docs build
 
@@ -67,22 +66,39 @@ uv run corpus/run.py                      # rewrite real packages, check they st
 uv run corpus/run.py --skip-install       # ... reusing an installed corpus (~30-45 min)
 
 # Optional, non-blocking third opinion. Note this sync drops the docs group.
-uv sync --group zuban && uv run --group zuban zuban mypy --strict src/cleanporter
+# `--all-files` is required: without it prek judges only *staged* files and
+# reports "(no files to check) Skipped", which reads exactly like a pass.
+uv sync --group zuban && uv run --group zuban prek run --all-files --stage manual zuban
 ```
 
 ## Hard rules
 
-- **The type-check budget only goes down.** `tests/test_typecheck_baseline.py`
-  pins the accepted mypy and pyright error counts (all from libcst's
-  partially-typed surface). It is a ceiling. Fix one → lower it in the same
-  commit. **Never raise it** to make new code pass; type the new code correctly
-  instead.
+- **The type checkers must stay clean.** `mypy --strict` (over
+  `src/cleanporter`) and `pyright` (over `src/cleanporter` and `tests/`, minus
+  the fixtures) are the gates: they run as git hooks and in CI, and any
+  diagnostic is a regression, not debt. `zuban` reports zero too and should be
+  kept that way, but it is a cross-check rather than a gate -- its hook is
+  manual-stage and its CI job cannot fail -- so nothing will stop you breaking
+  it. Type the new code correctly; **never** land it behind a `# type:
+  ignore`, a `cast`, an `Any`, or a loosened setting. There is no budget any
+  more: the nine errors one used to cover were narrowing failures and all nine
+  were fixable.
+- **`.pre-commit-config.yaml` is the single definition of lint and type
+  checking.** CI does not re-spell those commands: its lint job is
+  `uv run prek run --all-files`. Add a check by adding a hook, not by adding a
+  CI step. Scope for all three type checkers comes from `pyproject.toml`
+  (`[tool.mypy] files`, `[tool.pyright] include`), not from hook arguments.
 - **Run the corpus check before changing the resolver, a guard or the fixer.**
   `uv run corpus/run.py` (see `corpus/README.md`) rewrites a pinned set of real
   third-party packages and then *imports and runs* them. Every safety bug found
   in the fixer so far was found there and not by `tests/` -- they do not fail a
-  parse, so the fixer's own re-parse backstop passes them. It is weekly in CI,
+  parse, so the fixer's own re-parse backstop passes them. It is daily in CI,
   not per-PR, so nothing else will catch these for you.
+- **The two ruff pins must agree.** Ruff is installed twice and unavoidably:
+  `uv run ruff check` uses `uv.lock`'s copy, the git hook (and so CI, which
+  runs the hooks) uses the one built from `rev:` in `.pre-commit-config.yaml`.
+  `tests/test_toolchain_pins.py` asserts they match. After a
+  `uv lock --upgrade` that bumps ruff, bump `rev:` in the same commit.
 - **Docs anti-drift tests are real gates.** Tests in `tests/` walk the live
   argument parser and config-key set and fail if a CLI flag, a
   `[tool.cleanporter]` key, or a finding code is missing from the documentation.
