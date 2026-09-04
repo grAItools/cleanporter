@@ -16,9 +16,14 @@ name: Corpus
 # the resolver, the guards or the fixer.
 on:
   schedule:
-    # Mondays, 04:17 UTC. Off the hour on purpose: scheduled jobs at :00 queue
+    # Daily, 04:17 UTC. Off the hour on purpose: scheduled jobs at :00 queue
     # behind everyone else's.
-    - cron: "17 4 * * 1"
+    #
+    # Daily rather than weekly because a week is too long a window for the one
+    # check that can catch a fixer bug at all: at that cadence a regression is
+    # several days of commits deep before anything reports it, and the bisect
+    # is over a week of history instead of a day of it.
+    - cron: "17 4 * * *"
   workflow_dispatch:
 
 permissions:

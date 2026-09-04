@@ -65,12 +65,16 @@ in `BUNDLED_SUITES` in `run.py` to have that suite run.
 
 ## In CI
 
-`.github/workflows/corpus.yml`, weekly and on manual dispatch — not on every
-push. It installs ~200 MB, rewrites thousands of files and runs libCST's suite
-twice, which is the wrong price for feedback on a docs typo. It is also the
-only check in this repository that an *upstream* release can break, so keeping
-it off the PR path means a red run points at either a real regression or a
-deliberate pin bump.
+`.github/workflows/corpus.yml`, daily at 04:17 UTC and on manual dispatch — not
+on every push. It installs ~200 MB, rewrites thousands of files and runs
+libCST's suite twice, which is the wrong price for feedback on a docs typo. It
+is also the only check in this repository that an *upstream* release can break,
+so keeping it off the PR path means a red run points at either a real
+regression or a deliberate pin bump.
+
+Daily rather than weekly: this is the only check that can catch a fixer bug at
+all, and a week-wide window means a regression is several days of commits deep
+before anything reports it.
 
 Run it by hand from the Actions tab before merging anything that touches the
 resolver, the guards or the fixer.
