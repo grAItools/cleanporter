@@ -153,14 +153,18 @@ known-first-party = ["cleanporter"]
 extend-ignore-names = ["visit_*", "leave_*"]
 
 [tool.ruff.lint.mccabe]
-# Ratchets, not aspirations: each limit is the current worst case in the tree
-# (`_plan_line`), so existing code passes and new growth has to justify itself.
-max-complexity = 27
+# Ratchets, not aspirations: each limit is the current worst case in the tree,
+# so existing code passes and new growth has to justify itself. The worst case
+# is `rewrite.py::_plan_line` for statements and branches and
+# `_bindings.py::_collect` for complexity. They only ever go down: extracting
+# `_plan_line`'s name partition into `_Fixer._partition` moved all three, so
+# they moved with it.
+max-complexity = 24
 
 [tool.ruff.lint.pylint]
-max-branches = 27
+max-branches = 23
 max-returns = 11
-max-statements = 62
+max-statements = 53
 
 [tool.ruff.format]
 docstring-code-format = true

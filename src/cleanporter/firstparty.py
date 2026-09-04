@@ -98,6 +98,10 @@ class ModuleMap:
         self._modules: set[str] = set()  # dotted names of .py modules
         self._packages: set[str] = set()  # dotted names of packages
         self._inits: dict[str, pathlib.Path] = {}  # dotted package -> its __init__.py
+        #: dotted module -> the ``.py`` holding it (a package maps to its
+        #: ``__init__.py``). Extension modules are absent: there is no source
+        #: to parse, so `is_reexport` cannot answer for them and says no.
+        self._sources: dict[str, pathlib.Path] = {}
         for root in self.roots:
             self._scan(root, root)
 
@@ -149,11 +153,15 @@ class ModuleMap:
                 init = child / "__init__.py"
                 if init.is_file():
                     self._inits[dotted] = init
+                    self._sources[dotted] = init
                 self._scan(root, child)
             elif _is_importable_file(child):
                 stem = _module_stem(child)
                 if stem and stem != "__init__":
-                    self._modules.add(self._dotted(root, child.with_name(stem)))
+                    dotted = self._dotted(root, child.with_name(stem))
+                    self._modules.add(dotted)
+                    if child.suffix == ".py":
+                        self._sources[dotted] = child
 
     @staticmethod
     def _dotted(root: pathlib.Path, path: pathlib.Path) -> str:
@@ -179,6 +187,24 @@ class ModuleMap:
         if on_disk:
             return model.Kind.MODULE
         return model.Kind.OBJECT
+
+    def is_reexport(self, parent: str, name: str) -> bool:
+        """True when first-party ``parent`` only *re-exports* ``name``.
+
+        That is: ``parent`` binds ``name`` by importing it from somewhere
+        else rather than defining it, so ``parent.name`` exists only as long
+        as that import keeps its current shape -- and this tool may be about
+        to change it, in the very same run.
+
+        Answers only for first-party modules we can read the source of, and
+        that is the whole point rather than a limitation: a third-party
+        ``parent`` is never rewritten, so its re-exports do not move. The
+        hazard exists exactly where the fixer's reach does.
+        """
+        source = self._sources.get(parent)
+        if source is None:
+            return False
+        return name in _bindings.import_bound_names(str(source))
 
     def qualname_for(self, path: pathlib.Path, relative_level: int = 0) -> str | None:
         """Dotted module name for a source file, for relative-import resolution.

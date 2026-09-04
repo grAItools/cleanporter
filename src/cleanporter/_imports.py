@@ -62,3 +62,25 @@ def imported_names(node: cst.ImportFrom) -> list[tuple[str, str | None, cst.Impo
 
 def is_star(node: cst.ImportFrom) -> bool:
     return isinstance(node.names, cst.ImportStar)
+
+
+def is_explicit_reexport(name: str, asname: str | None) -> bool:
+    """True for ``from P import S as S`` -- PEP 484's *redundant alias*.
+
+    Aliasing a name to itself is a no-op at runtime, so it is only ever
+    written to say something to a reader or a type checker: this name is a
+    deliberate part of the module's public surface. mypy's
+    ``no_implicit_reexport`` and ruff's ``F401`` both read it that way, which
+    makes it the one re-export marker that is machine-readable rather than
+    inferred.
+
+    That matters here because rewriting such an import *removes a public
+    name*: ``from .exceptions import UsageError as UsageError`` in
+    ``pkg/config/__init__.py`` is what makes ``from pkg.config import
+    UsageError`` work everywhere else, and turning it into ``from pkg import
+    exceptions`` breaks every one of those importers -- in files this tool
+    may never even look at. It is the same failure the ``__all__``
+    string-mention guard catches, stated in syntax instead of in a string, so
+    it gets the same answer: reported, never rewritten.
+    """
+    return asname is not None and asname == name

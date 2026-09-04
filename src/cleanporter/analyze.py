@@ -31,6 +31,10 @@ class FileRecord:
     source: str
     tree: cst.Module
     base_pkg: str
+    #: This file's own dotted module name (``""`` when it is not under a
+    #: known import root). Needed to ask whether *this* module's imports are
+    #: load-bearing re-exports for other files in the run.
+    qualname: str = ""
     _units: list[ImportUnit] | None = dataclasses.field(default=None, repr=False, compare=False)
     _positions: Mapping[cst.CSTNode, metadata.CodeRange] | None = dataclasses.field(
         default=None, repr=False, compare=False
@@ -121,12 +125,91 @@ def _walk_import_froms(tree: cst.Module) -> list[cst.ImportFrom]:
 
 
 def collect_pairs(records: list[FileRecord]) -> list[tuple[str, str]]:
+    """``(module, name)`` pairs to classify: every name imported *from* a module."""
     pairs: set[tuple[str, str]] = set()
     for rec in records:
         for unit in rec.units:
             if unit.parent and not unit.star:
                 pairs.add((unit.parent, unit.name))
     return sorted(pairs)
+
+
+def module_bindings(tree: cst.Module, base_pkg: str) -> dict[str, str]:
+    """Local name -> dotted module it is bound to, for every import in *tree*.
+
+    ``import a.b`` binds ``a``; ``import a.b as ab`` binds ``ab`` to ``a.b``;
+    ``from p import m`` binds ``m`` to ``p.m``. Whether ``p.m`` is really a
+    module is not checked here -- recording it regardless only ever makes
+    `attribute_pairs` see *more* uses, and this evidence is used to decline
+    rewrites, so over-collecting is the safe direction.
+    """
+    bound: dict[str, str] = {}
+
+    class V(cst.CSTVisitor):
+        def visit_Import(self, node: cst.Import) -> None:
+            for alias in node.names:
+                dotted = _imports.dotted(alias.name)
+                if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
+                    bound[alias.asname.name.value] = dotted
+                else:
+                    # ``import a.b`` binds only ``a``, which names ``a``.
+                    head = dotted.split(".")[0]
+                    bound[head] = head
+
+        def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
+            parent = _imports.resolve_parent(node, base_pkg)
+            if parent is None:
+                return
+            for name, asname, _alias in _imports.imported_names(node):
+                bound[asname or name] = f"{parent}.{name}"
+
+    tree.visit(V())
+    return bound
+
+
+def attribute_pairs(tree: cst.Module, base_pkg: str) -> set[tuple[str, str]]:
+    """``(module, attribute)`` pairs *tree* reads through a module binding.
+
+    ``import pkg.tool`` followed by ``pkg.tool.dump`` is a use of
+    ``pkg.tool.dump`` every bit as much as ``from pkg.tool import dump`` is,
+    and it is the shape this tool rewrites everything *into* -- so a fixer
+    that only looked at ``from`` imports for evidence was blind to its own
+    output, and a second ``--fix`` run would happily delete the attribute the
+    first run had just protected.
+    """
+    bound = module_bindings(tree, base_pkg)
+    found: set[tuple[str, str]] = set()
+
+    class V(cst.CSTVisitor):
+        def visit_Attribute(self, node: cst.Attribute) -> None:
+            try:
+                prefix = _imports.dotted(node.value)
+            except TypeError:
+                return  # a call, a subscript, ... -- not a dotted module path
+            head, _dot, rest = prefix.partition(".")
+            target = bound.get(head)
+            if target is None:
+                return
+            module = f"{target}.{rest}" if rest else target
+            found.add((module, node.attr.value))
+
+    tree.visit(V())
+    return found
+
+
+def star_imported_modules(tree: cst.Module, base_pkg: str) -> set[str]:
+    """Modules *tree* does ``from M import *`` on.
+
+    A star import takes every public name, so any of *M*'s re-exports could be
+    the one it needs. There is no way to narrow it, so all of them count.
+    """
+    found: set[str] = set()
+    for node in _walk_import_froms(tree):
+        if _imports.is_star(node):
+            parent = _imports.resolve_parent(node, base_pkg)
+            if parent is not None:
+                found.add(parent)
+    return found
 
 
 def analyze_record(
@@ -185,6 +268,35 @@ def analyze_record(
                 )
             )
             continue
+        if _imports.is_explicit_reexport(unit.name, unit.asname):
+            findings.append(
+                model.Finding(
+                    rec.path,
+                    line,
+                    col,
+                    unit.parent,
+                    unit.name,
+                    model.Status.SKIPPED,
+                    "explicit re-export ('as' aliasing the name to itself); "
+                    "rewriting it would remove a public name",
+                )
+            )
+            continue
+        bound = unit.asname or unit.name
+        if rec.qualname and resolver.is_load_bearing(rec.qualname, bound):
+            findings.append(
+                model.Finding(
+                    rec.path,
+                    line,
+                    col,
+                    unit.parent,
+                    unit.name,
+                    model.Status.SKIPPED,
+                    f"another file imports '{bound}' from '{rec.qualname}'; "
+                    "rewriting this import would remove that attribute",
+                )
+            )
+            continue
         findings.append(
             model.Finding(rec.path, line, col, unit.parent, unit.name, model.Status.VIOLATION)
         )
@@ -233,9 +345,27 @@ def build(
     # settle the root set before anchoring anyone's relative imports.
     module_map.demote_roots(evidence)
     records = [
-        FileRecord(f, source, tree, package_of(f, module_map, max_relative_level(tree)))
+        FileRecord(
+            f,
+            source,
+            tree,
+            package_of(f, module_map, max_relative_level(tree)),
+            module_map.qualname_for(f, max_relative_level(tree)) or "",
+        )
         for f, source, tree in parsed
     ]
 
-    resolver.warm(collect_pairs(records))
+    pairs = collect_pairs(records)
+    # Every *use* of ``M.N`` in the run is evidence that M must keep binding
+    # N, which constrains what M's own imports may be rewritten to. A use is
+    # any of: ``from M import N``, ``M.N`` through a module binding, or
+    # ``from M import *`` (which could need any of them). See
+    # `Resolver.is_load_bearing`.
+    uses: set[tuple[str, str]] = set(pairs)
+    star: set[str] = set()
+    for rec in records:
+        uses |= attribute_pairs(rec.tree, rec.base_pkg)
+        star |= star_imported_modules(rec.tree, rec.base_pkg)
+    resolver.note_uses(uses, star)
+    resolver.warm(pairs)
     return records, resolver, errors, warnings

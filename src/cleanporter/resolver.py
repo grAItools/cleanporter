@@ -42,6 +42,12 @@ class Resolver:
             pathlib.Path(self._python).resolve() == pathlib.Path(sys.executable).resolve()
         )
         self._cache: dict[tuple[str, str], bool | None] = {}
+        #: Every ``(module, name)`` some analysed file *uses*. Populated by
+        #: `analyze.build`; empty when the resolver is used standalone, which
+        #: makes `is_load_bearing` answer False -- no evidence, no claim.
+        self._uses: frozenset[tuple[str, str]] = frozenset()
+        #: Modules some analysed file star-imports, which could need any name.
+        self._star_imported: frozenset[str] = frozenset()
         self._notes: dict[tuple[str, str], str] = {}
         self._probe_path = str(pathlib.Path(_probe.__file__).resolve())
 
@@ -81,6 +87,45 @@ class Resolver:
         is just never mis-rewritten as third-party.
         """
         return self._map.is_first_party(dotted)
+
+    def note_uses(self, uses: set[tuple[str, str]], star_imported: set[str]) -> None:
+        """Record every ``module.name`` the analysed files read, however spelled."""
+        self._uses = frozenset(uses)
+        self._star_imported = frozenset(star_imported)
+
+    def qualname_for(self, path: pathlib.Path, relative_level: int = 0) -> str | None:
+        """Dotted module name of *path*, or None when it is not under a root."""
+        return self._map.qualname_for(path, relative_level)
+
+    def is_load_bearing(self, module: str, name: str) -> bool:
+        """True when ``module.name`` is a re-export another analysed file needs.
+
+        Rewriting ``module``'s own ``from P import name`` is correct for that
+        file in isolation, and it *deletes* ``module.name``. That only matters
+        if something imports it from there -- so this asks both halves:
+
+        * does ``module`` bind ``name`` by importing it rather than defining
+          it (`firstparty.ModuleMap.is_reexport`), so a rewrite would remove
+          the attribute at all, and
+        * does any file in this run *use* ``module.name``?
+
+        A use is any of ``from module import name``, a ``module.name``
+        attribute read through an import binding, or ``from module import *``
+        (which could need any of them). Counting only the first was not
+        enough: ``import M`` plus ``M.name`` is the very shape this tool
+        rewrites everything into, so a second ``--fix`` run would delete the
+        attribute the first run had just protected.
+
+        Both must hold. A name that is also *defined* in ``module`` (imported
+        under a ``try``, defined in the ``except``) survives the rewrite, and
+        a re-export nobody uses is free to fix.
+
+        The evidence is limited to the files under analysis, which is the same
+        boundary every other guard has: a consumer outside the run is the
+        documented cross-file limitation, unchanged.
+        """
+        used = (module, name) in self._uses or module in self._star_imported
+        return used and self._map.is_reexport(module, name)
 
     def reason(self, parent: str, name: str) -> str:
         """Human explanation for an unresolved (``None``) verdict."""

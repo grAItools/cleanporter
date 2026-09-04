@@ -163,3 +163,82 @@ def _analyze_with(source: str, config: config.Config):
     rec = _record(source, path, mm)
     resolver.warm([(u.parent, u.name) for u in rec.units if u.parent and not u.star])
     return analyze.analyze_record(rec, resolver, config)
+
+
+def test_an_explicit_reexport_is_reported_as_skipped_not_a_violation():
+    """`from P import S as S` is a declared public name; it cannot be rewritten."""
+    findings = _analyze("from pkg.sub.mod import Thing as Thing\n", FIXTURES / "pkg" / "a.py")
+    assert [f.code for f in findings] == ["CP003"]
+    assert "public name" in findings[0].detail
+
+
+def test_an_ordinary_alias_is_still_a_violation():
+    findings = _analyze("from pkg.sub.mod import Thing as T\n", FIXTURES / "pkg" / "a.py")
+    assert [f.code for f in findings] == ["CP001"]
+
+
+def _reexport_tree(tmp_path: pathlib.Path) -> pathlib.Path:
+    """`pkg.tool` re-exports `dump`; `pkg.user` imports it from there."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n")
+    (pkg / "tool.py").write_text("from pkg.display import dump\n\ndef go():\n    return dump()\n")
+    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
+    return pkg
+
+
+def _findings_by_file(pkg: pathlib.Path):
+    records, resolver, _errors, _warnings = analyze.build([pkg], config.Config(root=pkg.parent))
+    return {
+        rec.path.name: analyze.analyze_record(rec, resolver, config.Config(root=pkg.parent))
+        for rec in records
+    }
+
+
+def test_a_load_bearing_reexport_is_reported_as_skipped(tmp_path: pathlib.Path) -> None:
+    """`tool.py`'s own import is what makes `pkg.tool.dump` exist for `user.py`.
+
+    Rewriting it is correct for `tool.py` alone and deletes the attribute
+    `user.py` reads. Found by running libCST's own test suite against a
+    rewritten copy: `libcst.tool.dump` stopped existing.
+    """
+    by_file = _findings_by_file(_reexport_tree(tmp_path))
+    assert [f.code for f in by_file["tool.py"]] == ["CP003"]
+    assert "another file imports 'dump' from 'pkg.tool'" in by_file["tool.py"][0].detail
+
+
+def test_the_consumer_of_a_reexport_is_still_a_plain_violation(tmp_path: pathlib.Path) -> None:
+    """Only the re-exporting side is protected; the consumer is fixable.
+
+    Because `tool.py` keeps its import, `pkg.tool.dump` still exists, so
+    qualifying `user.py`'s reference through it is safe.
+    """
+    by_file = _findings_by_file(_reexport_tree(tmp_path))
+    assert [f.code for f in by_file["user.py"]] == ["CP001"]
+
+
+def test_a_reexport_nobody_imports_is_still_fixable(tmp_path: pathlib.Path) -> None:
+    """No consumer, no hazard: deleting an attribute nothing reads is free."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n")
+    (pkg / "tool.py").write_text("from pkg.display import dump\n\ndef go():\n    return dump()\n")
+    by_file = _findings_by_file(pkg)
+    assert [f.code for f in by_file["tool.py"]] == ["CP001"]
+
+
+def test_a_name_both_imported_and_defined_is_not_protected(tmp_path: pathlib.Path) -> None:
+    """A try/except import with a fallback definition survives a rewrite."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n")
+    (pkg / "tool.py").write_text(
+        "try:\n    from pkg.display import dump\nexcept ImportError:\n"
+        "    def dump():\n        return 0\n"
+    )
+    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
+    _records, resolver, _e, _w = analyze.build([pkg], config.Config(root=pkg.parent))
+    assert resolver.is_load_bearing("pkg.tool", "dump") is False

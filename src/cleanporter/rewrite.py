@@ -710,6 +710,36 @@ class _Fixer(cst.CSTTransformer):
         node.visit(V())
         return pairs
 
+    def _partition(
+        self, imp: cst.ImportFrom, parent: str
+    ) -> tuple[list[str], list[tuple[str, str | None]]]:
+        """Split this import's names into the ones kept and the ones rewritten.
+
+        Kept: exempt names, modules, anything the resolver could not classify,
+        and re-exports. A re-export -- declared as ``S as S``, or inferred
+        from another analysed file importing ``S`` from *this* module -- means
+        this very import line is what makes ``<this module>.S`` exist for
+        somebody else, so rewriting it would delete an attribute they read.
+        Kept in place rather than blocking the file, exactly as an unresolved
+        name is, so the file's other rewrites still happen.
+        """
+        keep: list[str] = []
+        fix: list[tuple[str, str | None]] = []
+        for name, asname, _alias in _imports.imported_names(imp):
+            if (
+                self._config.is_exempt(parent, name)
+                or _imports.is_explicit_reexport(name, asname)
+                or (
+                    self._rec.qualname
+                    and self._resolver.is_load_bearing(self._rec.qualname, asname or name)
+                )
+                or self._resolver.is_module(parent, name) is not False
+            ):
+                keep.append(_render_alias(name, asname))
+            else:
+                fix.append((name, asname))
+        return keep, fix
+
     def _plan_line(self, line: cst.SimpleStatementLine, imp: cst.ImportFrom) -> None:
         if _imports.is_star(imp):
             return
@@ -720,17 +750,7 @@ class _Fixer(cst.CSTTransformer):
         if parent is None:
             return
 
-        keep: list[str] = []
-        fix: list[tuple[str, str | None]] = []
-        for name, asname, _alias in _imports.imported_names(imp):
-            if self._config.is_exempt(parent, name):
-                keep.append(_render_alias(name, asname))
-                continue
-            verdict = self._resolver.is_module(parent, name)
-            if verdict is True or verdict is None:
-                keep.append(_render_alias(name, asname))
-            else:
-                fix.append((name, asname))
+        keep, fix = self._partition(imp, parent)
         if not fix:
             return
         self._fixed_locals.update(asname or name for name, asname in fix)

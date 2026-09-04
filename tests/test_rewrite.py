@@ -1250,3 +1250,114 @@ def test_an_aliased_type_checking_import_is_still_a_guard():
     assert "from pkg.sub import mod" in runtime, (
         f"an aliased TYPE_CHECKING guard is not a runtime binding:\n{result.source}"
     )
+
+
+# -- re-exports -------------------------------------------------------------
+
+
+def test_an_explicit_reexport_is_never_rewritten():
+    """`from P import S as S` is a declared public name (PEP 484 redundant alias).
+
+    Rewriting it deletes `S` from this module's surface and breaks every
+    other file that does `from <this module> import S` -- files a per-file
+    guard cannot see. Found by rewriting `_pytest`, where clearing prose
+    mentions of `UsageError` let the fixer reach
+    `from .exceptions import UsageError as UsageError` and break the package
+    at import time.
+    """
+    src = "from pkg.sub.mod import Thing as Thing\nx = Thing()\n"
+    result = outcome(src)
+    assert result.status == "clean"
+    assert result.source == src
+
+
+def test_an_explicit_reexport_does_not_block_the_rest_of_the_file():
+    """It is kept in place, like an unresolved name -- not a whole-file blocker."""
+    src = "from pkg.sub.mod import Thing as Thing, go\nx = Thing()\ny = go()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "Thing as Thing" in result.source, "the re-export must survive verbatim"
+    assert "mod.go()" in result.source, "the other name must still be rewritten"
+
+
+def test_an_ordinary_alias_is_still_rewritten():
+    """Only aliasing to the *same* name is a re-export marker."""
+    result = outcome("from pkg.sub.mod import Thing as T\nx = T()\n")
+    assert result.status == "fixed"
+    assert result.source == "from pkg.sub import mod\nx = mod.Thing()\n"
+
+
+def _tree(tmp_path: pathlib.Path, **files: str) -> pathlib.Path:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "display.py").write_text("def dump(x):\n    return x\n")
+    (pkg / "tool.py").write_text("from pkg.display import dump\n")
+    for name, body in files.items():
+        (pkg / f"{name}.py").write_text(body)
+    return pkg
+
+
+def _fix_all(pkg: pathlib.Path) -> None:
+    cfg = config_lib.Config(root=pkg.parent)
+    records, resolver, _e, _w = analyze.build([pkg], cfg)
+    for rec in records:
+        out = rewrite.fix_record(rec, resolver, cfg)
+        if out.status == "fixed":
+            rec.path.write_text(out.source)
+
+
+def test_a_load_bearing_reexport_is_kept_but_the_rest_of_the_file_is_fixed(
+    tmp_path: pathlib.Path,
+) -> None:
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n")
+    (pkg / "other.py").write_text("class Thing:\n    pass\n")
+    (pkg / "tool.py").write_text(
+        "from pkg.display import dump\nfrom pkg.other import Thing\n"
+        "def go():\n    return dump(), Thing()\n"
+    )
+    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
+
+    records, resolver, _e, _w = analyze.build([pkg], config_lib.Config(root=pkg.parent))
+    tool = next(r for r in records if r.path.name == "tool.py")
+    result = rewrite.fix_record(tool, resolver, config_lib.Config(root=pkg.parent))
+
+    assert result.status == "fixed"
+    assert "from pkg.display import dump" in result.source, (
+        f"the load-bearing re-export must survive:\n{result.source}"
+    )
+    assert "other.Thing()" in result.source, "the ordinary name must still be rewritten"
+    assert "dump()" in result.source
+
+
+def test_fix_is_convergent_for_a_load_bearing_reexport(tmp_path: pathlib.Path) -> None:
+    """A second `--fix` run must not delete what the first run protected.
+
+    Run 1 rewrites the consumer to `import M` + `M.dump`, which erases the
+    `from M import dump` the guard was reading as its evidence. If only
+    `from` imports count as evidence, run 2 sees none and rewrites `tool.py`,
+    breaking the code the first run had just made correct.
+    """
+    pkg = _tree(tmp_path, user="from pkg.tool import dump\ndef go():\n    return dump(1)\n")
+    _fix_all(pkg)
+    _fix_all(pkg)
+    assert "from pkg.display import dump" in (pkg / "tool.py").read_text(), (
+        f"the re-export was deleted by the second run:\n{(pkg / 'tool.py').read_text()}"
+    )
+
+
+def test_an_attribute_use_counts_as_evidence(tmp_path: pathlib.Path) -> None:
+    """`import M` + `M.S` needs `M.S` as much as `from M import S` does."""
+    pkg = _tree(tmp_path, user="from pkg import tool\ndef go():\n    return tool.dump(1)\n")
+    _fix_all(pkg)
+    assert "from pkg.display import dump" in (pkg / "tool.py").read_text()
+
+
+def test_a_star_import_counts_as_evidence(tmp_path: pathlib.Path) -> None:
+    """`from M import *` could need any of M's re-exports, so all of them count."""
+    pkg = _tree(tmp_path, user="from pkg.tool import *\ndef go():\n    return dump(1)\n")
+    _fix_all(pkg)
+    assert "from pkg.display import dump" in (pkg / "tool.py").read_text()
