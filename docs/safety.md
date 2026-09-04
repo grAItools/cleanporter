@@ -276,6 +276,17 @@ reported. cleanporter never hands back source it cannot compile.
     do not move and are not considered: the hazard exists exactly where the
     fixer's reach does, and so does the guard.
 
+    When more than one file on disk claims the same dotted name — `pkg.py`
+    left sitting beside `pkg/`, which is what an older single-file release
+    looks like next to a newer packaged one, or the same package present under
+    two import roots — **every** claimant is asked, and any one of them that
+    re-exports the name protects it. Which file an interpreter actually
+    imports is a `sys.path` question the filesystem does not settle, and
+    getting it wrong is only expensive in one direction: consult the file that
+    loses, hear "not a re-export", and the guard stands down while the rewrite
+    deletes an attribute another file imports. The cost of the safe answer is
+    a fix declined when the *losing* file was the one re-exporting.
+
     The evidence is the set of files under analysis, and it is evidence a
     *parse* can see. A consumer outside the run is the documented cross-file
     limitation. A consumer inside the run that reaches the name through a
