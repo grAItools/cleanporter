@@ -252,6 +252,81 @@ def _subscript_base_name(node: cst.Subscript) -> str:
     return ""
 
 
+def _dunder_all_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
+    """Every string literal inside an ``__all__`` declaration.
+
+    ``__all__`` is a list of *names*, by definition, so a string in it is an
+    identifier reference however it is spelled -- and it need not be a plain
+    literal list. ``__all__ = "Widget helper".split()`` is a real idiom whose
+    strings do not parse as Python, so content inspection alone reads them as
+    prose and clears them; the rewrite then removes names the module still
+    advertises. Like an annotation slot, this is a context the caller knows
+    is code, so `guards.find_string_mentions` is told so directly.
+
+    Covers assignment (``=``, ``+=``, annotated), the mutation idioms
+    ``__all__.extend([...])`` / ``.append(...)``, and one level of
+    indirection: ``__all__ = _EXPORTS`` also pulls in the strings assigned to
+    ``_EXPORTS``. One level, not a general dataflow analysis -- a name is
+    followed only when ``__all__`` is assigned it directly, which is as far as
+    the idiom actually goes.
+    """
+    found: dict[int, cst.SimpleString] = {}
+    assigned: dict[str, list[cst.BaseExpression]] = {}
+    indirect: set[str] = set()
+
+    def absorb(node: cst.CSTNode | None) -> None:
+        if node is None:
+            return
+        for string in _collect_strings(node):
+            found[id(string)] = string
+        if isinstance(node, cst.Name):
+            indirect.add(node.value)
+
+    def targets_dunder_all(node: cst.BaseExpression) -> bool:
+        return isinstance(node, cst.Name) and node.value == "__all__"
+
+    class V(cst.CSTVisitor):
+        def visit_Assign(self, node: cst.Assign) -> None:
+            if any(targets_dunder_all(t.target) for t in node.targets):
+                absorb(node.value)
+            for target in node.targets:
+                if isinstance(target.target, cst.Name):
+                    assigned.setdefault(target.target.value, []).append(node.value)
+
+        def visit_AugAssign(self, node: cst.AugAssign) -> None:
+            if targets_dunder_all(node.target):
+                absorb(node.value)
+
+        def visit_AnnAssign(self, node: cst.AnnAssign) -> None:
+            if targets_dunder_all(node.target):
+                absorb(node.value)
+
+        def visit_Call(self, node: cst.Call) -> None:
+            func = node.func
+            if isinstance(func, cst.Attribute) and targets_dunder_all(func.value):
+                for arg in node.args:
+                    absorb(arg.value)
+
+    tree.visit(V())
+    # `__all__ = _EXPORTS`: whatever built `_EXPORTS` is the name list.
+    for name in indirect:
+        for value in assigned.get(name, ()):
+            for string in _collect_strings(value):
+                found[id(string)] = string
+    return found
+
+
+def _collect_strings(node: cst.CSTNode) -> list[cst.SimpleString]:
+    found: list[cst.SimpleString] = []
+
+    class V(cst.CSTVisitor):
+        def visit_SimpleString(self, node: cst.SimpleString) -> None:
+            found.append(node)
+
+    node.visit(V())
+    return found
+
+
 def _annotation_strings(tree: cst.Module) -> dict[int, cst.SimpleString]:
     """String literals sitting in a genuine annotation slot.
 
@@ -591,8 +666,25 @@ class _Fixer(cst.CSTTransformer):
         if not self._fixed_locals:
             return
         skip_ids = self._plan_annotation_strings(node)
+        # Two contexts are *code by declaration*, whether or not their
+        # contents parse: an annotation slot and an `__all__` list. That is
+        # the difference between prose the string guard can now clear
+        # (`"expected Type, got int"`) and a name it must still block
+        # (`"Thing["` in an annotation, `"Widget helper".split()` in
+        # `__all__`), which no amount of inspecting the content alone can
+        # tell apart. Anything already rewritten by
+        # `_plan_annotation_strings` is in `skip_ids` and never reaches the
+        # word match, so passing the whole annotation set here is exactly
+        # "the annotation strings we could not rewrite".
+        strict_ids = frozenset(_annotation_strings(node)) | frozenset(_dunder_all_strings(node))
         self.blockers.extend(
-            guards.find_string_mentions(node, self._fixed_locals, self._line_of, skip_ids=skip_ids)
+            guards.find_string_mentions(
+                node,
+                self._fixed_locals,
+                self._line_of,
+                skip_ids=skip_ids,
+                strict_ids=strict_ids,
+            )
         )
         self.blockers.extend(
             guards.find_scope_declarations(node, self._fixed_locals, self._line_of)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import libcst as cst
+import pytest
 
 from cleanporter import guards
 
@@ -148,3 +149,130 @@ def test_match_captures_flags_every_binding_form():
 def test_match_captures_ignores_unrelated_names():
     tree = cst.parse_module("def f(x):\n    match x:\n        case other:\n            return 1\n")
     assert guards.find_match_captures(tree, {"Thing"}, lambda n: 0) == []
+
+
+# -- the reference/prose boundary ------------------------------------------
+#
+# `find_string_mentions` only reports a word match when the string could
+# actually *be* a reference to the name (see `_string_references`). Each case
+# below records why it falls on the side it does. The unsafe direction is a
+# `must_block` case that stops blocking: that is a rename silently breaking
+# working code, so these are the cases to add to rather than relax.
+
+_MUST_BLOCK = [
+    ('"Thing"', "an __all__ entry or a getattr argument"),
+    ('"  Thing  "', "a padded identifier still evaluates"),
+    ('"\\n    Thing\\n"', "a multi-line padded identifier"),
+    ('"(Thing)"', "a parenthesized identifier"),
+    ('"pkg.mod.Thing"', "a dotted path, as monkeypatch.setattr takes"),
+    ('"app.Thing"', "a Django-style lazy model reference"),
+    ('"Thing.method"', "the head of a dotted attribute chain"),
+    ('"self.Thing"', "an attribute spelled like the name"),
+    ('"mypkg.cli:main"', "an entry point address (not valid Python)"),
+    ('"list[Thing]"', "an eagerly evaluated string annotation"),
+    ('"Optional[Thing]"', "an eagerly evaluated string annotation"),
+    ('"dict[str, Thing]"', "an eagerly evaluated string annotation"),
+    ('"Thing | None"', "a PEP 604 string annotation"),
+    ('"Thing, Other"', "a tuple of names"),
+    ('"Thing()"', "an eval payload"),
+    ('"x = Thing"', "an exec payload, which is a statement not an expression"),
+    ('"if Thing: pass"', "an exec payload"),
+    ('"lambda: Thing"', "a lambda body"),
+    ("\"Sequence['Thing']\"", "a nested forward reference with no CST node of its own"),
+    ("\"Callable[..., 'Thing']\"", "a nested forward reference"),
+    ("\"{'a': 'Thing'}\"", "a string nested in a dict literal"),
+    ('">>> Thing()"', "a doctest is executable"),
+    ('">>> from m import Thing"', "a doctest import"),
+    ('"from m import Thing"', "code naming the symbol: a template or exec payload"),
+    ('"import Thing"', "code naming the symbol"),
+    ('b"Thing"', "a bytes literal cannot be decoded, so it cannot be cleared"),
+]
+
+_MUST_NOT_BLOCK = [
+    ('"default value must be set"', "prose"),
+    ('"the default is 5"', "prose"),
+    ('"no default provided"', "prose"),
+    ('"Cannot include this file"', "prose"),
+    ('"Use include to add files"', "documentation prose"),
+    ('"expected Type, got int"', "an error message"),
+    ('"deprecated since 2.0"', "prose"),
+    ('"SELECT include FROM t"', "SQL"),
+    ('"<b>Type</b> here"', "HTML"),
+    ('"--include=PATTERN"', "CLI help text"),
+    ('"%(Thing)s"', "a printf mapping key, not a name reference"),
+    ('r"\\bdefault\\b"', "a regex literal"),
+    ('"x = 1  # Thing"', "the name appears only in a comment inside the payload"),
+    ('"Content-Type: text/html"', "an HTTP header"),
+]
+
+
+# Cases that block even though no rename could actually reach them. They are
+# recorded rather than fixed: each one *does* parse as Python, so clearing it
+# would mean deciding by intent rather than by structure, which is the guess
+# this guard exists to avoid. Over-blocking costs a declined file; the other
+# direction costs broken code.
+_ACCEPTED_OVER_BLOCK = [
+    ('"Thing-case"', "parses as the subtraction `Thing - case`"),
+    ('"{Thing}"', "parses as a set literal, though it is a format field"),
+    ('"default, include"', "parses as a tuple of two names"),
+]
+
+
+def _mention_names(literal: str) -> set[str]:
+    """Every name the guard would report for ``x = <literal>``."""
+    tree = cst.parse_module(f"x = {literal}\n")
+    names = {"Thing", "Other", "default", "include", "Type", "deprecated", "main"}
+    return {h[1].split("'")[1] for h in guards.find_string_mentions(tree, names, _line_of(tree))}
+
+
+@pytest.mark.parametrize(("literal", "why"), _MUST_BLOCK, ids=[c[0] for c in _MUST_BLOCK])
+def test_a_string_that_could_be_a_reference_blocks(literal: str, why: str) -> None:
+    assert _mention_names(literal), f"must block ({why}): {literal}"
+
+
+@pytest.mark.parametrize(("literal", "why"), _MUST_NOT_BLOCK, ids=[c[0] for c in _MUST_NOT_BLOCK])
+def test_prose_that_merely_contains_the_word_does_not_block(literal: str, why: str) -> None:
+    assert _mention_names(literal) == set(), f"must not block ({why}): {literal}"
+
+
+def test_strict_ids_make_a_word_match_enough() -> None:
+    """A string proven to be code by context blocks even if it cannot parse.
+
+    `"Thing["` is prose-shaped to any content inspection -- it does not parse
+    and is not a reference path -- but in an annotation slot it is a
+    malformed type, not prose. Only the caller knows the slot, so the caller
+    marks it.
+    """
+    tree = cst.parse_module("def f(a: 'Thing[') -> None: ...\n")
+    strings = [n for n in _walk(tree) if isinstance(n, cst.SimpleString)]
+    assert guards.find_string_mentions(tree, {"Thing"}, _line_of(tree)) == []
+    hits = guards.find_string_mentions(
+        tree, {"Thing"}, _line_of(tree), strict_ids=frozenset({id(strings[0])})
+    )
+    assert len(hits) == 1
+
+
+@pytest.mark.parametrize(
+    ("literal", "why"), _ACCEPTED_OVER_BLOCK, ids=[c[0] for c in _ACCEPTED_OVER_BLOCK]
+)
+def test_accepted_over_blocking_is_deliberate(literal: str, why: str) -> None:
+    """Declining a file is the safe direction; do not relax these."""
+    assert _mention_names(literal), f"expected to block ({why}): {literal}"
+
+
+def test_a_string_nested_two_levels_deep_still_blocks() -> None:
+    """Recursion follows forward references that have no CST node of their own."""
+    assert _mention_names('"Sequence[\\"Sequence[\'Thing\']\\"]"') == {"Thing"}
+
+
+def test_a_bytes_literal_is_reported_as_such() -> None:
+    tree = cst.parse_module('x = b"Thing"\n')
+    hits = guards.find_string_mentions(tree, {"Thing"}, _line_of(tree))
+    assert len(hits) == 1
+    assert "bytes literal" in hits[0][1]
+
+
+def test_global_and_match_names_inside_a_payload_block() -> None:
+    """Binding forms inside an exec payload name the symbol just as a read does."""
+    assert _mention_names('"global Thing"') == {"Thing"}
+    assert _mention_names('"match x:\\n    case Thing:\\n        pass"') == {"Thing"}

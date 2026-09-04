@@ -1361,3 +1361,99 @@ def test_a_star_import_counts_as_evidence(tmp_path: pathlib.Path) -> None:
     pkg = _tree(tmp_path, user="from pkg.tool import *\ndef go():\n    return dump(1)\n")
     _fix_all(pkg)
     assert "from pkg.display import dump" in (pkg / "tool.py").read_text()
+
+
+# -- the reference/prose boundary, end to end -------------------------------
+
+
+def test_a_prose_mention_no_longer_blocks_the_file():
+    """`find_string_mentions` clears prose: no rename can reach it."""
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        'def f():\n    raise ValueError("no Thing provided")\n'
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\n"
+        'def f():\n    raise ValueError("no Thing provided")\n'
+        "x = mod.Thing()\n"
+    ), "the prose string must be reproduced byte-for-byte"
+
+
+def test_a_dotted_path_in_a_string_still_blocks_the_file():
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        'monkeypatch.setattr("pkg.sub.mod.Thing", None)\n'
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_an_eager_string_annotation_still_blocks_the_file():
+    """No `from __future__ import annotations`, so the string is evaluated."""
+    src = 'from pkg.sub.mod import Thing\ndef f(x: "list[Thing]") -> None: ...\ny = Thing()\n'
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_a_malformed_eager_annotation_still_blocks_the_file():
+    """Unparseable *and* in an annotation slot: code, not prose."""
+    src = 'from pkg.sub.mod import Thing\ndef f(x: "Thing[") -> None: ...\ny = Thing()\n'
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_a_doctest_outside_a_docstring_still_blocks_the_file():
+    src = 'from pkg.sub.mod import Thing\nEXAMPLE = ">>> Thing()"\nx = Thing()\n'
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_a_bytes_literal_naming_the_symbol_still_blocks_the_file():
+    src = 'from pkg.sub.mod import Thing\nBLOB = b"Thing"\nx = Thing()\n'
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert "bytes literal" in result.blockers[0].detail
+
+
+def test_a_split_dunder_all_blocks_the_file():
+    """`__all__ = "Thing go".split()` is a name list even though it is not code."""
+    src = 'from pkg.sub.mod import Thing, go\n__all__ = "Thing go".split()\n'
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_a_dunder_all_built_by_extend_blocks_the_file():
+    src = 'from pkg.sub.mod import Thing\n__all__ = []\n__all__.extend(["Thing"])\n'
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_a_dunder_all_built_through_a_name_blocks_the_file():
+    """`_EXPORTS = "Thing go".split()` + `__all__ = _EXPORTS` is still a name list."""
+    src = 'from pkg.sub.mod import Thing, go\n_EXPORTS = "Thing go".split()\n__all__ = _EXPORTS\n'
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+
+
+def test_an_indented_exec_payload_blocks_the_file():
+    """A written-out block payload is code; the outer strip leaves its indent."""
+    src = (
+        "from pkg.sub.mod import Thing\n"
+        'SRC = """\n    made = Thing()\n"""\n'
+        "def run():\n    exec(SRC)\n"
+    )
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
