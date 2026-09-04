@@ -46,6 +46,7 @@ regression, 2 if the harness itself could not run.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import pathlib
@@ -132,15 +133,58 @@ def _import_failures(tree: pathlib.Path) -> dict[str, str]:
     return failures
 
 
-def _undefined_names(tree: pathlib.Path) -> set[str]:
+def _undefined_names(tree: pathlib.Path) -> collections.Counter[str]:
+    """How many ``F821`` findings of each kind *tree* has, keyed without positions.
+
+    Compacting an import block moves every line below it, so a finding the
+    rewrite never touched comes back at a different line -- and comparing
+    ruff's ``concise`` output lines, which begin ``path:line:col:``, reads
+    that as a *new* undefined name. `prompt_toolkit`'s pre-existing
+    ``Undefined name `result``` moved from line 953 to 921 and was reported
+    as a regression on every run, right under a tally saying ``14 before, 14
+    after``.
+
+    The key is therefore the file, the rule and the message -- *what* is
+    wrong, never *where*. The JSON format carries those three as fields, and
+    unlike ``concise`` it has no trailing ``Found N errors.`` summary, which
+    is a line whose text changes whenever any count does.
+
+    Counting rather than collecting is what keeps a *second* occurrence of
+    something a file was already flagged for visible: the key repeats, so its
+    tally rises above the baseline's and the difference is still reported.
+    """
     proc = subprocess.run(
-        ["ruff", "check", "--isolated", "--select", "F821", "--output-format", "concise", "."],
+        ["ruff", "check", "--isolated", "--select", "F821", "--output-format", "json", "."],
         cwd=tree,
         capture_output=True,
         text=True,
         check=False,
     )
-    return {ln for ln in proc.stdout.splitlines() if ln.strip()}
+    try:
+        findings = json.loads(proc.stdout or "[]")
+    except ValueError:
+        findings = None
+    if not isinstance(findings, list):
+        # Ruff did not run, or wrote something unreadable. An empty tally
+        # would compare equal to the other tree's and report "unchanged",
+        # turning a check that ran nothing into a pass. The tree path goes in
+        # the key so the two sides can never cancel out.
+        return collections.Counter({f"{_NO_RESULT}: ruff exit {proc.returncode} in {tree}": 1})
+    return collections.Counter(
+        f"{_relative(tree, f['filename'])}: {f['code']} {f['message']}" for f in findings
+    )
+
+
+def _relative(tree: pathlib.Path, filename: str) -> str:
+    """*filename* as ruff reported it, relative to the tree that produced it.
+
+    The absolute path differs between the pristine and the rewritten copy for
+    every single file, so comparing it would make every finding look new.
+    """
+    try:
+        return str(pathlib.Path(filename).relative_to(tree))
+    except ValueError:
+        return filename
 
 
 def _suite_result(tree: pathlib.Path, package: str, ignores: tuple[str, ...]) -> str:
@@ -196,6 +240,11 @@ def _report(before: dict[str, object], after: dict[str, object]) -> bool:
     """Print the differences. True when the rewrite changed nothing."""
     ok = True
 
+    # Keyed on the module name, which the rewrite does not move -- unlike the
+    # `line:col` the F821 comparison below used to key on. A module that
+    # already failed and now fails *differently* is therefore invisible here;
+    # comparing the error text instead would flag every failure whose message
+    # quotes a file path, because the two trees live at different paths.
     before_imports = dict(before["imports"])  # type: ignore[arg-type]
     after_imports = dict(after["imports"])  # type: ignore[arg-type]
     new_imports = {m: e for m, e in after_imports.items() if m not in before_imports}
@@ -206,16 +255,21 @@ def _report(before: dict[str, object], after: dict[str, object]) -> bool:
         for module, error in sorted(new_imports.items())[:25]:
             print(f"    {module}: {error}")
 
-    new_undefined = set(after["undefined"]) - set(before["undefined"])  # type: ignore[arg-type]
+    before_undefined = collections.Counter(before["undefined"])  # type: ignore[arg-type]
+    after_undefined = collections.Counter(after["undefined"])  # type: ignore[arg-type]
+    # Counter subtraction keeps only the keys that went *up*, so a finding
+    # that merely moved cancels out and a second copy of one that was already
+    # there does not.
+    new_undefined = after_undefined - before_undefined
     print(
-        f"undefined names (F821): {len(set(before['undefined']))} before, "  # type: ignore[arg-type]
-        f"{len(set(after['undefined']))} after"
-    )  # type: ignore[arg-type]
+        f"undefined names (F821): {sum(before_undefined.values())} before, "
+        f"{sum(after_undefined.values())} after"
+    )
     if new_undefined:
         ok = False
-        print(f"  {len(new_undefined)} NEW undefined name(s):")
-        for line in sorted(new_undefined)[:25]:
-            print(f"    {line}")
+        print(f"  {sum(new_undefined.values())} NEW undefined name(s):")
+        for finding, count in sorted(new_undefined.items())[:25]:
+            print(f"    {finding}{f' (x{count})' if count > 1 else ''}")
 
     suites = dict(after["suites"])  # type: ignore[arg-type]
     print(f"bundled test suites: {len(suites) or 'none in this corpus'}")
