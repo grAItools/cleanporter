@@ -90,3 +90,39 @@ def test_malformed_config_raises(tmp_path, table, message):
 
 def test_plain_config_still_constructs_with_no_arguments():
     assert config.Config().scope == "all"
+
+
+#: One non-default value per known key. The test below fails if a key is added
+#: without one, which is the point: the sample is what proves the parser does
+#: something with the key rather than merely accepting it.
+_SAMPLES = {
+    "exclude": ["build/**"],
+    "source_roots": ["src"],
+    "exempt_modules": ["attrs"],
+    "exempt_names": ["annotations"],
+    "scope": "first-party",
+    "python": "/usr/bin/python3",
+    "treat_unresolved_as_error": True,
+}
+
+
+def test_every_known_key_reaches_the_config(tmp_path):
+    """A key that is validated but never applied would be silently ignored.
+
+    `_KNOWN_KEYS` is what `_parse_table` accepts; the constructor call is what
+    it applies. Nothing in the language ties the two together -- a key can be
+    range-checked, found valid, and then left out of the `Config`, and no type
+    checker sees it because the field has a default. This is that tie.
+
+    It proves each key reaches *a* field, not the right one; two same-typed
+    fields cross-wired would pass here. `test_reads_every_key` is what pins the
+    mapping.
+    """
+    assert set(_SAMPLES) == set(config._KNOWN_KEYS), "every known key needs a sample above"
+
+    defaults = config.Config(root=tmp_path)
+    for key, value in _SAMPLES.items():
+        parsed = config._parse_table({key: value}, tmp_path)
+        assert getattr(parsed, key) != getattr(defaults, key), (
+            f"tool.cleanporter.{key} is accepted by the parser but never reaches Config"
+        )
