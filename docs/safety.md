@@ -46,12 +46,53 @@ instead. Those cases are listed below.
 Any one of these blocks the entire file. Each emits a `CP003` finding naming
 the line.
 
-### A mention of the local name inside a string literal
+### A reference to the local name inside a string literal
 
-`__all__ = ["Widget"]`, `getattr(mod, "Widget")`, a `pytest.mark.parametrize`
-id — these keep working only if the spelling of the name survives, and a
-rename would silently break them. So a bare name match inside a string
-literal blocks the file.
+`__all__ = ["Widget"]`, `getattr(mod, "Widget")`,
+`monkeypatch.setattr("pkg.mod.Widget", ...)` — these keep working only if the
+spelling of the name survives, and a rename would silently break them. So a
+string literal that could be *referring to* a rewritten name blocks the file.
+
+Two conditions must both hold. First, the name has to appear in the string as
+a whole word — a substring match is not enough, so `Widget` does not match
+inside `WidgetFactory`. Second, the string has to be **code rather than
+prose**.
+
+That second condition matters because most word matches in real code are
+prose that no rename can reach: `"expected Type, got int"`,
+`"--include=PATTERN"`, `"@pytest.yield_fixture is deprecated"`. A string can
+only reach a binding by *being* a reference to it — an `__all__` entry, a
+`getattr` argument, an eagerly evaluated annotation, an `eval`/`exec`
+payload, an `importlib` or entry-point address. Every one of those is either
+valid Python or a dotted/colon path; prose is neither.
+
+So the string's content is parsed, and it blocks when the name turns up as a
+genuine reference in the result:
+
+- a `Name` or the `.attr` of an attribute access, so **both** halves of
+  `"pkg.mod.Widget"` count — the leaf of a dotted path is exactly what
+  `monkeypatch.setattr` takes;
+- a keyword-argument name, or an `import` / `from ... import` alias, because
+  a string carrying code that *names* the symbol is a template or an `exec`
+  payload rather than prose. Neither is a reference a rename would really
+  break; they are included because over-blocking costs a declined file and
+  the other direction costs broken code;
+- a string nested inside the parse, recursively — `"Sequence['Widget']"` is a
+  forward reference in its own right, and the inner `'Widget'` has no syntax
+  node of its own to be visited separately;
+- a `>>>` anywhere in the content, which is a doctest and therefore
+  executable, whatever else the string contains.
+
+A string whose content is **not text at all** — a bytes literal whose raw
+source spells the name — cannot be parsed and so cannot be cleared either. It
+is reported and blocks, like anything else the tool cannot classify.
+
+This deliberately over-blocks in one direction: a string that happens to
+parse as Python without being a reference still blocks. `"Widget-case"`
+parses as the subtraction `Widget - case`, and `"{Widget}"` parses as a set
+literal, so both block even though a `.format()` field name and a
+`parametrize` id are inert. Clearing those would mean deciding by *intent*
+rather than by structure, which is the guess this guard exists to avoid.
 
 Two exceptions:
 
@@ -85,6 +126,22 @@ Two exceptions:
     the ordinary string-mention guard then judges it. The same check catches
     content that carries trivia re-rendering would drop, such as a trailing
     comment inside the annotation string.
+
+    A string sitting in an annotation slot is **code by context**, whether or
+    not it parses, and the string guard is told so. An `__all__` list gets the
+    same treatment for the same reason: it is a list of *names* by
+    declaration, so every string in one blocks however it is spelled —
+    including `__all__ = "Widget helper".split()`, whose contents are not
+    Python and which no amount of inspecting them could recognise. One level
+    of indirection is followed, so `__all__ = _EXPORTS` also covers whatever
+    built `_EXPORTS` — one level, not a general dataflow analysis, which is
+    as far as the idiom goes. That is what separates the
+    two reasons a string can fail to parse. `"expected Type, got int"` is
+    prose and is cleared; `"Widget["` in an annotation slot is a *malformed
+    type* — unclassifiable, not inert — and blocks. Nothing about the content
+    alone distinguishes them, so the distinction is drawn where it is known:
+    at the slot. Without `from __future__ import annotations` these strings
+    are evaluated at runtime, so `def f(x: "list[Widget]")` blocks there too.
 
 !!! note "f-strings"
 
@@ -166,12 +223,93 @@ reported. cleanporter never hands back source it cannot compile.
 - **Wildcard imports are never rewritten.** `from x import *` is reported as
   `CP003` — there is no module import that reproduces it — in every mode,
   including plain check mode.
+- **Explicit re-exports are never rewritten.** `from .exceptions import
+  UsageError as UsageError` aliases a name to itself, which does nothing at
+  runtime and is therefore only ever written to declare that the name is part
+  of this module's public surface. PEP 484 calls it a *redundant alias*;
+  mypy's `no_implicit_reexport` and ruff's `F401` both read it that way, which
+  makes it the one re-export marker that is machine-readable rather than
+  guessed at.
+
+    Rewriting it would delete a public name: that line is what makes
+    `from pkg.config import UsageError` work in every *other* file, including
+    files this tool may never be pointed at. It is the same failure the
+    `__all__` string-mention guard catches, stated in syntax instead of in a
+    string, so it gets the same answer — reported as `CP003`, in every mode,
+    and left exactly as written. Like an unresolved name it is *kept in
+    place* rather than blocking the whole file, so the file's other rewrites
+    still happen. An ordinary alias (`import Thing as T`) carries no such
+    declaration and is rewritten normally.
+- **A load-bearing re-export is never rewritten.** If `pkg/tool.py` says
+  `from pkg.display import dump`, then `pkg.tool.dump` exists only because of
+  how `tool.py` writes that import — and this tool may be about to rewrite it,
+  in the same run. Fixing `tool.py` is correct on its own terms and deletes
+  `pkg.tool.dump`; rewriting another file's `from pkg.tool import dump` into
+  `tool.dump` is correct on *its* own terms and points at what that deletion
+  removed. Both are right alone and wrong together.
+
+    The **re-exporting** side is the one protected. `tool.py`'s own import is
+    reported `CP003` and left alone when two things hold: `tool.py` binds the
+    name by importing it rather than defining it, so a rewrite would remove
+    the attribute at all; and some analysed file *uses* `pkg.tool.dump`. A use
+    is any of three shapes:
+
+    - `from pkg.tool import dump`;
+    - `dump` read as an attribute of a module binding — `import pkg.tool` then
+      `pkg.tool.dump`, or `from pkg import tool` then `tool.dump`;
+    - `from pkg.tool import *`, which could need any of the module's
+      re-exports, so all of them count.
+
+    The attribute shape is not an extra: it is the form this tool rewrites
+    everything *into*. Counting only `from` imports made `--fix` **not
+    convergent** — the first run rewrote the consumer to `tool.dump`, erasing
+    the very evidence it had relied on, and a second run then deleted the
+    attribute the first run had protected. A run with findings left exits
+    non-zero, which is exactly what invites that second run, so this mattered.
+
+    The consumer is then rewritten as usual — the attribute it qualifies
+    through is guaranteed to survive.
+
+    A re-export nobody uses is free to fix. A name bound both ways
+    (imported under a `try`, defined in the `except`) survives a rewrite and is
+    not affected. Third-party modules are never rewritten, so their re-exports
+    do not move and are not considered: the hazard exists exactly where the
+    fixer's reach does, and so does the guard.
+
+    The evidence is the set of files under analysis, and it is evidence a
+    *parse* can see. A consumer outside the run is the documented cross-file
+    limitation. A consumer inside the run that reaches the name through a
+    string — `getattr(tool, "dump")`, `sys.modules["pkg.tool"].dump` — is not
+    evidence either, for the same reason those strings are opaque to the
+    string guard. Both make the re-export *look* unused, and it is then
+    fixed — the same string-opacity family as the accepted limitations below.
 - **A file is blocked outright, not partially fixed**, whenever a rewritten
-  name appears in a non-docstring string literal, inside a doctest, or when
-  removing an import would discard its comment. See the section above.
+  name is referenced by a non-docstring string literal, appears inside a
+  doctest, or when removing an import would discard its comment. See the
+  section above.
 - **Type comments are not inspected.** A `# type: ...` comment naming a
   rewritten symbol is neither rewritten nor treated as a blocker. (A comment
   *inside* an import statement is a separate matter, and does block.)
+- **Some `CP003` findings can never be cleared by `--fix`.** A wildcard
+  import, an explicit `S as S` re-export and a load-bearing re-export are all
+  reported in every mode and are never rewritten, and `cli.run` counts
+  `CP003` toward the failure exit code. A project that legitimately uses those
+  idioms therefore cannot reach exit `0` on the strength of `--fix` alone; the
+  finding is a true statement about the code, not a defect to be fixed. Silence
+  them with `exempt_names`, `exempt_modules` or `exclude` if you want a green
+  run — cleanporter's own `__init__.py` deliberately does not, and the README
+  explains why.
+- **A string the parse cannot see through is treated as prose.** The
+  string guard clears a string that does not parse as Python and is not a
+  dotted/colon path. Content that is code is parsed both as written and
+  `textwrap.dedent`-ed, so an indented `exec` block still blocks. What slips
+  through is content that no parse can reach: a regex literal matching the
+  name at runtime (`re.compile(r"\bWidget\b")` applied to an attribute name),
+  a payload assembled rather than written out (`eval("Wid" + "get")`), a
+  fragment that is not valid Python on its own (`"{indent}Widget()"` fed
+  through `.format()`), and source for a *different* Python version. The
+  annotation-slot and `__all__` cases are not in this list: those strings are
+  known to be code by context and keep blocking however they are spelled.
 - **Guards are per file.** A string in *another* file that names the rewritten
   binding by its dotted path — `monkeypatch.setattr("pkg.cli.helper", ...)`,
   an entry point, an `importlib` lookup — cannot be seen, so `--fix` can make
