@@ -102,11 +102,18 @@ class ModuleMap:
         self._demoted: set[pathlib.Path] = set()
         self._modules: set[str] = set()  # dotted names of .py modules
         self._packages: set[str] = set()  # dotted names of packages
-        self._inits: dict[str, pathlib.Path] = {}  # dotted package -> its __init__.py
-        #: dotted module -> the ``.py`` holding it (a package maps to its
-        #: ``__init__.py``). Extension modules are absent: there is no source
-        #: to parse, so `is_reexport` cannot answer for them and says no.
-        self._sources: dict[str, pathlib.Path] = {}
+        self._inits: dict[str, list[pathlib.Path]] = {}  # dotted package -> its __init__.py files
+        #: dotted module -> *every* ``.py`` on disk that claims that name (a
+        #: package contributes its ``__init__.py``). Normally one, but a name
+        #: can be claimed twice -- ``pkg/`` beside ``pkg.py``, or the same
+        #: package under two import roots -- and which file an interpreter
+        #: actually imports depends on ``sys.path`` and on precedence rules
+        #: this filesystem-only map does not adjudicate. Every claimant is
+        #: kept so the queries below can answer for all of them rather than
+        #: for whichever happened to be scanned last. Extension modules are
+        #: absent: there is no source to parse, so `is_reexport` cannot
+        #: answer for them and says no.
+        self._sources: dict[str, list[pathlib.Path]] = {}
         for root in self.roots:
             self._scan(root, root)
 
@@ -157,8 +164,8 @@ class ModuleMap:
                 self._packages.add(dotted)
                 init = child / "__init__.py"
                 if init.is_file():
-                    self._inits[dotted] = init
-                    self._sources[dotted] = init
+                    self._inits.setdefault(dotted, []).append(init)
+                    self._sources.setdefault(dotted, []).append(init)
                 self._scan(root, child)
             elif _is_importable_file(child):
                 stem = _module_stem(child)
@@ -166,7 +173,7 @@ class ModuleMap:
                     dotted = self._dotted(root, child.with_name(stem))
                     self._modules.add(dotted)
                     if child.suffix == ".py":
-                        self._sources[dotted] = child
+                        self._sources.setdefault(dotted, []).append(child)
 
     @staticmethod
     def _dotted(root: pathlib.Path, path: pathlib.Path) -> str:
@@ -185,8 +192,9 @@ class ModuleMap:
             return None
         full = f"{parent}.{name}"
         on_disk = full in self._packages or full in self._modules
-        init = self._inits.get(parent)
-        shadowed = init is not None and name in _bindings.top_level_bindings(str(init))
+        shadowed = any(
+            name in _bindings.top_level_bindings(str(init)) for init in self._inits.get(parent, ())
+        )
         if on_disk and shadowed:
             return model.Kind.AMBIGUOUS
         if on_disk:
@@ -205,11 +213,22 @@ class ModuleMap:
         that is the whole point rather than a limitation: a third-party
         ``parent`` is never rewritten, so its re-exports do not move. The
         hazard exists exactly where the fixer's reach does.
+
+        When more than one file on disk claims ``parent`` -- ``pkg/`` beside
+        ``pkg.py``, which is what a stale flat module left next to a newer
+        package looks like -- *every* claimant is asked and any yes wins.
+        Which of them an interpreter imports is a ``sys.path`` question this
+        map cannot answer, so answering for one of them is a guess, and the
+        guess is unsafe in one direction only: reading the wrong file says
+        "not a re-export", the guard stands down, and the rewrite deletes an
+        attribute another file imports. Saying yes for a file that does not
+        win costs a fix that was safe; saying no for one that does costs
+        working code.
         """
-        source = self._sources.get(parent)
-        if source is None:
-            return False
-        return name in _bindings.import_bound_names(str(source))
+        return any(
+            name in _bindings.import_bound_names(str(source))
+            for source in self._sources.get(parent, ())
+        )
 
     def qualname_for(self, path: pathlib.Path, relative_level: int = 0) -> str | None:
         """Dotted module name for a source file, for relative-import resolution.

@@ -95,6 +95,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     documented cross-file limitation. Third-party modules are never rewritten,
     so their re-exports do not move and are not considered.
 
+- **A module and a package that share a name no longer hide each other's
+  re-exports.** `pkg.py` sitting beside `pkg/` — what an older single-file
+  release looks like when it is left in place next to a newer packaged one —
+  made the first-party map key `pkg` to whichever file it scanned last, which
+  is the flat module. The guard above then asked `pkg.py` whether `pkg`
+  re-exports `helper`, got "no", and let `--fix` delete the re-export out of
+  `pkg/__init__.py` while rewriting a consumer to read it — an
+  `AttributeError` at import, from code that compiles. Python resolves
+  `import pkg` to the package and never looks at `pkg.py`, but which file wins
+  is a `sys.path` question in general, so the map now keeps *every* file that
+  claims a dotted name and the re-export guard answers for all of them: any
+  claimant that re-exports the name protects it. The cost is a fix declined
+  where the losing file was the one re-exporting; the alternative cost was
+  working code. Found by the corpus check, where `click_plugins.py` (2.0dev)
+  beside `click_plugins/` (1.1.1.2) broke `celery.bin.celery`.
+
 - **A plain `import x` inside `if TYPE_CHECKING:` is no longer treated as a
   runtime binding.** Such a block is `GlobalScope` to libCST exactly like the
   module body, so the fixer harvested the import as an already-available

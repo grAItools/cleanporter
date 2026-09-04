@@ -108,6 +108,35 @@ def test_bare_annotation_does_not_bind_and_is_not_ambiguous(tmp_path):
     assert mm.classify("amb", "mod") is model.Kind.MODULE
 
 
+# -- a module and a package that share a dotted name -------------------------
+
+
+def _shadowed_package(tmp_path: pathlib.Path) -> pathlib.Path:
+    """``amb/`` re-exporting ``Q``, with a stale flat ``amb.py`` beside it."""
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text("from amb.mod import Q\n", encoding="utf-8")
+    (root / "amb.py").write_text("Q = 2\n", encoding="utf-8")
+    return root
+
+
+def test_a_flat_module_does_not_hide_the_packages_reexports(tmp_path):
+    """``amb.py`` beside ``amb/`` must not be the only file consulted.
+
+    Python imports the package and ignores the flat module, but the map kept
+    one source per dotted name and the flat module is scanned last, so
+    `is_reexport` read ``amb.py`` -- which re-exports nothing -- and said no.
+    The guard then stood down and ``--fix`` deleted ``amb.Q``.
+    """
+    mm = firstparty.ModuleMap([_shadowed_package(tmp_path)])
+    assert mm.is_reexport("amb", "Q") is True
+
+
+def test_a_name_neither_claimant_reexports_is_not_a_reexport(tmp_path):
+    """Consulting every claimant must not turn into saying yes to everything."""
+    mm = firstparty.ModuleMap([_shadowed_package(tmp_path)])
+    assert mm.is_reexport("amb", "absent") is False
+
+
 # -- nested import roots (final review, Critical 1) --------------------------
 
 

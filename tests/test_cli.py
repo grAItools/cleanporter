@@ -397,6 +397,73 @@ def test_a_namespace_subpackage_reuses_its_existing_relative_import(tmp_path, mo
     assert proc.returncode == 0, proc.stderr
 
 
+# -- a module and a package that share a name -------------------------------
+
+
+@pytest.fixture
+def shadowed_package(tmp_path: pathlib.Path) -> pathlib.Path:
+    """``pkg/`` re-exporting ``helper``, with a stale flat ``pkg.py`` beside it.
+
+    What an older single-file release looks like when it is left in place next
+    to a newer packaged one. The corpus ships exactly this: ``click_plugins.py``
+    (2.0dev) beside ``click_plugins/`` (1.1.1.2).
+    """
+    (tmp_path / "pkg.py").write_text('def helper():\n    return "flat"\n', encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("from pkg.core import helper\n", encoding="utf-8")
+    (tmp_path / "pkg" / "core.py").write_text(
+        'def helper():\n    return "packaged"\n', encoding="utf-8"
+    )
+    (tmp_path / "consumer.py").write_text(
+        "from pkg import helper\n\nVALUE = helper()\n", encoding="utf-8"
+    )
+    return tmp_path
+
+
+def _consumer_value(project: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    """Import ``consumer`` and print what it got, so *which* ``pkg`` won shows."""
+    return subprocess.run(
+        [sys.executable, "-c", "import consumer; print(consumer.VALUE)"],
+        capture_output=True,
+        text=True,
+        cwd=project,
+        env=dict(os.environ, PYTHONPATH=str(project)),
+    )
+
+
+def test_fix_keeps_a_reexport_that_a_module_of_the_same_name_hides(
+    shadowed_package, monkeypatch, capsys
+):
+    """The flat ``pkg.py`` must not decide what ``pkg``'s public surface is.
+
+    Python resolves ``import pkg`` to the package and never looks at
+    ``pkg.py``, but the module map kept a single source file per dotted name
+    and the flat module was scanned last, so the re-export guard read
+    ``pkg.py``, saw no re-export and stood down. ``--fix`` then deleted
+    ``pkg.helper`` *and* rewrote ``consumer.py`` to read it, producing an
+    ``AttributeError`` at import. In the corpus this broke
+    ``celery.bin.celery``, which imports ``with_plugins`` from
+    ``click_plugins``.
+    """
+    project = shadowed_package
+    before = _consumer_value(project)
+    assert before.stdout.strip() == "packaged", before.stderr
+
+    monkeypatch.chdir(project)
+    cli.main(["--fix", "."])
+    capsys.readouterr()
+
+    assert (project / "pkg" / "__init__.py").read_text(encoding="utf-8") == (
+        "from pkg.core import helper\n"
+    ), "the re-export the consumer reads must survive byte-identical"
+    assert (project / "consumer.py").read_text(encoding="utf-8") == (
+        "import pkg\n\nVALUE = pkg.helper()\n"
+    )
+    after = _consumer_value(project)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.strip() == "packaged"
+
+
 # -- the cross-file limitation note -----------------------------------------
 
 

@@ -246,3 +246,45 @@ def test_a_name_both_imported_and_defined_is_not_protected(tmp_path: pathlib.Pat
     (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
     _records, resolver, _e, _w = analyze.build([pkg], config.Config(root=pkg.parent))
     assert resolver.is_load_bearing("pkg.tool", "dump") is False
+
+
+def _shadowed_package_tree(tmp_path: pathlib.Path) -> pathlib.Path:
+    """``pkg/`` re-exporting ``helper``, with a stale flat ``pkg.py`` beside it.
+
+    The shape a package picks up when an older single-file release is left in
+    place next to a newer packaged one -- the corpus has exactly this in
+    ``click_plugins.py`` (2.0dev) beside ``click_plugins/`` (1.1.1.2).
+    """
+    (tmp_path / "pkg.py").write_text('def helper():\n    return "flat"\n')
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from pkg.core import helper\n")
+    (pkg / "core.py").write_text('def helper():\n    return "from package"\n')
+    (tmp_path / "consumer.py").write_text("from pkg import helper\nx = helper()\n")
+    return tmp_path
+
+
+def test_a_reexport_is_protected_through_a_module_of_the_same_name(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A flat ``pkg.py`` must not make ``pkg/__init__.py`` look rewritable.
+
+    Python resolves ``import pkg`` to the *package* and ignores the flat
+    module, but the module map kept one source file per dotted name and the
+    flat module was scanned last, so the re-export guard read ``pkg.py``,
+    found no re-export and stood down. ``--fix`` then deleted ``pkg.helper``
+    while rewriting ``consumer.py`` to read it. Found in the corpus:
+    ``click_plugins.py`` beside ``click_plugins/`` broke
+    ``celery.bin.celery``.
+    """
+    by_file = _findings_by_file(_shadowed_package_tree(tmp_path))
+    assert [f.code for f in by_file["__init__.py"]] == ["CP003"]
+    assert "another file imports 'helper' from 'pkg'" in by_file["__init__.py"][0].detail
+
+
+def test_the_consumer_of_a_shadowed_reexport_is_still_a_violation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Protecting the package's ``__init__`` is what keeps the consumer fixable."""
+    by_file = _findings_by_file(_shadowed_package_tree(tmp_path))
+    assert [f.code for f in by_file["consumer.py"]] == ["CP001"]
