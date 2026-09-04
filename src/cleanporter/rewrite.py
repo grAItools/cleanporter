@@ -50,23 +50,110 @@ def _render_alias(name: str, asname: str | None) -> str:
 
 
 def _type_checking_import_ids(tree: cst.Module) -> set[int]:
-    """Ids of ImportFrom nodes located inside an ``if TYPE_CHECKING:`` block."""
+    """Ids of import nodes located inside an ``if TYPE_CHECKING:`` block.
+
+    Both ``ImportFrom`` *and* plain ``Import``. The plain ones matter to
+    `_build_existing`, which harvests already-imported modules to bind
+    rewritten references through: a ``TYPE_CHECKING`` block is `GlobalScope`
+    to libcst exactly like the module body, so ``import unittest`` in one
+    looked like a perfectly good runtime binding. Reusing it emitted no new
+    import at all and rewrote ``TestCase`` to ``unittest.TestCase``, which
+    raises ``NameError`` the moment it runs. Found by running ``_pytest``'s
+    own test suite against a rewritten copy.
+    """
     ids: set[int] = set()
+    aliases = _type_checking_aliases(tree)
 
     class V(cst.CSTVisitor):
         def visit_If(self, node: cst.If) -> None:
-            test = node.test
-            name = ""
-            if isinstance(test, cst.Name):
-                name = test.value
-            elif isinstance(test, cst.Attribute):
-                name = test.attr.value
-            if name == "TYPE_CHECKING":
-                for imp in _collect_import_froms(node.body):
-                    ids.add(id(imp))
+            # For `if TYPE_CHECKING:` the body is the type-checking-only half;
+            # for `if not TYPE_CHECKING:` it is the `else`. Anything else is
+            # ordinary runtime code.
+            branch: cst.CSTNode | None = None
+            if _type_checking_only(node.test, aliases):
+                branch = node.body
+            elif _is_negated_type_checking(node.test, aliases) and node.orelse is not None:
+                branch = node.orelse
+            if branch is None:
+                return
+            for imp in _collect_import_froms(branch):
+                ids.add(id(imp))
+            for plain in _collect_imports(branch):
+                ids.add(id(plain))
 
     tree.visit(V())
     return ids
+
+
+def _type_checking_aliases(tree: cst.Module) -> set[str]:
+    """Local names bound to ``typing.TYPE_CHECKING``, including its own.
+
+    ``from typing import TYPE_CHECKING as TC`` then ``if TC:`` is the same
+    guard spelled differently, and matching the identifier alone missed it --
+    the block's imports were harvested as runtime bindings.
+    """
+    names = {"TYPE_CHECKING"}
+
+    class V(cst.CSTVisitor):
+        def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
+            for name, asname, _alias in _imports.imported_names(node):
+                if name == "TYPE_CHECKING" and asname:
+                    names.add(asname)
+
+    tree.visit(V())
+    return names
+
+
+def _is_type_checking_name(node: cst.BaseExpression, aliases: set[str]) -> bool:
+    """One of *aliases*, or ``<anything>.TYPE_CHECKING``."""
+    if isinstance(node, cst.Name):
+        return node.value in aliases
+    return isinstance(node, cst.Attribute) and node.attr.value == "TYPE_CHECKING"
+
+
+def _is_negated_type_checking(test: cst.BaseExpression, aliases: set[str]) -> bool:
+    """Exactly ``not TYPE_CHECKING`` -- the one guard that always runs.
+
+    Only this precise shape. ``not (TYPE_CHECKING or X)`` depends on ``X``,
+    and ``not DEBUG`` has nothing to do with type checking at all -- reading
+    every ``not`` as this idiom declined perfectly ordinary files with a
+    reason that was false about them.
+    """
+    return (
+        isinstance(test, cst.UnaryOperation)
+        and isinstance(test.operator, cst.Not)
+        and _is_type_checking_name(test.expression, aliases)
+    )
+
+
+def _type_checking_only(test: cst.BaseExpression, aliases: set[str]) -> bool:
+    """True when a block guarded by *test* may not run at run time.
+
+    Matching only a bare ``if TYPE_CHECKING:`` was not enough. A test that
+    merely *mentions* ``TYPE_CHECKING`` is equally not guaranteed --
+    ``if TYPE_CHECKING or not install_lazy_importer():`` and
+    ``if sys.version_info >= (3, 11) or TYPE_CHECKING:`` are both real, and
+    both left an import that a rewrite then leaned on as though it always
+    existed, producing ``NameError``.
+
+    The one shape that *is* guaranteed is ``if not TYPE_CHECKING:``: at run
+    time ``TYPE_CHECKING`` is false, so the body always executes and its
+    imports are ordinary runtime bindings. Only that exact shape is excluded
+    -- ``if not (TYPE_CHECKING or X):`` is a different expression whose value
+    depends on ``X``, so it stays conservative.
+    """
+    if _is_negated_type_checking(test, aliases):
+        return False
+    mentioned = False
+
+    class V(cst.CSTVisitor):
+        def visit_Name(self, node: cst.Name) -> None:
+            nonlocal mentioned
+            if node.value in aliases:
+                mentioned = True
+
+    test.visit(V())
+    return mentioned
 
 
 def _collect_import_froms(node: cst.CSTNode) -> list[cst.ImportFrom]:
@@ -596,7 +683,11 @@ class _Fixer(cst.CSTTransformer):
         # plain ``import a`` / ``import a as z`` (top-level modules only)
         for plain in _collect_imports(node):
             scope = self.get_metadata(metadata.ScopeProvider, plain, None)
-            if not isinstance(scope, metadata.GlobalScope):
+            # `_tc_ids` covers plain imports too: one inside `if TYPE_CHECKING:`
+            # is GlobalScope-scoped like any other, but does not exist at
+            # runtime, so it is not a binding anything may be rewritten
+            # through.
+            if not isinstance(scope, metadata.GlobalScope) or id(plain) in self._tc_ids:
                 continue
             for alias in plain.names:
                 mod = _imports.dotted(alias.name)

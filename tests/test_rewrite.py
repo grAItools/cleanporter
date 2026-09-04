@@ -1118,3 +1118,135 @@ def test_a_match_value_pattern_is_still_rewritten():
     result = outcome(src)
     assert result.status == "fixed"
     assert "case mod.Thing():" in result.source
+
+
+# -- TYPE_CHECKING guards ---------------------------------------------------
+
+
+def test_a_type_checking_plain_import_is_not_a_runtime_binding():
+    """`import x` under `if TYPE_CHECKING:` must not be reused as a binding.
+
+    A TYPE_CHECKING block is `GlobalScope` to libcst exactly like the module
+    body, so `_build_existing` used to harvest such an import as an
+    already-available module. The fixer then emitted no runtime import at all
+    and qualified through a name that does not exist at runtime -- a
+    `NameError` on the first call. Found by running `_pytest`'s own suite
+    against a rewritten copy of it.
+    """
+    src = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "from pkg.sub.mod import Thing\n"
+        "if TYPE_CHECKING:\n"
+        "    import pkg.sub.mod\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    runtime = result.source.split("if TYPE_CHECKING:")[0]
+    assert "from pkg.sub import mod" in runtime, (
+        "the rewrite must emit a runtime import, not lean on the "
+        f"TYPE_CHECKING one:\n{result.source}"
+    )
+
+
+def test_a_compound_type_checking_guard_is_not_a_runtime_binding():
+    """`if TYPE_CHECKING or X:` is not guaranteed to run, so its imports are not bindings.
+
+    Real shapes: `if TYPE_CHECKING or not install_lazy_importer():` (anyio),
+    `if sys.version_info >= (3, 11) or TYPE_CHECKING:` (_pytest). Matching
+    only a bare `if TYPE_CHECKING:` let these through, and the fixer then
+    qualified references through a name that may never be bound.
+    """
+    src = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "OTHER = False\n"
+        "from pkg.sub.mod import Thing\n"
+        "if TYPE_CHECKING or OTHER:\n"
+        "    import pkg.sub.mod\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    runtime = result.source.split("if TYPE_CHECKING or OTHER:")[0]
+    assert "from pkg.sub import mod" in runtime, (
+        f"a guard that may not run needs its own runtime import:\n{result.source}"
+    )
+
+
+def test_a_negated_type_checking_guard_is_a_runtime_binding():
+    """`if not TYPE_CHECKING:` always runs, so its imports are ordinary bindings.
+
+    The conservative direction would be to treat every mention of
+    TYPE_CHECKING as suspect; this one shape is genuinely guaranteed, and
+    over-blocking it would decline real files for no safety gain.
+    """
+    src = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "from pkg.sub.mod import Thing\n"
+        "if not TYPE_CHECKING:\n"
+        "    from pkg.sub import mod\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source.count("from pkg.sub import mod") == 1, (
+        f"the existing runtime binding should be reused:\n{result.source}"
+    )
+
+
+def test_a_negated_non_type_checking_guard_is_ordinary_code():
+    """`if not DEBUG:` has nothing to do with type checking and must still fix.
+
+    Reading every `not` as the `not TYPE_CHECKING` idiom declined perfectly
+    ordinary files, with a reason that was false about them.
+    """
+    src = (
+        "import os\n"
+        'if not os.environ.get("SKIP"):\n'
+        "    from pkg.sub.mod import Thing\n"
+        "def use():\n    return Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert "mod.Thing()" in result.source
+
+
+def test_the_else_of_a_negated_type_checking_guard_is_not_a_runtime_binding():
+    """In `if not TYPE_CHECKING: ... else: <imports>`, the else half is the gated one."""
+    src = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING\n"
+        "from pkg.sub.mod import Thing\n"
+        "if not TYPE_CHECKING:\n"
+        "    pass\n"
+        "else:\n"
+        "    import pkg.sub.mod\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    runtime = result.source.split("if not TYPE_CHECKING:")[0]
+    assert "from pkg.sub import mod" in runtime, (
+        f"the else-branch import is not a runtime binding:\n{result.source}"
+    )
+
+
+def test_an_aliased_type_checking_import_is_still_a_guard():
+    """`from typing import TYPE_CHECKING as TC` then `if TC:` is the same guard."""
+    src = (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING as TC\n"
+        "from pkg.sub.mod import Thing\n"
+        "if TC:\n"
+        "    import pkg.sub.mod\n"
+        "x = Thing()\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    runtime = result.source.split("if TC:")[0]
+    assert "from pkg.sub import mod" in runtime, (
+        f"an aliased TYPE_CHECKING guard is not a runtime binding:\n{result.source}"
+    )
