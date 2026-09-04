@@ -47,3 +47,7 @@ Thumbs.db
 # Coding-agent scratch and machine-local overrides
 .superpowers/
 .claude/settings.local.json
+
+# Corpus check scratch trees (corpus/run.py); hundreds of MB of third-party
+# code plus a rewritten copy of it.
+.corpus/

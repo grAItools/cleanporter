@@ -1,0 +1,73 @@
+name: Corpus
+
+# Runs `cleanporter --fix` over a pinned set of real third-party packages and
+# checks that the rewritten code still imports and still passes its own tests.
+# See corpus/run.py for what it checks and why.
+#
+# Deliberately *not* on every push or pull request. It installs ~200 MB of
+# third-party code, rewrites several thousand files and runs libCST's entire
+# test suite twice; that is 30-45 minutes, which is the wrong price for the
+# feedback loop on a docs typo. It is also the only check here that can be
+# broken by something other than this repository -- a corpus package's own
+# release. Keeping it on a schedule means a red run points at either a real
+# fixer regression or a deliberate pin bump, and never at "someone pushed".
+#
+# Run it by hand from the Actions tab before merging anything that touches
+# the resolver, the guards or the fixer.
+on:
+  schedule:
+    # Mondays, 04:17 UTC. Off the hour on purpose: scheduled jobs at :00 queue
+    # behind everyone else's.
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  corpus:
+    name: Rewrite real packages and check they still work
+    runs-on: ubuntu-latest
+    # The default 360-minute cap would let a hung probe burn an hour of
+    # runner time before anyone noticed.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      # The corpus is pinned in corpus/packages.txt, so this key only changes
+      # when someone bumps a pin on purpose.
+      - name: Cache the installed corpus
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: .corpus/original
+          key: corpus-${{ runner.os }}-${{ hashFiles('corpus/packages.txt') }}
+
+      # `run.py` wipes --work before installing, so on a cache hit it has to
+      # be told to reuse what the cache just restored -- otherwise the restore
+      # is deleted and reinstalled, and the cache buys nothing.
+      - name: Run the corpus check
+        run: uv run corpus/run.py ${{ steps.corpus-cache.outputs.cache-hit == 'true' && '--skip-install' || '' }}
+
+      # The report is the artifact worth keeping: a regression here names the
+      # module and the error, and the log scrolls away.
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-report
+          path: .corpus/report.txt
+          if-no-files-found: ignore

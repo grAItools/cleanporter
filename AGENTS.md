@@ -63,6 +63,9 @@ uv run prek run --all-files               # all local hooks
 uv run --group docs zensical serve        # docs preview
 uv run --group docs zensical build        # docs build
 
+uv run corpus/run.py                      # rewrite real packages, check they still work
+uv run corpus/run.py --skip-install       # ... reusing an installed corpus (~30-45 min)
+
 # Optional, non-blocking third opinion. Note this sync drops the docs group.
 uv sync --group zuban && uv run --group zuban zuban mypy --strict src/cleanporter
 ```
@@ -74,6 +77,12 @@ uv sync --group zuban && uv run --group zuban zuban mypy --strict src/cleanporte
   partially-typed surface). It is a ceiling. Fix one → lower it in the same
   commit. **Never raise it** to make new code pass; type the new code correctly
   instead.
+- **Run the corpus check before changing the resolver, a guard or the fixer.**
+  `uv run corpus/run.py` (see `corpus/README.md`) rewrites a pinned set of real
+  third-party packages and then *imports and runs* them. Every safety bug found
+  in the fixer so far was found there and not by `tests/` -- they do not fail a
+  parse, so the fixer's own re-parse backstop passes them. It is weekly in CI,
+  not per-PR, so nothing else will catch these for you.
 - **Docs anti-drift tests are real gates.** Tests in `tests/` walk the live
   argument parser and config-key set and fail if a CLI flag, a
   `[tool.cleanporter]` key, or a finding code is missing from the documentation.

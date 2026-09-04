@@ -1,0 +1,29 @@
+# The corpus: real third-party code that `--fix` is run over, to check that a
+# rewritten package still imports and still behaves.
+#
+# Pinned on purpose. An unpinned corpus makes every run a moving target, and a
+# regression becomes indistinguishable from an upstream release. Bump these
+# deliberately, in their own commit, so the diff in corpus results has exactly
+# one cause.
+#
+# Chosen for variety of import style rather than popularity: a package that
+# only ever writes `import x` exercises nothing here. This set covers heavy
+# re-export surfaces (mypy, _pytest via pytest), `if TYPE_CHECKING:` blocks
+# (libcst, attrs), deep package nesting (django), namespace-ish layouts
+# (celery, and kombu which arrives with it) and plain flat modules (pathspec,
+# pluggy, packaging).
+#
+# Packages that ship their own test suite inside the wheel are worth their
+# weight several times over: running those tests against a rewritten copy is
+# what has actually caught bugs here. libcst is the main one.
+
+libcst==1.9.0
+mypy==2.3.1
+pytest==9.1.1
+pygments==2.21.0
+pathspec==1.1.1
+packaging==26.3
+pluggy==1.6.0
+attrs==25.4.0
+celery==5.6.1
+django==6.0.2

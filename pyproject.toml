@@ -134,6 +134,15 @@ ignore = [
     "PLC0415", # local imports keep a test's dependencies next to the test
     "ARG",     # unused args are how pytest fixtures and stub signatures work
 ]
+# The corpus harness is an operator script, not library code: it prints its
+# report, shells out to uv/ruff/pytest by name, and deliberately catches
+# BaseException inside the probe it sends to a subprocess.
+"corpus/**" = [
+    "T201",    # print: the report *is* the output
+    "S603",    # subprocess: every command here is fixed and local
+    "S607",    # ... including ones resolved via PATH (uv, ruff)
+    "PLR2004", # magic-value-comparison: exit codes read better inline
+]
 # The probe deliberately shells out to another interpreter -- that is the
 # feature, and the argv is built from validated config, never from user text.
 "src/cleanporter/_probe.py" = ["S603", "S607"]
