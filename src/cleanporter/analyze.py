@@ -1,4 +1,10 @@
-"""Analysis driver: turn source files into :class:`Finding` objects."""
+"""Analysis driver: turn source files into :class:`Finding` objects.
+
+`FileRecord` carries a parsed file and lazily caches what is expensive to
+derive from it -- the import units and libcst's position metadata -- so a
+record survives being walked more than once (the CLI re-parses into a fresh
+record after a fix and analyses it again).
+"""
 
 from __future__ import annotations
 

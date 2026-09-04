@@ -15,7 +15,7 @@ so a sync gives you exactly the environment CI uses.
 ```bash
 git clone https://github.com/grAItools/cleanporter
 cd cleanporter
-uv sync                 # dev group: pytest, ruff, mypy, pyright, prek
+uv sync                 # dev group: pytest, ruff, the four type checkers, prek
 uv run prek install     # install the local git hooks
 ```
 
@@ -37,29 +37,26 @@ group pins because it is faster.
 | Lint with autofix | `uv run ruff check --fix` |
 | Format | `uv run ruff format` |
 | Check formatting only | `uv run ruff format --check` |
-| Type check | `uv run mypy --strict` |
-| Type check | `uv run pyright` |
-| Type check (optional) | `uv sync --group zuban && uv run --group zuban prek run --all-files --stage manual zuban` |
+| Type check `src/` | `uv run mypy --strict` |
+| Type check `src/` | `uv run pyright` |
+| Type check `src/` + `tests/` | `uv run zuban mypy` |
+| Type check `src/` + `tests/` | `uv run pyrefly check` |
 | Every blocking hook | `uv run prek run --all-files` |
 | Preview the docs | `uv run --group docs zensical serve` |
 | Build the docs | `uv run --group docs zensical build` |
 | Run the tool itself | `uv run cleanporter --help` |
 
-Two notes on the type checkers:
+Three notes on running these:
 
+- **All four gate.** `mypy`, `pyright`, `zuban` and `pyrefly` are in the `dev`
+  group, run as git hooks, and run in CI through those same hooks. There is no
+  informational tier any more; see [Type checking](#type-checking) below.
 - **`pyright` is slow the first time.** Its PyPI wrapper downloads a Node runtime
   on first invocation. Subsequent runs are fast; if the first one seems to hang,
   it is fetching Node.
-- **`zuban` is optional and non-blocking.** It is a third type checker kept in its
-  own dependency group as an informational cross-check. It is not in `dev`, its
-  hook lives in the `manual` stage so it never runs on commit, and it never gates
-  a merge. Run it with
-  `uv run --group zuban prek run --all-files --stage manual zuban` —
-  `--all-files` is required, because `prek run` otherwise judges only *staged*
-  files and reports `(no files to check) Skipped`, which reads just like a pass.
-  Note that `uv sync --group zuban` makes the environment match *exactly* that
-  set of groups, so it will drop the `docs` group; re-run `uv sync --group docs`
-  when you want the docs tooling back.
+- **`--all-files` is not optional.** `prek run` without it judges only *staged*
+  files, and with nothing staged every hook reports `(no files to check)
+  Skipped` — which reads just like a pass.
 
 ## Code style
 
@@ -80,8 +77,9 @@ Two notes on the type checkers:
 
 ## Type checking
 
-`mypy --strict`, `pyright` and `zuban` all report **zero** errors on this tree,
-so any diagnostic you see is something your change introduced.
+Four type checkers run, and **all four are gates**: `mypy --strict`, `pyright`,
+`zuban` and `pyrefly`. Each reports **zero** errors on this tree, so any
+diagnostic you see is something your change introduced.
 
 That was not always true. There used to be nine accepted errors, all blamed on
 libcst's partially-typed surface — union shapes like `Name | Tuple | List` that
@@ -96,17 +94,61 @@ If your change adds an error, the fix is to type your code correctly — not a
 believe you have hit an unavoidable libcst shape, say so explicitly in the PR
 description and expect to be asked to prove it.
 
-Run `uv run mypy --strict` and `uv run pyright` directly, or
-`uv run prek run --all-files` for those plus ruff. None of them take a path:
-scope comes from `pyproject.toml` (`[tool.mypy] files`, `[tool.pyright]
-include`), so every invocation checks the same thing.
+There are no type suppressions in the tree at all — no `# type: ignore`, no
+`# pyright: ignore` — so "zero errors" means the checkers looked at everything
+and had nothing to say, rather than that somebody told them not to look. The
+last one lived on `Config(**kwargs)` in `config.py`, where splatting a
+`dict[str, object]` typed every argument as `object`; it hid eight real
+diagnostics and, with them, any mistake the config parser might have made.
 
-`pyright` also covers `tests/` — except `tests/fixtures/`, which is excluded
-for the same reason ruff excludes it: fixtures are input data for the tool, not
-project code, and one written to exercise a weird shape must not be able to
-fail the lint job. `mypy --strict` does not cover `tests/` at all, because
-`--strict` over the test suite is 250-odd `no-untyped-def` reports on
-unannotated test functions and that is a separate piece of work.
+Run `uv run mypy --strict`, `uv run pyright`, `uv run zuban mypy` and
+`uv run pyrefly check` directly, or `uv run prek run --all-files` for those plus
+ruff. None of them take a path: scope comes from `pyproject.toml`
+(`[tool.mypy] files`, `[tool.pyright] include`, `[tool.zuban] files`,
+`[tool.pyrefly] project-includes`), so every invocation checks the same thing.
+
+### Who checks what
+
+| Checker | Scope | Configured by |
+| --- | --- | --- |
+| `mypy --strict` | `src/cleanporter` | `[tool.mypy]` |
+| `pyright` | `src/cleanporter` | `[tool.pyright]` |
+| `zuban` | `src/cleanporter`, `tests` | `[tool.zuban]` |
+| `pyrefly` | `src/cleanporter`, `tests` | `[tool.pyrefly]` |
+
+The split is by generation, and the reason is what a checker does with an
+unannotated function. `mypy --strict` over the test suite is 250-odd
+`no-untyped-def` reports demanding `-> None` on every test — annotations that
+would carry no information, because pytest calls those functions and nothing
+else does. So the older pair stays on `src/`, and the newer pair, which is fast
+enough to cover both trees, takes `tests/` as well: zuban with the
+"annotate every definition" family switched off for `tests.*` in
+`[[tool.zuban.overrides]]` (the rest of strict mode still applies, and the test
+bodies are still checked), pyrefly with its own defaults, which do not demand
+signatures.
+
+`tests/fixtures/` is excluded from both of the wide-scope checkers, for the same
+reason ruff excludes it: fixtures are input data for the tool — arbitrary user
+code it must handle — not project code, and one written to exercise a weird
+shape must not be able to fail the lint job.
+
+Three traps worth knowing, all of them the kind that stays green:
+
+- **zuban reads `[tool.mypy]` when `[tool.zuban]` is absent.** That section is
+  not a nicety; it is what lets zuban's scope differ from mypy's. Remove it and
+  zuban quietly narrows to `src/`.
+- **pyrefly drops include patterns that sit under a hidden directory.** If your
+  checkout lives somewhere with a dot-component in its path (`~/.worktrees/…`,
+  for instance), `pyrefly check` will skip `tests`, say so in a single
+  `WARN Skipping include pattern …` line, and then exit 0. A normal clone and
+  CI are unaffected; if you work out of such a directory, read that line.
+- **A typo in a checker's own config section is green almost everywhere.** An
+  unrecognised key in `[tool.mypy]`, `[tool.pyright]` or `[tool.pyrefly]` gets
+  a notice — `Unrecognized option`, `Config contains unrecognized setting`,
+  `WARN … Extra keys found in config` — and then exit 0, so the hook passes.
+  zuban is the only one of the four that refuses to run on a config it does not
+  understand. After editing any of those sections, read the output rather than
+  the exit code.
 
 ## Documentation and the anti-drift tests
 
@@ -117,6 +159,11 @@ User documentation lives in `docs/` and is built with
 uv run --group docs zensical serve    # live preview on localhost:8000
 uv run --group docs zensical build    # produce the static site
 ```
+
+Note that `--group` adds to the default groups rather than replacing them, so
+this keeps `dev`. It is `docs` that is not a default: a later plain `uv sync`
+reconciles the environment back to the defaults and uninstalls zensical, so
+re-run `uv sync --group docs` when you next want the docs tooling.
 
 The test suite **asserts that the documentation matches the code**. Tests in
 `tests/` walk the real argument parser and the real config-key set and fail if:
@@ -207,9 +254,8 @@ Before you open a PR:
 - [ ] `uv run pytest` passes.
 - [ ] `uv run ruff check` is clean.
 - [ ] `uv run ruff format --check` is clean (or you ran `uv run ruff format`).
-- [ ] `uv run prek run --all-files` is clean — that is ruff, ruff format, mypy
-      and pyright, the same four checks CI runs. (It does not run `zuban`,
-      which is manual-stage.)
+- [ ] `uv run prek run --all-files` is clean — that is ruff, ruff format, mypy,
+      pyright, zuban and pyrefly, the same six checks CI runs.
 - [ ] New or changed CLI flags, config keys and finding codes are documented in
       `docs/` (the anti-drift tests will tell you if they are not).
 - [ ] New behaviour has a test; a bug fix has a test that fails without the fix.
@@ -222,13 +268,9 @@ which is the point: CI does not re-spell the commands, so it cannot drift from
 `.pre-commit-config.yaml` in its options. The test suite runs separately on
 Python 3.12, 3.13 and 3.14.
 
-The zuban job is informational: it reports a disagreement as a warning
-annotation and a job summary, and always exits 0. That is deliberate and it is
-not the same thing as `continue-on-error: true`, which the job used to carry.
-`continue-on-error` only makes the *workflow run* green; the job keeps a check
-run of its own that still concludes `failure`, and the commit list renders
-check runs — which is why every commit on main used to show a red X next to a
-green CI run. A job that must never gate has to exit 0.
+zuban used to have a CI job of its own that reported disagreements as a warning
+annotation and always exited 0. It is gone: zuban is a hook like the others
+now, so it gates through the lint job.
 
 ## Reporting bugs
 

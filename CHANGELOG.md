@@ -16,12 +16,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **[pyrefly](https://pyrefly.org/) as a fourth type checker**, and a
+  **blocking** one from the start. It runs as a git hook like the rest, reads
+  `[tool.pyrefly]` in `pyproject.toml`, and covers `src/cleanporter` *and*
+  `tests/` (excluding `tests/fixtures/`).
+
 - **A corpus check** (`corpus/run.py`, `corpus/packages.txt`, and a daily
   `Corpus` workflow). It runs `--fix` over a pinned set of real third-party
   packages, then *imports and executes* the result, comparing every failure
   against the same probe run on the pristine copy. All three fixes below were
   found by it and none by `tests/` — they do not fail a parse, so the fixer's
   own re-parse backstop passed them. See `corpus/README.md`.
+
+### Changed
+
+- **zuban is now a gate, not a note.** It was an optional third opinion in its
+  own dependency group, with a `manual`-stage hook and a CI job engineered to
+  never fail. It is now in `dev`, its hook runs on every commit, and it gates
+  through the same lint job as everything else; the separate informational CI
+  job is gone. It had reported zero on this tree for some time, so promoting it
+  cost nothing.
+
+- **Type checking is now split by generation, and `pyright` no longer covers
+  `tests/`.** The older pair (`mypy --strict`, `pyright`) checks
+  `src/cleanporter`; the newer pair (`zuban`, `pyrefly`) checks
+  `src/cleanporter` and `tests/`, minus `tests/fixtures/`. The dividing line is
+  what each does with an unannotated function: `--strict` over the test suite
+  is 250-odd `no-untyped-def` reports demanding `-> None` on every test, which
+  is why mypy never covered it. zuban carries a `[tool.zuban]` section of its
+  own — without one it would fall back to `[tool.mypy]` and inherit mypy's
+  scope — with the "annotate every definition" family switched off for
+  `tests.*` and the rest of strict mode intact. Net effect: `tests/` is checked
+  by two checkers instead of one, and by two that see it in more detail.
+
+- **The last `# type: ignore` in the tree is gone**, and with it the only place
+  the type checkers were not actually checking. `config._parse_table` collected
+  its results into a `dict[str, object]` and splatted it into `Config(**kwargs)`
+  — which types every argument as `object`, so the call had to be silenced, and
+  the silence covered any genuine mistake in what the parser assigned (pyrefly
+  counted eight suppressed errors on that one line). Fields are now passed by
+  name, with the defaults read back off `Config` so an absent key and a changed
+  default cannot diverge, and keys are still validated in declaration order so
+  a table with several bad keys reports the error it always did (checked
+  exhaustively against the old implementation over every combination of the
+  seven keys, valid and invalid: no difference in outcome, value or message).
+  What changed is that a wrong assignment in the config parser is now a type
+  error, which for a parser whose job is rejecting wrongly typed input is where
+  it belongs.
+
+- **Two tests now patch `ast.parse` directly** rather than reaching for it
+  through `cleanporter.rewrite`'s import of it. It is the same module object,
+  so the tests do the same thing; spelled the old way it was an implicit
+  re-export, which strict checking over `tests/` reports.
 
 ### Fixed
 

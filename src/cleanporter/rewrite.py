@@ -22,6 +22,15 @@ because a mechanical rewrite could change runtime behaviour):
 
 Multiple object names sharing one module reuse a single new binding; compliant
 names in a mixed statement are kept in place.
+
+Two phases inside one traversal, and the split is the safety model: on the way
+down `_Fixer` fills a single `_Plan` -- node id to replacement, for statements,
+references and lazy annotation strings -- and the ``leave_*`` hooks apply it on
+the way out. Anything that makes a rename unprovable is recorded as a blocker
+instead, and one is enough to throw the whole rewrite away: `leave_Module`
+returns libcst's pristine original tree, which discards every edit made to its
+children, and `fix_record` hands back the original source. Output that does not
+re-parse is discarded the same way.
 """
 
 from __future__ import annotations

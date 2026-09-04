@@ -13,6 +13,10 @@ Order of resolution for a ``from PARENT import NAME``:
 The interpreter probe runs in-process when ``python`` is the current
 interpreter, otherwise in a subprocess so tool deps stay out of the target env
 and native-library crashes are contained.
+
+Answers are cached per ``(parent, name)``, and `warm` classifies a whole batch
+of pairs up front -- one subprocess round-trip for a run rather than one per
+import.
 """
 
 from __future__ import annotations

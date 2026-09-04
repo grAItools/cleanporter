@@ -12,6 +12,11 @@ package or module. That lets us:
 Namespace packages (PEP 420, no ``__init__.py``) are treated as packages when a
 directory contains any Python submodules/subpackages, including extension
 modules.
+
+Roots are inferred per path and then ranked against each other -- declared
+roots outrank inferred ones, deeper outranks shallower, and a root another file
+has shown to be a package is demoted out of the running. See `qualname_for` and
+`demote_roots`, where the rules and the cases that forced them are written out.
 """
 
 from __future__ import annotations

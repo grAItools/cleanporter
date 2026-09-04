@@ -1,4 +1,16 @@
-"""Command-line interface: check, and optionally fix, from-imports."""
+"""Command-line interface: check, and optionally fix, from-imports.
+
+Layers the configuration in one direction -- ``[tool.cleanporter]`` first, then
+the flags that override it -- runs the check/fix loop, and picks the exit code:
+0 clean, 1 anything left to fix, 2 operational error. A file the fixer declined
+(`CP003`) counts toward the 1 -- it is a declined violation, not a note --
+while `CP002` counts only under ``--strict``.
+
+Stream contract: when a patch goes to stdout (``--diff``, ``--fix``) stdout
+carries *only* the patch, so ``cleanporter --diff src/ | git apply`` works, and
+findings, warnings and notes go to stderr. Plain check mode produces no patch,
+so its report stays on stdout.
+"""
 
 from __future__ import annotations
 
@@ -112,10 +124,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
         return _EXIT_ERROR
 
-    # When a patch is going to stdout, stdout carries *only* the patch:
-    # everything else -- warnings, parse errors, findings, the summary --
-    # goes to stderr, so `cleanporter --diff src/ | git apply` works. In
-    # plain check mode there is no patch, so the report stays on stdout.
+    # Everything that is not the patch -- warnings, parse errors, findings, the
+    # summary -- goes here; see the stream contract in the module docstring.
     report = sys.stderr if (args.fix or args.diff) else sys.stdout
 
     paths = [pathlib.Path(p) for p in args.paths]
