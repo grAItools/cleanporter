@@ -72,6 +72,56 @@ def test_init_importing_its_own_submodule_is_not_ambiguous(tmp_path):
     assert mm.classify("amb", "mod") is model.Kind.MODULE
 
 
+def test_init_importing_its_own_submodule_absolutely_is_not_ambiguous(tmp_path):
+    """``from amb import mod`` inside ``amb/__init__.py`` is the same statement.
+
+    Same package, same fallback to importing the submodule when the
+    attribute is absent, same module bound -- django's
+    ``db/models/__init__.py`` simply spells it absolutely. Reading only the
+    relative form made every consumer of ``django.db.models.signals``
+    unresolvable.
+    """
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text("from amb import mod\n", encoding="utf-8")
+    mm = firstparty.ModuleMap([root])
+    assert mm.classify("amb", "mod") is model.Kind.MODULE
+
+
+def test_an_absolute_import_of_another_packages_module_still_shadows(tmp_path):
+    """Only the file's *own* package is discounted; anything else is a binding."""
+    root = _pkg(tmp_path)
+    (root / "other").mkdir()
+    (root / "other" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "other" / "mod.py").write_text("Q = 2\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text("from other import mod\n", encoding="utf-8")
+    mm = firstparty.ModuleMap([root])
+    assert mm.classify("amb", "mod") is model.Kind.AMBIGUOUS
+
+
+def test_an_aliased_absolute_self_import_still_shadows(tmp_path):
+    """``from amb import mod as m`` binds ``m``, which nothing auto-populates."""
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text("from amb import mod as m\n", encoding="utf-8")
+    (root / "amb" / "m.py").write_text("Q = 1\n", encoding="utf-8")
+    mm = firstparty.ModuleMap([root])
+    assert mm.classify("amb", "m") is model.Kind.AMBIGUOUS
+
+
+def test_a_competing_binding_beside_the_self_import_is_still_ambiguous(tmp_path):
+    """The discount is for the statement, not for the name.
+
+    ``mod`` bound anywhere else in the file wins the attribute lookup the
+    import falls back from, so the pair stays undecidable. Holds for the
+    relative spelling too, which used to have the name subtracted out from
+    under its own reassignment.
+    """
+    root = _pkg(tmp_path)
+    for init in ("from amb import mod\nmod = wrap(mod)\n", "from . import mod\nmod = 42\n"):
+        (root / "amb" / "__init__.py").write_text(init, encoding="utf-8")
+        mm = firstparty.ModuleMap([root])
+        assert mm.classify("amb", "mod") is model.Kind.AMBIGUOUS, init
+
+
 def test_for_loop_binding_that_shadows_a_submodule_is_ambiguous(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text(

@@ -701,13 +701,110 @@ def test_a_binding_the_author_wrote_over_a_submodule_name_is_declined(
     captured = capsys.readouterr()
 
     assert "CP003" in captured.err
-    assert "would bind the existing name instead of the submodule" in captured.err
+    assert "both a submodule of 'pkg' and bound in its __init__" in captured.err
     assert "from pkg.serialization import MARK" in (project / "pkg" / "__init__.py").read_text(
         encoding="utf-8"
     )
     after = _package_values(project)
     assert after.returncode == 0, after.stderr
     assert after.stdout.split() == ["pkg", "1"]
+
+
+def _lazy_reexport_project(tmp_path: pathlib.Path) -> pathlib.Path:
+    """`pkg.sub` re-exports a function under its own submodule's name.
+
+    The lazy re-export idiom, and the shape gt4py's
+    `iterator/transforms/concat_where` has: `pkg.sub.mod` is a module on
+    disk, and `pkg.sub.mod` the *attribute* is a function.
+    """
+    (tmp_path / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "sub" / "__init__.py").write_text(
+        "from pkg.sub.mod import mod\n", encoding="utf-8"
+    )
+    (tmp_path / "pkg" / "sub" / "mod.py").write_text(
+        "OTHER = 2\n\n\ndef mod():\n    return 1\n", encoding="utf-8"
+    )
+    (tmp_path / "pkg" / "consumer.py").write_text(
+        "from pkg.sub.mod import OTHER\n\n\ndef value():\n    return OTHER\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def _reexport_consumer_value(project: pathlib.Path) -> subprocess.CompletedProcess[str]:
+    """Import the consumer *through* its package and print what it computed."""
+    return subprocess.run(
+        [sys.executable, "-c", "import pkg.consumer; print(pkg.consumer.value())"],
+        capture_output=True,
+        text=True,
+        cwd=project,
+        env=dict(os.environ, PYTHONPATH=str(project)),
+    )
+
+
+def test_fix_declines_an_import_whose_replacement_the_parent_package_shadows(
+    tmp_path, monkeypatch, capsys
+):
+    """`from pkg.sub import mod` would bind the *function* `pkg.sub.mod`.
+
+    The rewritten `mod.OTHER` then raises `AttributeError`: source that
+    imports, parses and re-parses, and does not run. Reported on gt4py,
+    where `concat_where/__init__.py` re-exports
+    `transform_to_as_fieldop` under its own module's name.
+    """
+    project = _lazy_reexport_project(tmp_path)
+    (project / "pkg" / "plain.py").write_text("EXTRA = 3\n", encoding="utf-8")
+    (project / "pkg" / "consumer.py").write_text(
+        "from pkg.plain import EXTRA\n"
+        "from pkg.sub.mod import OTHER\n"
+        "\n"
+        "\n"
+        "def value():\n"
+        "    return OTHER + EXTRA\n",
+        encoding="utf-8",
+    )
+    before = _reexport_consumer_value(project)
+    assert before.stdout.split() == ["5"], before.stderr
+
+    monkeypatch.chdir(project)
+    cli.main(["--fix", "."])
+    captured = capsys.readouterr()
+
+    assert "CP003" in captured.err
+    assert "the replacement 'from pkg.sub import mod'" in captured.err
+    # Kept per import, not per file: the sound rewrite on the line above still
+    # happens, and only the import that cannot be reached is left alone.
+    assert (project / "pkg" / "consumer.py").read_text(encoding="utf-8") == (
+        "from pkg import plain\n"
+        "from pkg.sub.mod import OTHER\n"
+        "\n"
+        "\n"
+        "def value():\n"
+        "    return OTHER + plain.EXTRA\n"
+    )
+    after = _reexport_consumer_value(project)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.split() == ["5"]
+
+
+def test_fix_still_rewrites_when_the_package_imports_its_own_submodule(
+    tmp_path, monkeypatch, capsys
+):
+    """`from . import mod` binds the module, so the replacement reaches it."""
+    project = _lazy_reexport_project(tmp_path)
+    (project / "pkg" / "sub" / "__init__.py").write_text("from . import mod\n", encoding="utf-8")
+
+    monkeypatch.chdir(project)
+    cli.main(["--fix", "."])
+    capsys.readouterr()
+
+    assert (project / "pkg" / "consumer.py").read_text(encoding="utf-8") == (
+        "from pkg.sub import mod\n\n\ndef value():\n    return mod.OTHER\n"
+    )
+    after = _reexport_consumer_value(project)
+    assert after.returncode == 0, after.stderr
+    assert after.stdout.split() == ["2"]
 
 
 def test_fix_aliases_a_top_level_import_that_collides_with_a_submodule(

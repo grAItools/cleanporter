@@ -176,6 +176,26 @@ def collect_pairs(records: list[FileRecord]) -> list[tuple[str, str]]:
     return sorted(pairs)
 
 
+def replacement_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """``(package, token)`` for every ``package.token`` some import is *from*.
+
+    These are the pairs `resolver.Resolver.replacement_unreachable` asks
+    about -- the import the fixer would write, rather than the one the file
+    already has -- and they are classified in the same batch so a run still
+    costs one probe round-trip rather than one per import.
+
+    Deliberately not folded into `collect_pairs`: its result is also the seed
+    for the *use* evidence `resolver.Resolver.is_load_bearing` weighs, and
+    ``package.token`` being imported *through* is not a use of that name.
+    """
+    out: set[tuple[str, str]] = set()
+    for parent, _name in pairs:
+        package, _, token = parent.rpartition(".")
+        if package:
+            out.add((package, token))
+    return sorted(out)
+
+
 def module_bindings(tree: cst.Module, base_pkg: str) -> dict[str, str]:
     """Local name -> dotted module it is bound to, for every import in *tree*.
 
@@ -361,8 +381,8 @@ def analyze_record(
                 )
             )
             continue
-        if resolver.self_import_unreachable(rec.qualname, unit.parent):
-            token = unit.parent.rsplit(".", 1)[-1]
+        unreachable = resolver.replacement_unreachable(unit.parent)
+        if unreachable is not None:
             findings.append(
                 model.Finding(
                     rec.path,
@@ -371,9 +391,7 @@ def analyze_record(
                     unit.parent,
                     unit.name,
                     model.Status.SKIPPED,
-                    f"'{token}' is a submodule of this module and also bound in it, so "
-                    f"the replacement 'from {rec.qualname} import {token}' would bind "
-                    "the existing name instead of the submodule",
+                    unreachable,
                 )
             )
             continue
@@ -493,5 +511,5 @@ def build(
         uses |= attribute_pairs(rec.tree, rec.base_pkg)
         star |= star_imported_modules(rec.tree, rec.base_pkg)
     resolver.note_uses(uses, star)
-    resolver.warm(pairs)
+    resolver.warm(pairs + replacement_pairs(pairs))
     return records, resolver, errors, warnings

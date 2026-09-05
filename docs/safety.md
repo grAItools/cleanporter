@@ -390,13 +390,46 @@ configuration would have forbidden. Prefer the bare last-component spelling
     in this file wins, silently. When that competing binding is the author's,
     aliasing cannot help: it has to stay. That import alone is reported
     `CP003` and kept exactly as written, while the rest of the file is still
-    fixed. Whether `pkg.S` is reachable is decided by the same rule the
-    resolver uses for `CP002` — a name that is both a submodule on disk and a
-    top-level binding in the package's `__init__` is ambiguous, never guessed.
+    fixed.
+- **Every import the fixer would *write* has to be shown to bind the module
+  it names.** The rewrite of `from P.S import obj` is `from P import S`, and
+  that statement binds `getattr(P, "S")` — so a `P/__init__.py` that binds
+  `S` to something else hands the fixer's replacement that object instead,
+  and every `S.obj` it wrote raises `AttributeError`. The lazy re-export
+  idiom (`from .S import S`, a function or class named after its own module)
+  is exactly this shape; gt4py's
+  `iterator/transforms/concat_where/__init__.py` is the case that found it,
+  and `kombu/utils/__init__.py` is one the corpus had been rewriting into a
+  latent `AttributeError` all along. Spelling the replacement
+  `import P.S as alias` would not avoid it: since Python 3.7 that statement
+  resolves through `getattr(P, "S")` as well.
 
-    The identical hazard exists for a `from pkg import S` emitted into a file
-    that is *not* `pkg`, since `pkg/__init__.py` shadows `S` for every
-    importer alike. That case is **not** currently detected.
+    Whether `P.S` is reachable is decided by the same rule the resolver uses
+    for `CP002` — a name that is both a submodule on disk and a top-level
+    binding in the package's `__init__` is ambiguous, never guessed — and it
+    is asked of the import about to be written, not only of the one that was
+    read. Both layers answer it, and both by looking at what `__init__.py`
+    binds: the filesystem one by parsing it, the interpreter probe by reading
+    the name out of the imported package's `__dict__` — the attribute the
+    `__init__` *wrote*, which is not quite the attribute the import would
+    bind (see the limits below).
+
+    Anything short of a firm "yes, a module" keeps that one import exactly as
+    written and reports `CP003`, while the rest of the file is still fixed.
+    That includes a `P.S` this run cannot see at all. The module map answers
+    for any name whose *top-level* component is first-party, scanned subtree
+    or not, so a run pointed at one distribution of a namespace package can
+    call a sibling's module an object — and the import it appears in only
+    makes sense if it is a module. The evidence is missing rather than
+    contradictory, and the cost is a declined fix that would have been
+    correct; the finding says as much ("has no submodule … under this run's
+    import roots"), and pointing cleanporter at the whole tree, or declaring
+    `source_roots`, resolves it.
+
+    Written inside `pkg/__init__.py` this is the same check: there the
+    package's attributes are the file's own module-level names, so the
+    binding that competes with the submodule is one the reader can see in
+    the file being rewritten.
 - **A file is blocked outright, not partially fixed**, whenever a rewritten
   name is referenced by a non-docstring string literal, appears inside a
   doctest, or when removing an import would discard its comment. See the
@@ -447,10 +480,21 @@ configuration would have forbidden. Prefer the bare last-component spelling
 - **Probe results are not persisted.** They are cached in memory for the run
   only, so a very large third-party surface re-pays the (batched) probe cost
   on every invocation.
-- **`__init__.py` bindings are cached by path for the run**, without an mtime
-  check. This is safe only because nothing in a single run rewrites a scanned
-  `__init__.py`'s plain assignments — an assumption about the fixer's current
-  narrow scope, not an enforced invariant.
+- **A shadow supplied lazily, by a module-level `__getattr__`, is not
+  detected.** The probe reads the parent package's `__dict__`, which holds
+  what its `__init__` bound eagerly; asking `getattr` instead would run the
+  package's own code, import the leaf for every name it is asked about — the
+  one thing the classifier promises never to do — and can raise, since
+  `lazy_loader.attach` is written to fail for a leaf whose optional
+  dependency is absent. So a package that lazily supplies a *non-module*
+  under a name that is also a submodule on disk is classified as a module,
+  and the fix for its consumers is emitted. The self-referential lazy shape
+  (the lazy import of `P.S` itself) is safe: it installs the real module in
+  the slot before the import reads it.
+- **`__init__.py` bindings are cached by path (and package) for the run**,
+  without an mtime check. This is safe only because nothing in a single run
+  rewrites a scanned `__init__.py`'s plain assignments — an assumption about
+  the fixer's current narrow scope, not an enforced invariant.
 - **Capture-pattern bindings in an `__init__.py` are not collected** when
   looking for names that shadow a submodule. A module-level `match` statement
   in an `__init__.py` binding a name that collides with a real submodule is

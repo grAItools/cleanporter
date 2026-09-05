@@ -105,6 +105,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The replacement import is now checked to bind the module it names.** The
+  fix for `from P.S import obj` is `from P import S` plus `S.obj` at every use
+  site, and that statement binds `getattr(P, "S")` — so a `P/__init__.py` that
+  binds `S` to something else (the lazy re-export idiom, `from .S import S`)
+  handed the rewrite an object and every rewritten call raised
+  `AttributeError`. Source that imports, parses and does not run. Found on
+  gt4py, whose `iterator/transforms/concat_where/__init__.py` re-exports
+  `transform_to_as_fieldop` under its own submodule's name — and present in
+  this project's own corpus the whole time, where `kombu/pidbox.py` was
+  rewritten to `from kombu.utils import uuid as uuid_2` and its
+  `uuid_2.uuid()` raises. The corpus check imports that module; it never
+  calls that line. Emitting `import P.S as alias` instead would not have
+  helped: since 3.7 that statement resolves through `getattr(P, "S")` too,
+  and binds the same object.
+
+  The check is the one the resolver already had for the import it *reads* — a
+  name that is both a submodule on disk and a top-level binding in the
+  package's `__init__` is ambiguous, never guessed — now also asked of the
+  import the fixer is about to *write*. That subsumes the self-import case
+  (`from pkg import S` inside `pkg/__init__.py`), which no longer needs a rule
+  of its own. Anything short of a firm "yes, a module" keeps that one import
+  as written and reports `CP003`; the rest of the file is still fixed.
+
+  Two consequences beyond the reported bug. The interpreter probe answers this
+  shape too: a submodule spec no longer settles it when the parent's own
+  `__dict__` holds a non-module under that name, so such an import is `CP002`
+  instead of silently compliant. (Eagerly bound, which is what the idiom does
+  — a shadow supplied lazily by a module-level `__getattr__` is not detected,
+  because asking for it would import the leaf. `docs/safety.md` lists it.) And a `P.S` the run cannot see *at all* is declined as well: the
+  module map answers for any name whose top-level component is first-party,
+  scanned subtree or not, so a run pointed at one distribution of a namespace
+  package can call a sibling's module an object. That costs a fix which would
+  have been correct, and the finding says which run would not see it —
+  pointing cleanporter at the whole tree, or declaring `source_roots`,
+  resolves it.
+
+- **A package importing its own submodule absolutely is no longer read as a
+  shadowing binding.** `from . import signals` inside `pkg/__init__.py` was
+  already understood to bind the submodule itself; `from pkg import signals`
+  — the same statement, spelled absolutely, and how django's
+  `db/models/__init__.py` writes it — was not, so `pkg.signals` was reported
+  ambiguous (`CP002`) and every consumer's fix was declined along with it.
+  The discount is for the statement, not for the name: a competing binding
+  elsewhere in the file still makes the pair ambiguous, which the relative
+  spelling now honours too (a reassignment used to be subtracted out from
+  under itself).
+
 - **An import nothing in the file reads is no longer rewritten.** `from p
   import Thing` with no read of `Thing` has no use site to qualify, so the
   rewrite removed a violation while changing no call — and dropped `Thing`

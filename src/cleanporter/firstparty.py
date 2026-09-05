@@ -204,7 +204,8 @@ class ModuleMap:
         full = f"{parent}.{name}"
         on_disk = full in self._packages or full in self._modules
         shadowed = any(
-            name in _bindings.top_level_bindings(str(init)) for init in self._inits.get(parent, ())
+            name in _bindings.top_level_bindings(str(init), parent)
+            for init in self._inits.get(parent, ())
         )
         if on_disk and shadowed:
             return model.Kind.AMBIGUOUS

@@ -59,7 +59,16 @@ Reading `__init__.py` for those bindings is a parse, not an import:
 cleanporter walks the `ast` for the names bound at module level, descending
 into `if` / `try` / `for` / `while` / `with` / `match` bodies, and discounts
 `from . import NAME` at level 1 without an alias — that binds the submodule
-itself, so it is not a shadowing binding.
+itself, so it is not a shadowing binding. `from PARENT import NAME` written
+*inside* `PARENT/__init__.py` is the same statement spelled absolutely and is
+discounted with it; django's `db/models/__init__.py` writes it that way, and
+reading only the relative form made every consumer of
+`django.db.models.signals` unresolvable.
+
+The discount is for the statement, not for the name: a second binding of
+`NAME` anywhere else at module level — a reassignment, an import from
+somewhere else — is what wins the attribute lookup the import falls back
+from, so the pair stays ambiguous.
 
 ### 2. Stdlib and third-party, by interpreter probe
 
@@ -73,6 +82,23 @@ the already-loaded attribute `PARENT.NAME` — that is how
 `from os import path` (a module bound as an attribute of the non-package
 module `os`, so compliant) is separated from `from os import getcwd` (a
 function, so a violation).
+
+A spec alone is not the whole answer, though. `from PARENT import NAME` binds
+`getattr(PARENT, NAME)` whenever that attribute exists, so a package whose
+`__init__` does `from .NAME import NAME` hands out an object even though the
+submodule is right there on disk. When the spec is found *and* `PARENT`'s
+`__dict__` holds something other than a module under that name, this layer
+reports the same ambiguity the filesystem layer does (`CP002`), rather than
+calling it a module — the two layers have to agree, because the fixer asks
+this question about the import it is *about to write* as well as the one it
+read.
+
+It is the package's `__dict__` and not `getattr` on purpose: `getattr` would
+run a module-level `__getattr__` (PEP 562), which is the standard hook for
+lazy submodules, and that imports the leaf — breaking the property below, for
+every name asked about, in the target interpreter. The cost is that a shadow
+supplied lazily rather than bound eagerly is not seen; `safety.md` lists it
+among the known limits.
 
 Three properties of this layer matter:
 

@@ -101,22 +101,31 @@ class Resolver:
         """Dotted module name of *path*, or None when it is not under a root."""
         return self._map.qualname_for(path, relative_level)
 
-    def self_import_unreachable(self, module: str, parent: str) -> bool:
-        """True when ``from P import S`` written *inside P itself* would miss ``P.S``.
+    def replacement_unreachable(self, parent: str) -> str | None:
+        """Why the import the fixer would *write* for *parent* cannot be trusted.
 
-        *module* is the dotted name of the file being rewritten and *parent*
-        the import's resolved parent. The answer is only ever True for a
-        **self-referential** import -- one where ``P`` is that very module --
-        because that is the case where ``P``'s attributes are the file's own
-        module-level names.
+        Returns the reason, or ``None`` when the replacement provably binds
+        the module ``parent``.
 
-        ``from P import S`` imports ``P``, binds ``getattr(P, 'S')``, and
-        falls back to importing the submodule *only if that attribute is
-        absent*. So a top-level ``S`` in this file wins, and the replacement
-        import silently binds it instead of the submodule. In
-        ``celery/security/__init__.py`` that produced ``kombu.serialization``
-        under a name meant for ``celery.security.serialization``: code that
-        imports, runs, and is wrong.
+        The fixer turns ``from P.S import obj`` into an import of ``P.S``
+        itself, spelled ``from P import S``, and qualifies every use as
+        ``S.obj``. That statement imports ``P``, binds ``getattr(P, 'S')``,
+        and falls back to importing the submodule *only if that attribute is
+        absent* -- so whatever ``P``'s ``__init__`` binds under the name
+        ``S`` wins, silently. gt4py's
+        ``iterator/transforms/concat_where/__init__.py`` binds
+        ``transform_to_as_fieldop`` to a *function* of that name, so the
+        emitted ``from ...concat_where import transform_to_as_fieldop``
+        yields the function and every rewritten use site raises
+        ``AttributeError``: code that imports, parses, and does not run.
+
+        Read inside ``P`` itself the same hazard needs no separate rule.
+        There ``P``'s attributes *are* the file's own module-level names, and
+        the file is ``P``'s ``__init__``, so the binding this reads is the
+        competing one. In ``celery/security/__init__.py`` that produced
+        ``kombu.serialization`` under a name meant for
+        ``celery.security.serialization``: code that imports, runs, and is
+        wrong.
 
         Whether ``P.S`` is reachable as an attribute of ``P`` is the question
         `is_module` already answers, by the settled rule -- a name that is
@@ -124,7 +133,15 @@ class Resolver:
         ``__init__`` is `model.Kind.AMBIGUOUS`, never guessed. Asking it here
         rather than inventing a second rule keeps the two from drifting.
         Anything short of a firm "yes, a module" means the replacement cannot
-        be trusted, and the import is kept exactly as written.
+        be trusted, and the import is kept exactly as written -- including
+        the case where this run cannot see ``P.S`` at all. That is a claim
+        about the module map's reach rather than about ``P``: the map answers
+        for a first-party *top-level* name whether or not it scanned the
+        subtree, so a run pointed at one distribution of a namespace package
+        can call a sibling's module an object. Declining costs a fix that
+        would have been correct; the message says which run would not, and
+        pointing cleanporter at the whole tree (or declaring ``source_roots``)
+        settles it.
 
         Reading the ``__init__`` is a parse of what is *on disk*, so this sees
         bindings the author wrote, not ones this run is about to introduce.
@@ -132,17 +149,24 @@ class Resolver:
         `rewrite._Fixer._allocate_token` refusing to allocate a submodule's
         name at module scope in the first place.
 
-        The same hazard exists for a ``from P import S`` emitted into a file
-        that is *not* ``P``, since ``P``'s ``__init__`` shadows ``S`` for
-        every importer alike. That is a separate finding and deliberately not
-        decided here.
+        A *parent* with no dot needs no check at all: the replacement is
+        ``import P``, which binds the module and nothing else.
         """
         package, _, token = parent.rpartition(".")
-        if not package or not module or package != module:
-            return False
-        # `package` is the module under analysis, hence first-party, so this
-        # is answered from the filesystem map and never costs a probe.
-        return self.is_module(package, token) is not True
+        if not package:
+            return None
+        verdict = self.is_module(package, token)
+        if verdict is True:
+            return None
+        cause = (
+            f"'{package}' has no submodule '{token}' under this run's import roots"
+            if verdict is False
+            else self.reason(package, token)
+        )
+        return (
+            f"the replacement 'from {package} import {token}' cannot be shown "
+            f"to bind the module '{parent}': {cause}"
+        )
 
     def submodules(self, dotted: str) -> frozenset[str]:
         """Leaf names of *dotted*'s own submodules; empty when it has none.
@@ -188,7 +212,14 @@ class Resolver:
         return self._notes.get(key, _NOT_IMPORTABLE.format(parent=parent))
 
     def warm(self, pairs: list[tuple[str, str]]) -> None:
-        """Classify a batch up front (one subprocess round-trip for the lot)."""
+        """Classify a batch up front (one subprocess round-trip for the lot).
+
+        Batching is also what makes the probe's ancestors-before-descendants
+        rule effective (`_probe.classify_many`): a pair asked on its own,
+        later, can find a parent whose binding an earlier leaf import has
+        already replaced. Every pair a run needs is collected in
+        `analyze.build`, so that path is the one that matters.
+        """
         pending: list[tuple[str, str]] = []
         for key in pairs:
             if key in self._cache:
@@ -236,5 +267,16 @@ class Resolver:
                 return dict.fromkeys(pairs)
         out: dict[tuple[str, str], bool | None] = {}
         for parent, name in pairs:
-            out[(parent, name)] = flat.get(f"{parent}\x00{name}")
+            answer = flat.get(f"{parent}\x00{name}")
+            if answer == _probe.AMBIGUOUS:
+                # Same verdict as `model.Kind.AMBIGUOUS` from the filesystem
+                # layer, and the same note, so the two layers say the same
+                # thing about the same shape.
+                self._notes[(parent, name)] = _AMBIGUOUS.format(parent=parent, name=name)
+                out[(parent, name)] = None
+            else:
+                # Anything that is not one of the two booleans is
+                # undetermined -- including whatever a malformed bridge
+                # response might contain.
+                out[(parent, name)] = answer if isinstance(answer, bool) else None
         return out

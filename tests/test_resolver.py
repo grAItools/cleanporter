@@ -55,3 +55,42 @@ def test_warm_then_reason_agree_for_an_ambiguous_pair(tmp_path):
     r.warm([("amb", "mod")])
     assert r.is_module("amb", "mod") is None
     assert "both a submodule" in r.reason("amb", "mod")
+
+
+# -- the import the fixer would write --------------------------------------
+
+
+def test_a_replacement_for_a_real_submodule_is_reachable(tmp_path):
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    assert r.replacement_unreachable("amb.mod") is None
+
+
+def test_a_top_level_parent_needs_no_replacement_check(tmp_path):
+    """``from amb import X`` is replaced by ``import amb``: nothing to shadow."""
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    assert r.replacement_unreachable("amb") is None
+
+
+def test_a_replacement_the_parents_init_shadows_is_unreachable(tmp_path):
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text("from amb.mod import mod\n", encoding="utf-8")
+    r = resolver.Resolver(firstparty.ModuleMap([root]))
+    reason = r.replacement_unreachable("amb.mod")
+    assert reason is not None
+    assert "the replacement 'from amb import mod'" in reason
+    assert "both a submodule of 'amb' and bound in its __init__" in reason
+
+
+def test_a_replacement_the_run_cannot_see_is_unreachable(tmp_path):
+    """The map says object, the import says module; neither can be trusted."""
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    reason = r.replacement_unreachable("amb.nowhere")
+    assert reason is not None
+    assert "no submodule 'nowhere' under this run's import roots" in reason
+
+
+def test_a_stdlib_replacement_is_reachable(tmp_path):
+    """The probe answers for the emitted import exactly as for the read one."""
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    assert r.replacement_unreachable("os.path") is None
+    assert r.replacement_unreachable("collections.abc") is None

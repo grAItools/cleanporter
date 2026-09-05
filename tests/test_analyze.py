@@ -314,7 +314,7 @@ def test_an_import_of_a_submodule_its_own_init_shadows_is_skipped(
     )
     findings = _findings_by_file(pkg)["__init__.py"]
     assert [f.code for f in findings] == ["CP003"]
-    assert "would bind the existing name instead of the submodule" in findings[0].detail
+    assert "both a submodule of 'pkg' and bound in its __init__" in findings[0].detail
 
 
 def test_the_same_import_is_an_ordinary_violation_without_the_shadow(
@@ -323,6 +323,61 @@ def test_the_same_import_is_an_ordinary_violation_without_the_shadow(
     """Self-reference alone is not the problem; only the competing binding is."""
     pkg = _self_shadowing_tree(tmp_path, "from pkg.serialization import MARK\nx = MARK\n")
     assert [f.code for f in _findings_by_file(pkg)["__init__.py"]] == ["CP001"]
+
+
+def _lazy_reexport_tree(tmp_path: pathlib.Path, init: str) -> pathlib.Path:
+    """``pkg.sub`` is a package whose ``__init__`` decides what ``mod`` means."""
+    pkg = tmp_path / "pkg"
+    (pkg / "sub").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "sub" / "__init__.py").write_text(init)
+    (pkg / "sub" / "mod.py").write_text("def mod():\n    return 1\n\n\nOTHER = 2\n")
+    (pkg / "consumer.py").write_text("from pkg.sub.mod import OTHER\nx = OTHER\n")
+    return pkg
+
+
+def test_an_import_whose_replacement_a_foreign_init_shadows_is_skipped(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The shadowing ``__init__`` need not be the file being rewritten.
+
+    ``pkg/sub/__init__.py`` binds ``mod`` to a *function*, so the
+    replacement ``from pkg.sub import mod`` hands ``consumer.py`` that
+    function and ``mod.OTHER`` raises ``AttributeError`` -- code that
+    imports, parses and does not run. gt4py's
+    ``concat_where/transform_to_as_fieldop`` is this shape exactly.
+    """
+    pkg = _lazy_reexport_tree(tmp_path, "from pkg.sub.mod import mod\n")
+    findings = _findings_by_file(pkg)["consumer.py"]
+    assert [f.code for f in findings] == ["CP003"]
+    assert "the replacement 'from pkg.sub import mod'" in findings[0].detail
+    assert "both a submodule of 'pkg.sub' and bound in its __init__" in findings[0].detail
+
+
+def test_an_init_that_imports_the_submodule_itself_leaves_the_import_fixable(
+    tmp_path: pathlib.Path,
+) -> None:
+    """``from . import mod`` binds the module, so nothing shadows anything."""
+    pkg = _lazy_reexport_tree(tmp_path, "from . import mod\n")
+    assert [f.code for f in _findings_by_file(pkg)["consumer.py"]] == ["CP001"]
+
+
+def test_a_replacement_this_run_cannot_see_is_skipped(tmp_path: pathlib.Path) -> None:
+    """Missing evidence is not evidence of an object, so nothing is rewritten.
+
+    ``pkg.missing.mod`` is claimed to be an object because nothing on disk
+    says otherwise, while the import it appears in only makes sense if it is
+    a module. That is the shape of a run pointed at one distribution of a
+    namespace package: the map answers for the whole first-party top-level
+    name, scanned subtree or not.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "consumer.py").write_text("from pkg.missing.mod import OTHER\nx = OTHER\n")
+    findings = _findings_by_file(pkg)["consumer.py"]
+    assert [f.code for f in findings] == ["CP003"]
+    assert "no submodule 'mod' under this run's import roots" in findings[0].detail
 
 
 # -- [tool.cleanporter.skip] -------------------------------------------------

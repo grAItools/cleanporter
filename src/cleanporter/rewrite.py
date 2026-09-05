@@ -18,6 +18,9 @@ because a mechanical rewrite could change runtime behaviour):
 * a name nothing in the file reads: rewriting it removes a violation with no
   use site and deletes a binding that something outside the file may need
   (`_Fixer._unread_names`),
+* an import whose *replacement* cannot be shown to bind the module it names,
+  because the parent package's ``__init__`` binds that name to something else
+  (`resolver.Resolver.replacement_unreachable`),
 * imports inside an ``if TYPE_CHECKING:`` block, *unless* the file has
   ``from __future__ import annotations`` -- with it, annotations are strings
   at runtime, so both the import and any lazy string annotation mentioning
@@ -850,7 +853,11 @@ class _Fixer(cst.CSTTransformer):
 
         Kept: names a `[tool.cleanporter.skip]` rule covers or pins, exempt
         names, modules, anything the resolver could not classify, re-exports,
-        and names nothing in this file reads. A re-export -- declared as
+        names nothing in this file reads, and -- for the whole line at once --
+        every name whose replacement import cannot be shown to bind the module
+        it names (`resolver.Resolver.replacement_unreachable`).
+
+        A re-export -- declared as
         ``S as S``, or inferred from another analysed file importing ``S``
         from *this* module -- means this very import line is what makes
         ``<this module>.S`` exist for somebody else, so rewriting it would
@@ -860,21 +867,22 @@ class _Fixer(cst.CSTTransformer):
 
         The order of the chain is the reported order: a skip comes first
         because it is the author overriding everything the tool could work
-        out, and `_note_unread` comes *last* because reaching it means every
-        other reason to keep the name was already false -- which is what makes
-        the set it records exactly the set `analyze` would otherwise report as
-        `CP001`.
+        out, the two line-wide reasons (that skip and an unreachable
+        replacement) precede the per-name ones, and `_note_unread` comes
+        *last* because reaching it means every other reason to keep the name
+        was already false -- which is what makes the set it records exactly
+        the set `analyze` would otherwise report as `CP001`.
         """
         keep: list[str] = []
         fix: list[tuple[str, str | None]] = []
-        unreachable = self._resolver.self_import_unreachable(self._rec.qualname, parent)
+        unreachable = self._resolver.replacement_unreachable(parent) is not None
         skipped_line = self._skipped.covers(self._line_of(imp)) is not None
         never_read = self._unread_names(imp, scope)
         for name, asname, _alias in _imports.imported_names(imp):
             bound = asname or name
             if (
-                unreachable
-                or skipped_line
+                skipped_line
+                or unreachable
                 or self._skipped.pin(bound) is not None
                 or self._config.is_exempt(parent, name)
                 or _imports.is_explicit_reexport(name, asname)
@@ -1286,7 +1294,7 @@ class _Fixer(cst.CSTTransformer):
         attribute -- after which this file's own ``serialization.loads``
         resolves against the wrong module. It also made the very next
         rewritten line read that slot instead of importing the submodule
-        (`resolver.Resolver.self_import_unreachable`), which is how the corpus
+        (`resolver.Resolver.replacement_unreachable`), which is how the corpus
         found it.
 
         The avoidance applies at `GlobalScope` only: a function-local or class

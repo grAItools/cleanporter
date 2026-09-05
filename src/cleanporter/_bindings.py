@@ -22,6 +22,7 @@ def _collect(
     defined: set[str],
     imported: set[str],
     submodule_imports: set[str],
+    self_package: str | None = None,
 ) -> None:
     """Absorb *body*'s top-level bindings, split by *how* each one was bound.
 
@@ -54,7 +55,6 @@ def _collect(
                 if alias.name == "*":
                     continue
                 bound = alias.asname or alias.name
-                imported.add(bound)
                 # ``from . import mod`` binds the submodule itself, so it is
                 # not a shadowing binding -- but only at level 1 (the
                 # package's own submodule) and only when unaliased: ``from .
@@ -63,40 +63,72 @@ def _collect(
                 # ``from .. import Y`` (level 2+) names a submodule of an
                 # *ancestor* package, not of this one, so it is a genuine
                 # (possibly shadowing) binding here too.
-                if stmt.level == 1 and stmt.module is None and alias.asname is None:
+                #
+                # ``from pkg import mod`` *inside* ``pkg/__init__.py`` is the
+                # same statement spelled absolutely -- same package, same
+                # fallback to importing the submodule when the attribute is
+                # absent, same module bound -- and django's
+                # ``db/models/__init__.py`` writes it that way. Reading only
+                # the relative spelling called every consumer of
+                # ``django.db.models.signals`` ambiguous. It is only the same
+                # statement when *self_package* really is this file's package,
+                # which is why the caller has to say so; a binding made
+                # earlier in the file still lands in ``defined``/``imported``
+                # and keeps the name ambiguous, exactly as in the relative
+                # case.
+                #
+                # The name is kept out of *imported* rather than subtracted
+                # from it afterwards, so that a second, competing binding --
+                # ``from . import mod`` followed by ``mod = wrap(mod)``, or by
+                # a ``from elsewhere import mod`` -- puts it back. Subtracting
+                # at the end discarded those too, and they are exactly the
+                # bindings that win the attribute lookup this discount
+                # assumes nothing wins.
+                if alias.asname is None and (
+                    (stmt.level == 1 and stmt.module is None)
+                    or (
+                        stmt.level == 0 and self_package is not None and stmt.module == self_package
+                    )
+                ):
                     submodule_imports.add(bound)
+                else:
+                    imported.add(bound)
         elif isinstance(stmt, ast.If):
-            _collect(stmt.body, defined, imported, submodule_imports)
-            _collect(stmt.orelse, defined, imported, submodule_imports)
+            _collect(stmt.body, defined, imported, submodule_imports, self_package)
+            _collect(stmt.orelse, defined, imported, submodule_imports, self_package)
         elif isinstance(stmt, (ast.For, ast.AsyncFor)):
             defined.update(n.id for n in ast.walk(stmt.target) if isinstance(n, ast.Name))
-            _collect(stmt.body, defined, imported, submodule_imports)
-            _collect(stmt.orelse, defined, imported, submodule_imports)
+            _collect(stmt.body, defined, imported, submodule_imports, self_package)
+            _collect(stmt.orelse, defined, imported, submodule_imports, self_package)
         elif isinstance(stmt, ast.While):
-            _collect(stmt.body, defined, imported, submodule_imports)
-            _collect(stmt.orelse, defined, imported, submodule_imports)
+            _collect(stmt.body, defined, imported, submodule_imports, self_package)
+            _collect(stmt.orelse, defined, imported, submodule_imports, self_package)
         elif isinstance(stmt, ast.Match):
             # Capture-pattern bindings (e.g. ``case Foo(x=y):``) are not
             # extracted -- a module-level ``match`` in an ``__init__.py``
             # binding a name that shadows a submodule is vanishingly rare,
             # and this limit is stated rather than silently assumed.
             for case in stmt.cases:
-                _collect(case.body, defined, imported, submodule_imports)
+                _collect(case.body, defined, imported, submodule_imports, self_package)
         elif isinstance(stmt, (ast.Try, ast.TryStar)):
-            _collect(stmt.body, defined, imported, submodule_imports)
-            _collect(stmt.orelse, defined, imported, submodule_imports)
-            _collect(stmt.finalbody, defined, imported, submodule_imports)
+            _collect(stmt.body, defined, imported, submodule_imports, self_package)
+            _collect(stmt.orelse, defined, imported, submodule_imports, self_package)
+            _collect(stmt.finalbody, defined, imported, submodule_imports, self_package)
             for handler in stmt.handlers:
-                _collect(handler.body, defined, imported, submodule_imports)
+                _collect(handler.body, defined, imported, submodule_imports, self_package)
         elif isinstance(stmt, (ast.With, ast.AsyncWith)):
-            _collect(stmt.body, defined, imported, submodule_imports)
+            _collect(stmt.body, defined, imported, submodule_imports, self_package)
 
 
 @functools.lru_cache(maxsize=1024)
-def top_level_bindings(path: str) -> frozenset[str]:
+def top_level_bindings(path: str, package: str) -> frozenset[str]:
     """Names bound at the top level of *path*, excluding self-submodule imports.
 
-    Cached on ``path`` alone, with no mtime check. That is only safe because
+    *package* is the dotted name of the package *path* is the ``__init__``
+    of, so that ``from <package> import mod`` can be recognised as the
+    absolute spelling of ``from . import mod`` and discounted with it.
+
+    Cached on ``(path, package)``, with no mtime check. That is only safe because
     nothing in a single run rewrites a scanned ``__init__.py``'s plain
     assignments before this cache is consulted again -- the fixer only
     rewrites ``ImportFrom`` nodes, and the one self-referential pattern it
@@ -110,8 +142,8 @@ def top_level_bindings(path: str) -> frozenset[str]:
     defined: set[str] = set()
     imported: set[str] = set()
     submodule_imports: set[str] = set()
-    _collect(tree.body, defined, imported, submodule_imports)
-    return frozenset((defined | imported) - submodule_imports)
+    _collect(tree.body, defined, imported, submodule_imports, package)
+    return frozenset(defined | imported)
 
 
 @functools.lru_cache(maxsize=1024)
@@ -131,7 +163,14 @@ def import_bound_names(path: str) -> frozenset[str]:
     in the ``except``, say) survives the rewrite, so it is not reported here.
 
     Cached on ``path`` alone, with the same no-mtime-check caveat as
-    `top_level_bindings`.
+    `top_level_bindings` (which also keys on the package name; this one has
+    no package to key on).
+
+    No *package* is passed to `_collect`, and the asymmetry is deliberate:
+    the question here is not "does this binding shadow the submodule" but
+    "does this attribute exist only because of this import statement", and
+    for a package importing its own submodule absolutely the answer to the
+    second one is still yes.
     """
     try:
         tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
