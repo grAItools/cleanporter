@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+import re
 import tomllib
+
+from cleanporter import skip as skip_lib
 
 # Modules whose members may be imported directly by name.
 DEFAULT_EXEMPT_MODULES: frozenset[str] = frozenset(
@@ -24,7 +27,7 @@ _VALID_SCOPES = ("all", "first-party")
 
 _LIST_KEYS = ("exclude", "source_roots", "exempt_modules", "exempt_names")
 _BOOL_KEYS = ("treat_unresolved_as_error",)
-_KNOWN_KEYS = frozenset(_LIST_KEYS + _BOOL_KEYS + ("scope", "python"))
+_KNOWN_KEYS = frozenset(_LIST_KEYS + _BOOL_KEYS + ("scope", "python", "skip"))
 
 
 class ConfigError(ValueError):
@@ -49,6 +52,8 @@ class Config:
     exempt_names: frozenset[str] = frozenset()
     #: Interpreter used for the stdlib/third-party probe (None -> current).
     python: str | None = None
+    #: Regions the author declared off-limits; see `cleanporter.skip`.
+    skip: tuple[skip_lib.Rule, ...] = ()
 
     def is_exempt(self, parent: str, name: str) -> bool:
         if name in self.exempt_names:
@@ -77,6 +82,77 @@ def _python(table: dict[str, object]) -> str:
     if not isinstance(value, str):
         raise ConfigError("tool.cleanporter.python must be a string")
     return value
+
+
+def _skip_rules(table: dict[str, object]) -> tuple[skip_lib.Rule, ...]:
+    """Validate ``skip`` into `cleanporter.skip.Rule` objects.
+
+    Every way a rule can be *malformed* is rejected here rather than quietly
+    ignored: an unknown key, a non-string value, an uncompilable pattern, two
+    name keys that could never both match, and a table with no matcher at all
+    (``{}``, or one carrying nothing but a ``reason``), which constrains
+    nothing and would take the entire project.
+
+    What cannot be caught here is a rule that is well-formed and *wrong*: a
+    pattern that fullmatches nothing fires never, and one that fullmatches
+    everything fires always, and neither is distinguishable from a correct
+    rule until it is run against real files. That is what the ``CP004`` count
+    and ``--show-skipped`` are for.
+    """
+    value = table["skip"]
+    if not isinstance(value, list):
+        raise ConfigError("tool.cleanporter.skip must be a list of tables")
+    rules: list[skip_lib.Rule] = []
+    for position, item in enumerate(value, start=1):
+        if not isinstance(item, dict):
+            raise ConfigError(f"tool.cleanporter.skip[{position}] must be a table")
+        rules.append(_skip_rule(item, position))
+    return tuple(rules)
+
+
+def _skip_rule(item: dict[str, object], position: int) -> skip_lib.Rule:
+    """One validated rule table. *position* is its 1-based place in the list."""
+    where = f"tool.cleanporter.skip[{position}]"
+    unknown = sorted(set(item) - set(skip_lib.RULE_KEYS))
+    if unknown:
+        raise ConfigError(f"{where} has unknown keys: {unknown}")
+    if not set(item) & set(skip_lib.MATCHER_KEYS):
+        raise ConfigError(
+            f"{where} sets no matcher ({list(skip_lib.MATCHER_KEYS)}); a rule that constrains "
+            "nothing would skip the whole project"
+        )
+    # Narrow every value to `str` once, here, so the rule is built from a
+    # typed table rather than from `object`s re-checked at each use.
+    patterns: dict[str, str] = {}
+    for key, value in item.items():
+        if not isinstance(value, str):
+            raise ConfigError(f"{where}.{key} must be a string")
+        patterns[key] = value
+    named = [key for key in skip_lib.NAME_KEYS if key in patterns]
+    if len(named) > 1:
+        raise ConfigError(
+            f"{where} sets more than one of {list(skip_lib.NAME_KEYS)}: {named}. Only one "
+            "name pattern is kept, so the others would be silently dropped; write the "
+            "nesting into one pattern instead, as in method = 'Class\\.method'"
+        )
+    name_key = named[0] if named else ""
+    for key in ("file", "decorator", *named):
+        pattern = patterns.get(key)
+        if pattern is None:
+            continue
+        try:
+            skip_lib.compile_pattern(pattern)
+        except re.error as exc:
+            raise ConfigError(f"{where}.{key} is not a valid regex: {pattern!r} ({exc})") from exc
+    return skip_lib.Rule(
+        index=position,
+        file=patterns.get("file"),
+        name=patterns.get(name_key) if name_key else None,
+        name_key=name_key,
+        kinds=skip_lib.KINDS_BY_KEY[name_key] if name_key else frozenset(),
+        decorator=patterns.get("decorator"),
+        reason=patterns.get("reason", ""),
+    )
 
 
 def _bool(table: dict[str, object], key: str) -> bool:
@@ -121,6 +197,7 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
     )
     scope = _scope(table) if "scope" in table else defaults.scope
     python = _python(table) if "python" in table else defaults.python
+    skip = _skip_rules(table) if "skip" in table else defaults.skip
     # Validating the boolean keys stays driven by _BOOL_KEYS, but every one of
     # them has to be applied by name below; `test_every_known_key_reaches_the
     # _config` is what stops a new key being validated and then dropped.
@@ -136,6 +213,7 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
         exempt_modules=exempt_modules,
         exempt_names=exempt_names,
         python=python,
+        skip=skip,
     )
 
 

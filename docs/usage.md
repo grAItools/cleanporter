@@ -24,6 +24,7 @@ cleanporter [--fix] [--diff] [--python PATH] [--exempt MODULE] [--root PATH]
 | `--exempt MODULE` | An additional module whose members may be imported by name. Repeatable. Adds to, never replaces, the [default exemptions](configuration.md#default-exemptions) and anything in `exempt_modules`. |
 | `--root PATH` | An additional first-party import root — a directory that is on `sys.path` for the code being analysed. Repeatable. Adds to whatever the analysed paths themselves imply, and to `source_roots`. A relative value is resolved against the directory holding your `pyproject.toml`, not against the current directory. |
 | `--strict` | Also fail (exit `1`) on imports that could not be classified (`CP002`). Equivalent to turning on `treat_unresolved_as_error` for this run. |
+| `--show-skipped` | List the imports a [`skip` rule](configuration.md#skip-rules) took out of the run (`CP004`). They are counted in the summary either way; this prints them, which is how you check what a pattern actually swallowed. |
 | `--version` | Print the version and exit. |
 | `--help` | Print usage and exit. |
 
@@ -41,6 +42,7 @@ Each reported line has the shape
 | `CP001` | `VIOLATION` | An object is imported by name. This is the rule being enforced, and it is what blocks CI. |
 | `CP002` | `UNRESOLVED` | cleanporter could not determine whether the symbol is a module. Never rewritten. Only counts toward the failure exit code under `--strict` / `treat_unresolved_as_error`. |
 | `CP003` | `SKIPPED` | Structurally a violation, deliberately not rewritten. This is the "declined, because…" note that explains why `--fix` or `--diff` left a file alone. |
+| `CP004` | `SKIPPED_BY_CONFIG` | Matched a [`skip` rule](configuration.md#skip-rules), so it was never analysed. Counted in the summary, printed only under `--show-skipped`, and **never** part of the exit code — you asked for it. |
 
 Examples of each:
 
@@ -48,6 +50,7 @@ Examples of each:
 src/mypkg/consumer.py:3:0: CP001 imports object 'Widget' from module 'mypkg.helpers'; import the module and use 'helpers.Widget'
 src/mypkg/gpu.py:5:0: CP002 could not determine whether 'cupy.ndarray' is a module: 'cupy' is not importable in the target interpreter
 src/mypkg/api.py:11:0: CP003 file not rewritten: local 'Widget' is rebound in the same scope
+src/mypkg/stencils.py:4:0: CP004 'broadcast' from 'gt4py.next' skipped by configuration: skip rule #1 (decorator='field_operator'): DSL bodies are re-parsed by the frontend
 ```
 
 `CP002` findings are only produced for imports cleanporter actually looked at:
@@ -63,6 +66,20 @@ skipped before resolution is attempted.
     appear under `--fix` or `--diff`. The one exception is a wildcard import
     (`from x import *`), which is reported as `CP003` in every mode — there is
     no module import that reproduces it, so it can never be rewritten.
+
+!!! note "`CP004` findings never count"
+
+    A `CP004` is your own configuration reporting back, not a problem found in
+    your code, so it never contributes to the failure exit code — not even
+    under `--strict`. It is still counted in the summary line, because a rule
+    broad enough to swallow a project should be visible without having to go
+    looking for it.
+
+    That is a claim about `CP004`, not about `skip` rules in general. A rule
+    can still change a run's exit code, in one direction: if it matches the
+    spelling `--fix` is about to *write* rather than the one in your source,
+    the file is declined with a `CP003`, which does count. See
+    [when a rewrite would create its own skipped region](safety.md#what-a-skip-rule-can-and-cannot-do).
 
 ## Exit codes
 
@@ -153,12 +170,14 @@ uv run pytest                      # re-run the suite -- see the warning below
 `fixed: <path>` line to stderr, then a summary:
 
 ```text
-checked 41 file(s), fixed 6: 3 violation(s), 2 not rewritten, 1 unresolved
+checked 41 file(s), fixed 6: 3 violation(s), 2 not rewritten, 1 unresolved, 0 skipped by config
 ```
 
 Anything still reported after the sweep is a `CP001` the fixer never planned
 (a semicolon-joined or one-line import), a `CP003` it deliberately declined,
-or a `CP002` it could not classify. All three need a human.
+or a `CP002` it could not classify. All three need a human. A `CP004` does
+not — that one is your own `skip` rule, and it is only printed if you ask for
+it with `--show-skipped`.
 
 !!! warning "Guards are per file — re-run your tests"
 

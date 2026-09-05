@@ -30,6 +30,11 @@ treat_unresolved_as_error = false
 exempt_modules = ["six.moves"]    # extends the built-in defaults
 exempt_names = ["THING"]
 # python = "/path/to/target/venv/bin/python"   # omit = current interpreter
+
+skip = [
+    { decorator = 'field_operator|scan_operator|program', reason = "GT4Py re-parses these bodies" },
+    { file = '.*conftest\.py', reason = "pytest collects fixtures from this namespace" },
+]
 ```
 
 ## Reference
@@ -43,6 +48,7 @@ exempt_names = ["THING"]
 | `exempt_modules` | `["typing", "typing_extensions", "collections.abc", "__future__"]` | `from MODULE import X` is allowed when `MODULE` — or any ancestor of it — is in this set. Configured values are **added to** the built-in defaults; they never replace them. |
 | `exempt_names` | `[]` | Individual bound names that are always allowed, whatever module they came from. Checked before the module is even looked at. |
 | `python` | absent (the current interpreter) | Path to the interpreter used for the stdlib/third-party classification probe. Must be a string; omit the key to use the interpreter running cleanporter. |
+| `skip` | `[]` | Regions of your code the tool must not analyse or rewrite, as a list of rule tables. See [`skip` rules](#skip-rules) below. |
 
 !!! tip "`exempt_modules` matches ancestors"
 
@@ -160,3 +166,130 @@ Two details worth knowing:
   pattern like `"tests*"` is broader than it looks.
 - Each pattern is tried against the project-relative path first and against
   the absolute POSIX path second, so an absolute pattern also works.
+
+
+## `skip` rules
+
+Some bindings are load-bearing for a consumer that no analysis of the file can
+see. A function body under `@gtx.field_operator` is re-parsed by GT4Py's own
+frontend, which rejects a module-qualified call outright. A `conftest.py`
+namespace *is* pytest's fixture registry. In both cases the resolver is right,
+the rewrite is legal Python, and the result does not run — and the only thing
+that knows is you. `skip` is where you say so.
+
+```toml
+[tool.cleanporter]
+skip = [
+    { decorator = 'field_operator|scan_operator|program' },
+    { file = '.*conftest\.py' },
+    { file = 'src/legacy/.*', symbol = 'load_.*' },
+]
+```
+
+TOML's array-of-tables spelling is identical in effect, and reads better when a
+rule carries a `reason`:
+
+```toml
+[[tool.cleanporter.skip]]
+decorator = 'field_operator|scan_operator|program'
+reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
+```
+
+Use TOML *literal* strings (single quotes) for patterns. A regex is full of
+backslashes and a literal string passes them through untouched, so
+`'.*conftest\.py'` means what it looks like — in a double-quoted string you
+would have to write `".*conftest\\.py"`.
+
+### Keys
+
+Within one table every key must match **the same definition** (AND). Across the
+list, any rule matching is enough (OR).
+
+| Key | Selects | Matched against |
+| --- | --- | --- |
+| `file` | A whole file when it is the only matcher; otherwise narrows the rest of the rule to that file | The path relative to the project root, POSIX-spelled. A file outside the root has no relative spelling, so it offers its absolute path instead. |
+| `function` | A `def`/`async def` that is **not** directly inside a class body | The bare name; the qualified name within the module (`outer.inner`); the `module:qualname` address (`pkg.mod:outer.inner`) |
+| `method` | A `def`/`async def` directly inside a class body | as above (`Cache.get`, `pkg.mod:Cache.get`) |
+| `class` | A `class` statement | as above |
+| `symbol` | Any of the three above | as above |
+| `decorator` | Any definition carrying a matching decorator | The decorator as a dotted name with any call stripped (`@gtx.program(backend=...)` → `gtx.program`), and that name's last component (`program`) |
+| `reason` | *Not a matcher.* Free text, echoed in the `CP004` finding | — |
+
+Every pattern is matched with **`re.fullmatch`** against each candidate for its
+key; the key matches if any candidate does. Two things follow:
+
+- `{ decorator = 'field_operator' }` covers `@field_operator`,
+  `@gtx.field_operator` and `@gt4py.next.field_operator` alike, because the
+  last component is one of the candidates. Write
+  `{ decorator = 'gtx\.field_operator' }` to pin one spelling.
+- `{ method = 'Cache\.get' }` needs no second key: the qualified name is
+  already a candidate. Nesting goes in the pattern.
+
+The `module:qualname` candidate is the spelling
+[`pkgutil.resolve_name`](https://docs.python.org/3/library/pkgutil.html#pkgutil.resolve_name)
+takes, and it is the precise way to name one symbol when a filename repeats
+across a package tree.
+
+Setting more than one of `function` / `method` / `class` / `symbol` in a single
+table is an **error**: they select mutually exclusive node kinds, so the rule
+could never match, and a rule that silently never fires is the worst thing this
+feature could do. So are an unknown key, a non-string value, an uncompilable
+pattern, and an empty table `{}` — which constrains nothing and would therefore
+take your entire project.
+
+### What a rule skips
+
+A `file`-only rule takes the whole file. Any other rule takes, per matching
+definition, everything from its **first decorator line** through its last line,
+nested definitions included.
+
+Two things are then skipped, and the second is what makes the feature work:
+
+1. an import **inside** a skipped region, and
+2. any binding whose name appears anywhere inside a skipped region — *pinned*,
+   wherever its import statement actually sits.
+
+Pinning is the point. It is what keeps a module-level
+`from gt4py.next import broadcast` intact when the only use is inside a field
+operator two hundred lines below; without it the import would be rewritten and
+the skipped region left holding a name that no longer exists.
+
+The pin test asks only whether the identifier *appears* inside a skipped
+region, not whether it resolves to that import — so it pins more than you might
+expect, all of it deliberately:
+
+- a local variable, parameter or keyword argument of the same name;
+- the leaf of an attribute access — `mod.go()` inside a region pins `go`;
+- a name a **string** in the region could be referring to, read the same way
+  the [string guard](safety.md#a-reference-to-the-local-name-inside-a-string-literal)
+  reads one. This is what keeps a lazy annotation safe: under `from __future__
+  import annotations`, `def op(a: "Field")` is the region's only mention of
+  `Field`, and it is not an identifier node at all.
+
+Over-pinning can only ever cost you a rewrite, never cause a wrong one. But a
+`decorator` rule over a large body does swallow a lot — check what with
+`--show-skipped`.
+
+The rest of the file is untouched by all this. A module with fifteen field
+operators still gets its plain-Python helpers rewritten.
+
+### `skip` is not `exclude`
+
+They read alike and do different jobs.
+
+| | `exclude` | `skip` |
+| --- | --- | --- |
+| Syntax | fnmatch globs | regular expressions |
+| Stage | **Discovery** — the file is never read | **Analysis** — the file is read and parsed |
+| Evidence | Contributes none | Still contributes re-export and package evidence |
+| Granularity | Whole files | Whole files, or definitions inside them |
+| Reported as | Nothing at all | `CP004` |
+
+That evidence difference is why `skip` is the right tool for *your own code you
+do not want touched*. Drop a `conftest.py` at discovery with `exclude` and it
+stops counting as an importer of the fixtures it pulls in — which can unblock
+an unsafe rewrite in the file those fixtures live in. `skip` keeps reading it
+and only suppresses the findings.
+
+Use `exclude` for code that is not yours to fix: vendored trees, generated
+files, build output.

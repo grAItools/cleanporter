@@ -16,6 +16,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`[tool.cleanporter.skip]`: regions you declare off-limits.** A list of rule
+  tables matching on `file`, `function`, `method`, `class`, `symbol`,
+  `decorator` (AND within a table, OR across the list), each with an optional
+  `reason` echoed in the report. Anything a rule covers is neither reported nor
+  rewritten, and — the part that matters — any binding whose name appears
+  inside a skipped region is *pinned*, so a module-level import stays intact
+  when its only use is inside one.
+
+  This exists because some bindings are load-bearing for a consumer no analysis
+  of the file can see. A body under `@gtx.field_operator` is re-parsed by
+  GT4Py's own frontend, which rejects a module-qualified call outright; a
+  `conftest.py` namespace *is* pytest's fixture registry. In both cases the
+  resolver is right, the rewrite is legal Python, and the result does not run.
+
+  A rule never changes *how* a name is rewritten and never causes a name to be
+  rewritten that would not have been; every line inside a skipped region is
+  byte-identical in the output. Nothing in a rule reaches the resolver, and a
+  skipped name joins the same *keep* list an explicit re-export is already on,
+  so all-or-nothing per file is unchanged. Note that keeping a name also takes
+  its whole-file blocker with it, so a file previously declined outright may
+  now have its *other* imports fixed — more of the file changes, not less.
+  Unlike `exclude`, a skipped file is still read and still contributes
+  re-export evidence.
+
+  A rule can also match code the fixer is about to *write*
+  (`{ decorator = 'gtx\.field_operator' }` against a file that spells it
+  bare). cleanporter recomputes the regions on its own output and declines the
+  file rather than apply a rewrite its own configuration would forbid.
+
+- **`CP004` and `--show-skipped`.** A skipped import is reported as `CP004`,
+  counted in the summary line, printed only under `--show-skipped`, and never
+  part of the exit code — it is your own configuration reporting back, not a
+  problem found in your code.
+
 - **[pyrefly](https://pyrefly.org/) as a fourth type checker**, and a
   **blocking** one from the start. It runs as a git hook like the rest, reads
   `[tool.pyrefly]` in `pyproject.toml`, and covers `src/cleanporter` *and*
@@ -70,6 +104,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-export, which strict checking over `tests/` reports.
 
 ### Fixed
+
+- **An import nothing in the file reads is no longer rewritten.** `from p
+  import Thing` with no read of `Thing` has no use site to qualify, so the
+  rewrite removed a violation while changing no call — and dropped `Thing`
+  from the module's namespace, which is not always private. A test module's
+  `from .fixtures import backend_like` exists *only* so pytest can find the
+  name by a test's parameter, and the consumer being a function signature
+  rather than an import makes it invisible to the re-export guard. Found by
+  running gt4py's and icon4py's own suites against a rewritten copy, where it
+  accounted for every remaining failure once the DSL bodies were skipped.
+
+  "Read" is libCST's scope analysis, not a text match: a parameter named
+  `backend_like`, and every use of it in the body, belong to the parameter's
+  binding and are not reads of the import. The import is kept and reported
+  `CP003`; a project that keeps such imports deliberately can declare them
+  with a `skip` rule or `exempt_names`.
+
+  Keeping a name also removes it from the set the whole-file guards are keyed
+  on, so a file that was declined outright — because `__all__`, a `global`
+  declaration or an `exec` payload named that one symbol — may now have its
+  other imports rewritten. `--fix` therefore touches slightly *more* files
+  than before, not fewer. The corpus check confirms the rewrite still changes
+  no observable behaviour.
+
+- **`--fix`'s second pass no longer forgets which module a file is.**
+  `cli._reparse` rebuilt the post-fix record without its `qualname`, so a
+  re-export the fixer had correctly declined to touch was reported as an
+  ordinary `CP001` rather than the `CP003` it is.
 
 - **A load-bearing re-export is no longer rewritten.** If `pkg/tool.py` binds
   `dump` by importing it, `pkg.tool.dump` exists only because of how `tool.py`

@@ -23,8 +23,14 @@ class Status(enum.Enum):
     VIOLATION = "violation"
     #: Could not classify (parent not importable, ambiguous, ...) -> never fixed.
     UNRESOLVED = "unresolved"
-    #: Structurally a violation but deliberately not rewritten.
+    #: Structurally a violation but deliberately not rewritten. Reported as
+    #: "not rewritten", and counts toward the failure exit code: the fixer
+    #: declined, and a human has to decide what to do about it.
     SKIPPED = "skipped"
+    #: Matched a ``[tool.cleanporter.skip]`` rule, so it was never analysed.
+    #: Distinct from `SKIPPED` in the one way that matters: the author asked
+    #: for this, so it is not a failure and never reaches the exit code.
+    SKIPPED_BY_CONFIG = "skipped-by-config"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -43,6 +49,7 @@ class Finding:
             Status.VIOLATION: "CP001",
             Status.UNRESOLVED: "CP002",
             Status.SKIPPED: "CP003",
+            Status.SKIPPED_BY_CONFIG: "CP004",
         }[self.status]
 
     def format(self) -> str:
@@ -58,7 +65,11 @@ class Finding:
                 f"could not determine whether '{self.parent}.{self.name}' "
                 f"is a module: {self.detail}"
             )
+        elif self.status is Status.SKIPPED_BY_CONFIG:
+            msg = f"{self._subject()} skipped by configuration: {self.detail}"
         else:
-            subject = "file" if self.name == "?" else f"'{self.name}' from '{self.parent}'"
-            msg = f"{subject} not rewritten: {self.detail}"
+            msg = f"{self._subject()} not rewritten: {self.detail}"
         return f"{loc}: {self.code} {msg}"
+
+    def _subject(self) -> str:
+        return "file" if self.name == "?" else f"'{self.name}' from '{self.parent}'"

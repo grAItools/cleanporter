@@ -323,3 +323,119 @@ def test_the_same_import_is_an_ordinary_violation_without_the_shadow(
     """Self-reference alone is not the problem; only the competing binding is."""
     pkg = _self_shadowing_tree(tmp_path, "from pkg.serialization import MARK\nx = MARK\n")
     assert [f.code for f in _findings_by_file(pkg)["__init__.py"]] == ["CP001"]
+
+
+# -- [tool.cleanporter.skip] -------------------------------------------------
+
+
+def _skip_config(*tables: dict[str, str]) -> config.Config:
+    from cleanporter import config as config_lib
+
+    return config_lib._parse_table({"skip": list(tables)}, FIXTURES)
+
+
+def _analyze_rules(source: str, path: pathlib.Path, cfg: config.Config):
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = resolver_lib.Resolver(mm)
+    rec = analyze.FileRecord(
+        path,
+        source,
+        cst.parse_module(source),
+        analyze.package_of(path, mm),
+        root=cfg.root,
+        skip_rules=cfg.skip,
+    )
+    resolver.warm(_warm_pairs(rec))
+    return analyze.analyze_record(rec, resolver, cfg)
+
+
+def test_an_import_used_inside_a_skipped_region_is_cp004() -> None:
+    source = "from pkg.sub.mod import Thing\n\n\n@field_operator\ndef op():\n    return Thing()\n"
+    cfg = _skip_config({"decorator": "field_operator"})
+    (finding,) = _analyze_rules(source, FIXTURES / "pkg" / "a.py", cfg)
+    assert finding.code == "CP004"
+    assert finding.status is model.Status.SKIPPED_BY_CONFIG
+    assert "skip rule #1 (decorator='field_operator')" in finding.format()
+
+
+def test_the_same_import_is_an_ordinary_violation_without_the_rule() -> None:
+    source = "from pkg.sub.mod import Thing\n\n\n@field_operator\ndef op():\n    return Thing()\n"
+    (finding,) = _analyze_rules(source, FIXTURES / "pkg" / "a.py", config.Config(root=FIXTURES))
+    assert finding.code == "CP001"
+
+
+def test_an_import_outside_every_region_is_still_a_violation() -> None:
+    source = (
+        "from pkg.sub.mod import Thing\n\n\n@field_operator\ndef op():\n    return 1\n"
+        "\n\nx = Thing()\n"
+    )
+    cfg = _skip_config({"decorator": "field_operator"})
+    (finding,) = _analyze_rules(source, FIXTURES / "pkg" / "a.py", cfg)
+    assert finding.code == "CP001"
+
+
+def test_a_file_rule_reports_every_import_as_cp004() -> None:
+    source = "from pkg.sub.mod import Thing\nfrom pkg.sub.mod import go\nx = Thing(go)\n"
+    cfg = _skip_config({"file": r".*a\.py"})
+    findings = _analyze_rules(source, FIXTURES / "pkg" / "a.py", cfg)
+    assert [f.code for f in findings] == ["CP004", "CP004"]
+
+
+def test_a_star_import_inside_a_skipped_region_is_cp004_not_cp003() -> None:
+    source = "def outer():\n    from pkg.sub.mod import *\n"
+    cfg = _skip_config({"function": "outer"})
+    (finding,) = _analyze_rules(source, FIXTURES / "pkg" / "a.py", cfg)
+    assert finding.code == "CP004"
+
+
+def test_a_skipped_file_still_contributes_reexport_evidence(tmp_path: pathlib.Path) -> None:
+    """The difference between `skip` and `exclude`, and the reason for it.
+
+    `conftest.py` is skipped, but it must still count as an importer of
+    `helpers.THING` -- otherwise `helpers`'s own import of the name looks
+    unused to the re-export guard and becomes rewritable, deleting the
+    attribute `conftest.py` reads.
+    """
+    root = tmp_path / "src"
+    (root / "demo").mkdir(parents=True)
+    (root / "demo" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "demo" / "origin.py").write_text("THING = 1\n", encoding="utf-8")
+    (root / "demo" / "helpers.py").write_text(
+        "from demo.origin import THING\nx = THING\n", encoding="utf-8"
+    )
+    (root / "demo" / "conftest.py").write_text(
+        "from demo.helpers import THING\ny = THING\n", encoding="utf-8"
+    )
+    from cleanporter import config as config_lib
+
+    cfg = config_lib._parse_table({"skip": [{"file": r".*conftest\.py"}]}, tmp_path)
+    records, resolver, _errors, _warnings = analyze.build([root], cfg)
+    assert resolver.is_load_bearing("demo.helpers", "THING"), (
+        "the skipped file's import must still count as a use"
+    )
+    helpers = next(r for r in records if r.path.name == "helpers.py")
+    assert [f.code for f in analyze.analyze_record(helpers, resolver, cfg)] == ["CP003"]
+
+
+def test_cp004_is_not_emitted_for_imports_that_were_never_violations() -> None:
+    """`CP004` replaces a finding; it must not invent one.
+
+    The count is what the docs offer as the way to see how much a rule
+    swallowed, so padding it with a compliant module import and an exempt
+    `typing` name degrades exactly that signal.
+    """
+    source = (
+        "from typing import Any\nfrom pkg.sub import mod\nfrom pkg.sub.mod import Thing\n"
+        "x: Any = mod\ny = Thing()\n"
+    )
+    cfg = _skip_config({"file": r".*a\.py"})
+    findings = _analyze_rules(source, FIXTURES / "pkg" / "a.py", cfg)
+    assert [(f.code, f.name) for f in findings] == [("CP004", "Thing")]
+
+
+def test_a_skipped_unresolvable_import_is_cp004_not_cp002() -> None:
+    """A skip replaces whichever finding the unit would have produced."""
+    source = "from definitely_missing_pkg_xyz import thing\nx = thing\n"
+    cfg = _skip_config({"file": r".*a\.py"})
+    (finding,) = _analyze_rules(source, FIXTURES / "pkg" / "a.py", cfg)
+    assert finding.code == "CP004"

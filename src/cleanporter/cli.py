@@ -86,6 +86,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--strict", action="store_true", help="also fail on imports that could not be classified"
     )
     parser.add_argument(
+        "--show-skipped",
+        action="store_true",
+        help="list the imports a [tool.cleanporter.skip] rule took out (CP004)",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"cleanporter {cleanporter.__version__}"
     )
     return parser
@@ -140,6 +145,7 @@ def run(args: argparse.Namespace) -> int:
     changed = 0
     for rec in records:
         current = rec
+        unread: frozenset[str] = frozenset()
         if args.fix or args.diff:
             outcome = rewrite.fix_record(current, resolver, config)
             if outcome.status == "fixed":
@@ -159,7 +165,8 @@ def run(args: argparse.Namespace) -> int:
                     # Report against what is now on disk.
                     current = _reparse(current, outcome.source)
             findings.extend(outcome.blockers)
-        findings.extend(analyze.analyze_record(current, resolver, config))
+            unread = outcome.unread
+        findings.extend(analyze.analyze_record(current, resolver, config, unread))
 
     if args.fix and changed:
         # The one place the tool changes something it cannot fully check: a
@@ -172,17 +179,23 @@ def run(args: argparse.Namespace) -> int:
 
     findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
     for finding in findings:
+        # CP004 is the author's own configuration reporting back, so it is
+        # counted but not printed: a project that skips a thousand imports
+        # deliberately should not have to read about it on every run.
+        if finding.status is model.Status.SKIPPED_BY_CONFIG and not args.show_skipped:
+            continue
         print(finding.format(), file=report)
 
     violations = sum(f.status is model.Status.VIOLATION for f in findings)
     skipped = sum(f.status is model.Status.SKIPPED for f in findings)
     unresolved = sum(f.status is model.Status.UNRESOLVED for f in findings)
+    by_config = sum(f.status is model.Status.SKIPPED_BY_CONFIG for f in findings)
     print(file=report)
     print(
         f"checked {len(records)} file(s)"
         + (f", fixed {changed}" if args.fix else "")
         + f": {violations} violation(s), {skipped} not rewritten, "
-        f"{unresolved} unresolved",
+        f"{unresolved} unresolved, {by_config} skipped by config",
         file=report,
     )
 
@@ -193,7 +206,23 @@ def run(args: argparse.Namespace) -> int:
 
 
 def _reparse(rec: analyze.FileRecord, source: str) -> analyze.FileRecord:
-    return analyze.FileRecord(rec.path, source, cst.parse_module(source), rec.base_pkg)
+    """The same file, re-read from what was just written to it.
+
+    Everything the record was built with is carried over, and that includes
+    ``qualname`` -- without it the post-fix pass would forget which module
+    this file *is*, and report a re-export it had correctly declined to touch
+    as an ordinary violation. The skip regions are deliberately *not* carried
+    over: they are line spans, and the lines have just moved.
+    """
+    return analyze.FileRecord(
+        rec.path,
+        source,
+        cst.parse_module(source),
+        rec.base_pkg,
+        rec.qualname,
+        root=rec.root,
+        skip_rules=rec.skip_rules,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

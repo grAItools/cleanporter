@@ -79,6 +79,17 @@ w = Widget()                            w = helpers.Widget()
 Because stdout carries only the patch, `cleanporter --diff src/ | git apply`
 works as-is.
 
+Some code is off-limits for reasons no analysis can discover — a body a
+framework re-parses with its own frontend, a `conftest.py` whose namespace
+*is* pytest's fixture registry. Declare those with
+[`skip` rules](https://graitools.github.io/cleanporter/configuration/#skip-rules):
+
+```toml
+[[tool.cleanporter.skip]]
+decorator = 'field_operator|scan_operator|program'
+reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
+```
+
 ## Exit codes
 
 | Code | Meaning |
@@ -93,7 +104,8 @@ works as-is.
 | --- | --- | --- |
 | `CP001` | `VIOLATION` | object imported by name — blocks CI |
 | `CP002` | `UNRESOLVED` | could not determine whether the symbol is a module; never rewritten |
-| `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely — reported in every mode and, like `CP001`, fails the run |
+| `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely; like `CP001`, it fails the run. A wildcard import is reported in every mode; most of the rest are the fixer explaining a decision, so they appear under `--fix`/`--diff` |
+| `CP004` | `SKIPPED_BY_CONFIG` | matched a [`skip` rule](https://graitools.github.io/cleanporter/configuration/#skip-rules) — never analysed, never rewritten, counted in the summary, printed only under `--show-skipped`, and never part of the exit code |
 
 ## Dogfooding
 

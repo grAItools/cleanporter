@@ -22,7 +22,7 @@ reference: matching a bare word inside a string is not enough, because the
 overwhelming majority of such matches are prose that no rename can reach
 (``"expected Type, got int"``, ``"--include=PATTERN"``, an f-string-free error
 message). ``find_string_mentions`` therefore requires a second, structural
-condition on top of the word match -- see `_string_references`.
+condition on top of the word match -- see `string_references`.
 
 This is a deliberate, bounded reduction in conservatism, and it is the one
 guard here that gives something up. A context the *caller* knows is code --
@@ -66,7 +66,7 @@ def _reference_path(content: str) -> set[str]:
     Covers the shapes an importable target is spelled as in a string when it
     is not valid Python on its own: an entry point (``"mypkg.cli:main"``), a
     ``setuptools`` console script, a plugin address. ``"pkg.mod.Thing"`` is
-    valid Python too and would be caught by `_string_references` anyway; this
+    valid Python too and would be caught by `string_references` anyway; this
     is the fallback for the ones that are not.
     """
     head, _colon, tail = content.partition(":")
@@ -83,7 +83,7 @@ def _parse_or_none(source: str) -> ast.Module | None:
         return None
 
 
-def _string_references(content: str, depth: int = 0) -> set[str]:
+def string_references(content: str, depth: int = 0) -> set[str]:
     """Names *content* could be referring to, if it is code rather than prose.
 
     The question this answers is narrow: could renaming a local binding change
@@ -156,7 +156,7 @@ def _string_references(content: str, depth: int = 0) -> set[str]:
         elif isinstance(node, ast.MatchAs) and node.name:
             found.add(node.name)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            found |= _string_references(node.value, depth + 1)
+            found |= string_references(node.value, depth + 1)
     return found
 
 
@@ -215,7 +215,7 @@ def find_string_mentions(
 
     Two conditions must both hold for a hit. The word match comes first and is
     unchanged -- it is cheap, and it is what bounds the cost of the second.
-    The second, `_string_references`, asks whether the string is code at all;
+    The second, `string_references`, asks whether the string is code at all;
     a string that is only prose cannot reach a binding and is not a hit. A
     doctest is a hit regardless, and so is a string whose content is not text
     (a bytes literal): undecodable means unclassifiable, and unclassifiable
@@ -252,7 +252,7 @@ def find_string_mentions(
                 if (
                     id(node) in strict_ids
                     or _DOCTEST_MARKER in content
-                    or name in _string_references(content)
+                    or name in string_references(content)
                 ):
                     hits.append((line_of(node), f"name '{name}' appears in a string literal"))
                     return

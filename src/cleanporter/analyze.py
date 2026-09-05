@@ -1,9 +1,17 @@
 """Analysis driver: turn source files into :class:`Finding` objects.
 
 `FileRecord` carries a parsed file and lazily caches what is expensive to
-derive from it -- the import units and libcst's position metadata -- so a
-record survives being walked more than once (the CLI re-parses into a fresh
-record after a fix and analyses it again).
+derive from it -- the import units, libcst's position metadata, and whatever
+`cleanporter.skip` takes out of the file -- so a record survives being walked
+more than once (the CLI re-parses into a fresh record after a fix and analyses
+it again).
+
+A file a `skip` rule takes whole is still discovered, read and parsed here. It
+contributes its imports as *evidence* -- who re-exports what, which directories
+are packages -- and only its findings are suppressed. That is the whole
+difference between `skip` and ``exclude``: dropping a `conftest.py` at
+discovery would stop it counting as an importer of the fixtures it pulls in,
+which can unblock an unsafe rewrite somewhere else entirely.
 """
 
 from __future__ import annotations
@@ -17,6 +25,7 @@ from libcst import metadata
 
 from cleanporter import config, discover, firstparty, model
 from cleanporter import resolver as resolver_lib
+from cleanporter import skip as skip_lib
 
 from . import _imports
 
@@ -41,10 +50,15 @@ class FileRecord:
     #: known import root). Needed to ask whether *this* module's imports are
     #: load-bearing re-exports for other files in the run.
     qualname: str = ""
+    #: Project root, against which `skip` file patterns are matched.
+    root: pathlib.Path = dataclasses.field(default_factory=pathlib.Path.cwd)
+    #: Configured skip rules. Empty is the common case and costs nothing.
+    skip_rules: tuple[skip_lib.Rule, ...] = ()
     _units: list[ImportUnit] | None = dataclasses.field(default=None, repr=False, compare=False)
     _positions: Mapping[cst.CSTNode, metadata.CodeRange] | None = dataclasses.field(
         default=None, repr=False, compare=False
     )
+    _skipped: skip_lib.Skipped | None = dataclasses.field(default=None, repr=False, compare=False)
 
     @property
     def units(self) -> list[ImportUnit]:
@@ -52,6 +66,28 @@ class FileRecord:
         if self._units is None:
             self._units = list(iter_units(self.tree, self.base_pkg))
         return self._units
+
+    @property
+    def skipped(self) -> skip_lib.Skipped:
+        """What `skip_rules` take out of this file. Computed once.
+
+        Deliberately lazy *and* short-circuited: with no rules configured this
+        never walks the tree and never forces `positions`, so the whole
+        feature is free for anyone not using it.
+        """
+        if self._skipped is None:
+            self._skipped = (
+                skip_lib.regions(
+                    self.tree,
+                    self.positions,
+                    self.skip_rules,
+                    skip_lib.file_candidates(self.path, self.root),
+                    self.qualname,
+                )
+                if self.skip_rules
+                else skip_lib.EMPTY
+            )
+        return self._skipped
 
     @property
     def positions(self) -> Mapping[cst.CSTNode, metadata.CodeRange]:
@@ -218,38 +254,76 @@ def star_imported_modules(tree: cst.Module, base_pkg: str) -> set[str]:
     return found
 
 
+def _skippable(rule: skip_lib.Rule | None, finding: model.Finding) -> model.Finding:
+    """*finding*, or the `CP004` that a matching *rule* replaces it with."""
+    if rule is None:
+        return finding
+    return dataclasses.replace(
+        finding, status=model.Status.SKIPPED_BY_CONFIG, detail=rule.describe()
+    )
+
+
 def analyze_record(
-    rec: FileRecord, resolver: resolver_lib.Resolver, config: config.Config
+    rec: FileRecord,
+    resolver: resolver_lib.Resolver,
+    config: config.Config,
+    unread: frozenset[str] = frozenset(),
 ) -> list[model.Finding]:
+    """Findings for one file.
+
+    *unread* is the fixer's answer to "which of this file's imported names are
+    never read here" -- see `rewrite._Fixer._unread_names`. Answering it needs
+    scope metadata, which only the fix path resolves, so a plain ``check`` run
+    passes nothing and reports those imports as the `CP001` they are. Under
+    ``--fix`` the fixer has already paid for the answer, and passing it here is
+    what turns "cleanporter did not fix this and did not say why" into a
+    `CP003` that does.
+    """
     positions = rec.positions
+    skipped = rec.skipped
     findings: list[model.Finding] = []
     for unit in rec.units:
         pos = positions[unit.node].start
         line, col = pos.line, pos.column
 
+        # A skip *replaces* a finding; it does not add one. So it is resolved
+        # up front but applied at each point a finding is actually produced,
+        # never before the filters that would have reported nothing at all --
+        # `CP004` for a compliant `from pkg import module`, or for an exempt
+        # `typing` import, would pad the one count the docs offer as the way
+        # to see how much a rule swallowed.
+        rule = skipped.covers(line) or (
+            None if unit.star else skipped.pin(unit.asname or unit.name)
+        )
         if unit.star:
             findings.append(
-                model.Finding(
-                    rec.path,
-                    line,
-                    col,
-                    unit.parent or "?",
-                    "*",
-                    model.Status.SKIPPED,
-                    "wildcard import cannot be rewritten to a module import",
+                _skippable(
+                    rule,
+                    model.Finding(
+                        rec.path,
+                        line,
+                        col,
+                        unit.parent or "?",
+                        "*",
+                        model.Status.SKIPPED,
+                        "wildcard import cannot be rewritten to a module import",
+                    ),
                 )
             )
             continue
         if unit.parent is None:
             findings.append(
-                model.Finding(
-                    rec.path,
-                    line,
-                    col,
-                    "?",
-                    unit.name,
-                    model.Status.UNRESOLVED,
-                    "relative import could not be anchored to a package",
+                _skippable(
+                    rule,
+                    model.Finding(
+                        rec.path,
+                        line,
+                        col,
+                        "?",
+                        unit.name,
+                        model.Status.UNRESOLVED,
+                        "relative import could not be anchored to a package",
+                    ),
                 )
             )
             continue
@@ -261,6 +335,19 @@ def analyze_record(
         verdict = resolver.is_module(unit.parent, unit.name)
         if verdict is True:
             continue  # importing a module -> compliant
+        if rule is not None:
+            findings.append(
+                model.Finding(
+                    rec.path,
+                    line,
+                    col,
+                    unit.parent,
+                    unit.name,
+                    model.Status.SKIPPED_BY_CONFIG,
+                    rule.describe(),
+                )
+            )
+            continue
         if verdict is None:
             findings.append(
                 model.Finding(
@@ -319,6 +406,21 @@ def analyze_record(
                 )
             )
             continue
+        if bound in unread:
+            findings.append(
+                model.Finding(
+                    rec.path,
+                    line,
+                    col,
+                    unit.parent,
+                    unit.name,
+                    model.Status.SKIPPED,
+                    "the imported name is never read in this file, so rewriting the import "
+                    "would only remove the binding -- and something outside this file "
+                    "(a pytest fixture, an entry point) may be reading it",
+                )
+            )
+            continue
         findings.append(
             model.Finding(rec.path, line, col, unit.parent, unit.name, model.Status.VIOLATION)
         )
@@ -373,6 +475,8 @@ def build(
             tree,
             package_of(f, module_map, max_relative_level(tree)),
             module_map.qualname_for(f, max_relative_level(tree)) or "",
+            root=config.root,
+            skip_rules=config.skip,
         )
         for f, source, tree in parsed
     ]

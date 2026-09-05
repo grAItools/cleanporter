@@ -53,6 +53,13 @@ the line.
 spelling of the name survives, and a rename would silently break them. So a
 string literal that could be *referring to* a rewritten name blocks the file.
 
+This guard fires on the set of names actually being rewritten, so a name kept
+for another reason never reaches it. The plain `__all__` re-export is the
+common case: if nothing in the module *reads* `Widget`, the
+[never-read rule](#known-limitations) keeps the import first and the file is
+left alone without this guard being consulted at all. The example above is the
+one where the module both re-exports `Widget` and uses it.
+
 Two conditions must both hold. First, the name has to appear in the string as
 a whole word — a substring match is not enough, so `Widget` does not match
 inside `WidgetFactory`. Second, the string has to be **code rather than
@@ -211,8 +218,64 @@ A final backstop rather than a guard: after rewriting, the result must parse.
 If it does not, the original content is kept and an internal-error `CP003` is
 reported. cleanporter never hands back source it cannot compile.
 
+## What a `skip` rule can and cannot do
+
+[`skip` rules](configuration.md#skip-rules) let you declare a region off-limits
+for reasons the tool cannot discover — a body some framework re-parses, a
+namespace some framework reads. What a rule guarantees:
+
+> A `skip` rule never changes **how** a name is rewritten, and never causes a
+> name to be rewritten that would not have been. Every line inside a skipped
+> region is byte-identical in the output to what you wrote.
+
+Nothing in a rule reaches the resolver: a skip never supplies a verdict, never
+turns "undetermined" into an answer, and never relaxes a guard. A skipped name
+joins the same *keep* list an explicit re-export is already on, so the
+all-or-nothing contract above is untouched.
+
+It does **not** follow that a rule can only make `--fix` do less, and the
+difference is worth knowing before you write one. Every whole-file guard is
+keyed on the set of names being rewritten, so keeping a name takes its blocker
+with it. A file that was declined entirely because `__all__` names the one
+symbol your rule now pins will have its *other* imports rewritten instead. That
+is sound — the pinned name is still bound, and the guard still fires for every
+name that is still being rewritten — but the file changes more, not less.
+`exempt_names` has always worked this way; a rule is not special.
+
+One more edge, enforced rather than documented away: a rule can match code the
+fixer is about to *write*. `{ decorator = 'gtx\.field_operator' }` matches
+nothing in a file that imports the decorator bare and writes `@field_operator`,
+so the body is not skipped and gets rewritten — and the resulting
+`@gtx.field_operator` is then a region your config declares off-limits, covering
+code that was just edited. cleanporter recomputes the regions on its own output
+and declines the file (`CP003`) rather than apply a rewrite its own
+configuration would have forbidden. Prefer the bare last-component spelling
+(`{ decorator = 'field_operator' }`), which matches both.
+
 ## Known limitations
 
+- **An import nothing in the file reads is never rewritten.** `from p import
+  Thing` with no read of `Thing` anywhere in the file has no use site to
+  qualify, so rewriting it would remove a violation while changing no call —
+  and its one real effect would be to drop `Thing` from this module's
+  namespace.
+
+    That namespace is not always private. A test module's `from
+    .fixtures import backend_like` exists *only* so pytest can find the name
+    by a test's parameter; a `conftest.py` is nothing but such imports. Neither
+    is visible to the re-export guard below, because the consumer is a
+    function signature, not an import statement. So the import is kept and
+    reported `CP003`, and your options are the honest ones: delete it, or
+    declare it with a [`skip` rule](configuration.md#skip-rules) or
+    `exempt_names`.
+
+    "Read" here means libCST's scope analysis, not a text match. A parameter
+    named `backend_like`, and every use of it in the body, belong to the
+    *parameter's* binding and are not reads of the import.
+
+    Because answering this needs scope metadata that only the fix path
+    resolves, a plain `check` run reports these as the `CP001` they are; it is
+    `--fix` and `--diff` that name them `CP003`.
 - **Relative imports become absolute.** `from .sub.mod import C` is rewritten
   to `from pkg.sub import mod` plus `mod.C`. The import that is *kept* (any
   compliant names in a mixed statement) keeps its original relative form; the

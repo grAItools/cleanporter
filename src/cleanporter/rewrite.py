@@ -13,6 +13,11 @@ module-level import of the same module.
 Safety boundary (these are reported by ``check`` but deliberately NOT auto-fixed
 because a mechanical rewrite could change runtime behaviour):
 
+* anything a ``[tool.cleanporter.skip]`` rule covers, and any binding whose
+  name appears inside a skipped region -- see `cleanporter.skip`,
+* a name nothing in the file reads: rewriting it removes a violation with no
+  use site and deletes a binding that something outside the file may need
+  (`_Fixer._unread_names`),
 * imports inside an ``if TYPE_CHECKING:`` block, *unless* the file has
   ``from __future__ import annotations`` -- with it, annotations are strings
   at runtime, so both the import and any lazy string annotation mentioning
@@ -37,11 +42,12 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import re
 
 import libcst as cst
 from libcst import metadata
 
-from cleanporter import analyze, config, model, resolver
+from cleanporter import analyze, config, model, resolver, skip
 
 from . import _imports, guards
 
@@ -627,6 +633,12 @@ class _Fixer(cst.CSTTransformer):
         #: annotations (Task 16). Keyed by scope, because a rename is only
         #: valid for annotation strings that can actually *see* that binding.
         self._string_targets: dict[metadata.Scope, dict[str, str]] = {}
+        #: What `[tool.cleanporter.skip]` takes out of this file, computed by
+        #: the record so `analyze` and this class cannot answer it differently.
+        self._skipped = rec.skipped
+        #: Names kept because nothing in this file reads them. Reported by
+        #: `analyze.analyze_record`, which cannot work them out on its own.
+        self.unread: set[str] = set()
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
@@ -726,6 +738,14 @@ class _Fixer(cst.CSTTransformer):
         if not (self._future_annotations and self._string_targets):
             return frozenset()
         for ident, string_node in _annotation_strings(node).items():
+            if self._skipped.covers(self._line_of(string_node)) is not None:
+                # Belt to the pin's braces. `skip._names_in` already harvests
+                # the names a string in a skipped region refers to, so this
+                # should be unreachable -- but that harvest reads content that
+                # parses, and is documented as incomplete. The promise that
+                # nothing inside a region is edited is worth enforcing where
+                # the edit is actually made, not only where it is predicted.
+                continue
             # Only renames the *enclosing scope of this string* can actually
             # see. `plan.name_repl` has always been scope-aware; this path
             # was not, and a flat table let a function-local alias be
@@ -824,36 +844,80 @@ class _Fixer(cst.CSTTransformer):
         return pairs
 
     def _partition(
-        self, imp: cst.ImportFrom, parent: str
+        self, imp: cst.ImportFrom, parent: str, scope: metadata.Scope
     ) -> tuple[list[str], list[tuple[str, str | None]]]:
         """Split this import's names into the ones kept and the ones rewritten.
 
-        Kept: exempt names, modules, anything the resolver could not classify,
-        and re-exports. A re-export -- declared as ``S as S``, or inferred
-        from another analysed file importing ``S`` from *this* module -- means
-        this very import line is what makes ``<this module>.S`` exist for
-        somebody else, so rewriting it would delete an attribute they read.
-        Kept in place rather than blocking the file, exactly as an unresolved
-        name is, so the file's other rewrites still happen.
+        Kept: names a `[tool.cleanporter.skip]` rule covers or pins, exempt
+        names, modules, anything the resolver could not classify, re-exports,
+        and names nothing in this file reads. A re-export -- declared as
+        ``S as S``, or inferred from another analysed file importing ``S``
+        from *this* module -- means this very import line is what makes
+        ``<this module>.S`` exist for somebody else, so rewriting it would
+        delete an attribute they read. Kept in place rather than blocking the
+        file, exactly as an unresolved name is, so the file's other rewrites
+        still happen.
+
+        The order of the chain is the reported order: a skip comes first
+        because it is the author overriding everything the tool could work
+        out, and `_note_unread` comes *last* because reaching it means every
+        other reason to keep the name was already false -- which is what makes
+        the set it records exactly the set `analyze` would otherwise report as
+        `CP001`.
         """
         keep: list[str] = []
         fix: list[tuple[str, str | None]] = []
         unreachable = self._resolver.self_import_unreachable(self._rec.qualname, parent)
+        skipped_line = self._skipped.covers(self._line_of(imp)) is not None
+        never_read = self._unread_names(imp, scope)
         for name, asname, _alias in _imports.imported_names(imp):
+            bound = asname or name
             if (
                 unreachable
+                or skipped_line
+                or self._skipped.pin(bound) is not None
                 or self._config.is_exempt(parent, name)
                 or _imports.is_explicit_reexport(name, asname)
                 or (
-                    self._rec.qualname
-                    and self._resolver.is_load_bearing(self._rec.qualname, asname or name)
+                    self._rec.qualname and self._resolver.is_load_bearing(self._rec.qualname, bound)
                 )
                 or self._resolver.is_module(parent, name) is not False
+                or self._note_unread(bound, never_read)
             ):
                 keep.append(_render_alias(name, asname))
             else:
                 fix.append((name, asname))
         return keep, fix
+
+    def _unread_names(self, imp: cst.ImportFrom, scope: metadata.Scope) -> frozenset[str]:
+        """Names *imp* binds that nothing in this file reads.
+
+        Rewriting one of those removes a violation with no use site, and its
+        only other effect is to delete the binding -- which is exactly how a
+        pytest fixture pulled in by name disappears. Nothing to gain, a
+        namespace to lose, so the import is kept.
+
+        libcst's scope analysis is what makes this answerable at all. The
+        cheap version -- "does this identifier appear anywhere else in the
+        file" -- gets ``def test_x(extension_source_example)`` wrong twice
+        over: the parameter is a `Name`, and so is every read of it in the
+        body, yet both belong to the *parameter's* binding and neither reaches
+        the import.
+        """
+        out: set[str] = set()
+        for name, asname, _alias in _imports.imported_names(imp):
+            bound = asname or name
+            ours = [a for a in scope[bound] if getattr(a, "node", None) is imp]
+            if ours and not any(a.references for a in ours):
+                out.add(bound)
+        return frozenset(out)
+
+    def _note_unread(self, bound: str, never_read: frozenset[str]) -> bool:
+        """Last link in `_partition`'s keep chain; records what it keeps."""
+        if bound not in never_read:
+            return False
+        self.unread.add(bound)
+        return True
 
     def _plan_line(self, line: cst.SimpleStatementLine, imp: cst.ImportFrom) -> None:
         if _imports.is_star(imp):
@@ -865,7 +929,7 @@ class _Fixer(cst.CSTTransformer):
         if parent is None:
             return
 
-        keep, fix = self._partition(imp, parent)
+        keep, fix = self._partition(imp, parent, scope)
         if not fix:
             return
         self._fixed_locals.update(asname or name for name, asname in fix)
@@ -1294,12 +1358,24 @@ class FixOutcome:
     source: str
     blockers: list[model.Finding] = dataclasses.field(default_factory=list)
     fixed: int = 0
+    #: Names kept because nothing in the file reads them; see
+    #: `_Fixer._unread_names`. Passed back to `analyze.analyze_record` so the
+    #: post-fix report says why they were left alone. Names, not
+    #: ``(scope, name)`` pairs: a file that imports the same name at module
+    #: scope and inside a function, one read and one not, gets the explanation
+    #: on both. That costs a slightly wrong *message* and never a wrong
+    #: rewrite, since the fixer itself decides per scope.
+    unread: frozenset[str] = frozenset()
 
 
 def fix_record(
     rec: analyze.FileRecord, resolver: resolver.Resolver, config: config.Config
 ) -> FixOutcome:
     """Rewrite one file, or leave it exactly as it was and say why."""
+    if rec.skipped.whole_file:
+        # Nothing to weigh: a `skip` rule took the file whole. Bail before the
+        # metadata resolution, which is the expensive part.
+        return FixOutcome("clean", rec.source)
     wrapper = cst.MetadataWrapper(rec.tree, unsafe_skip_copy=True)
     fixer = _Fixer(rec, resolver, config)
     new_source = wrapper.visit(fixer).code
@@ -1312,9 +1388,10 @@ def fix_record(
                 model.Finding(rec.path, line, 0, "?", "?", model.Status.SKIPPED, reason)
                 for line, reason in sorted(set(fixer.blockers))
             ],
+            unread=frozenset(fixer.unread),
         )
     if not fixer.plan.fixed or new_source == rec.source:
-        return FixOutcome("clean", rec.source)
+        return FixOutcome("clean", rec.source, unread=frozenset(fixer.unread))
 
     try:
         ast.parse(new_source)
@@ -1336,6 +1413,104 @@ def fix_record(
                     "internal error: the rewrite did not parse; reverted",
                 )
             ],
+            unread=frozenset(fixer.unread),
         )
 
-    return FixOutcome("fixed", new_source, [], fixer.plan.fixed)
+    stale = _region_the_rewrite_created(rec, new_source, config)
+    if stale is not None:
+        return FixOutcome("skipped", rec.source, [stale], unread=frozenset(fixer.unread))
+
+    return FixOutcome("fixed", new_source, [], fixer.plan.fixed, frozenset(fixer.unread))
+
+
+def _source_lines(source: str) -> list[str]:
+    r"""*source* split the way libCST counts lines, so an index means the same.
+
+    ``str.splitlines`` also breaks on ``\x0b``, ``\x0c``, ``\x1c``-``\x1e``,
+    ``\x85``, ``\u2028`` and ``\u2029``; libCST breaks on ``\n``, ``\r\n``
+    and ``\r`` alone. A form feed inside a string literal was enough to shift
+    every line number after it, so a region's text was read from the wrong
+    place -- reported as a self-created region that was nothing of the kind,
+    and, with the shift the other way, capable of missing a real one.
+    """
+    return re.split(r"\r\n|\r|\n", source)
+
+
+def _first_difference(before: list[str], after: list[str]) -> int:
+    """1-based line where two versions of a file first differ (0 if never).
+
+    The line a self-created region *starts* at is a line in the rewritten
+    output, and the rewrite is about to be thrown away -- pointing a reader
+    at it points them at a file that will not exist. The first line the fix
+    would have changed is in the file they actually have, and it is where the
+    trouble begins.
+    """
+    for index, (old, new) in enumerate(zip(before, after, strict=False), start=1):
+        if old != new:
+            return index
+    return min(len(before), len(after)) + 1 if before != after else 0
+
+
+def _region_the_rewrite_created(
+    rec: analyze.FileRecord, new_source: str, config: config.Config
+) -> model.Finding | None:
+    r"""A `skip` region that only exists *because of* this rewrite, or None.
+
+    A rule can match code the fixer is about to write. ``decorator =
+    'gtx\\.field_operator'`` matches nothing in a file that spells the import
+    ``from gt4py.next import field_operator`` and writes ``@field_operator``
+    -- so the body is not skipped, the fixer rewrites it *and* the decorator,
+    and the resulting ``@gtx.field_operator`` is a region the config declares
+    off-limits, covering code that has just been edited. The user's rule is
+    then honoured on every subsequent run over code it never got to protect,
+    which is the one failure mode this feature must not have.
+
+    So: recompute the regions on the output, and require every one of them to
+    appear in the input verbatim. Line numbers move under a rewrite, so the
+    comparison is on the block of text, not on its position. Declining is the
+    right answer rather than re-running the fixer, both because it is the
+    conservative one and because a fixer that chased its own configuration to
+    a fixed point could not promise to terminate.
+    """
+    if not config.skip:
+        return None
+    tree = cst.parse_module(new_source)
+    positions = metadata.MetadataWrapper(tree, unsafe_skip_copy=True).resolve(
+        metadata.PositionProvider
+    )
+    # Spans only: which regions the output has. What they would pin is a
+    # second tree walk this never reads.
+    after = skip.region_spans(
+        tree,
+        positions,
+        config.skip,
+        skip.file_candidates(rec.path, config.root),
+        rec.qualname,
+    )
+    before_lines = _source_lines(rec.source)
+    new_lines = _source_lines(new_source)
+    # Where each line of the input occurs, so a region is looked up by its
+    # first line rather than slid along the whole file.
+    starts: dict[str, list[int]] = {}
+    for offset, text in enumerate(before_lines):
+        starts.setdefault(text, []).append(offset)
+    for start, end, rule in after.spans:
+        block = new_lines[start - 1 : end]
+        if not block:
+            continue
+        if not any(
+            before_lines[offset : offset + len(block)] == block
+            for offset in starts.get(block[0], ())
+        ):
+            return model.Finding(
+                rec.path,
+                _first_difference(before_lines, new_lines),
+                0,
+                "?",
+                "?",
+                model.Status.SKIPPED,
+                f"the rewrite would edit code that {rule.describe()} then covers; "
+                "the rule matches the rewritten spelling but not the original, so "
+                "applying it would skip this region only after changing it",
+            )
+    return None

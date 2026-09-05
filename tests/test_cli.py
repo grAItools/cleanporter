@@ -117,7 +117,10 @@ def test_strict_promotes_unresolved_to_failure(project, capsys):
 
 def test_fix_still_reports_violations_it_declined(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        'from demo.helpers import THING\n__all__ = ["THING"]\n',
+        # `THING` is read, so it is a name the fixer would rewrite and the
+        # `__all__` guard has something to block on. Without the read it would
+        # be kept as never-read and the guard would never be reached.
+        'from demo.helpers import THING\n__all__ = ["THING"]\nx = THING\n',
         encoding="utf-8",
     )
     rc = cli.main(["--fix", str(project / "src")])
@@ -742,3 +745,97 @@ def test_fix_aliases_a_top_level_import_that_collides_with_a_submodule(
         f"the stdlib module was bound over `pkg.json`:\n"
         f"{(tmp_path / 'pkg' / '__init__.py').read_text(encoding='utf-8')}"
     )
+
+
+# -- [tool.cleanporter.skip] -------------------------------------------------
+
+
+def _with_skip(project: pathlib.Path, rule: str) -> None:
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0"\n[tool.cleanporter]\nskip = [' + rule + "]\n",
+        encoding="utf-8",
+    )
+
+
+def test_a_skipped_violation_does_not_fail_the_run(project, capsys):
+    _with_skip(project, "{ file = '.*consumer[.]py' }")
+    assert cli.main([str(project / "src")]) == 0
+
+
+def test_a_skipped_violation_does_not_fail_under_strict_either(project, capsys):
+    """The file must hold an unresolvable import, or `--strict` has no work.
+
+    `CP002` is what `--strict` promotes to a failure, so a fixture where
+    everything resolves would pass this test with the rule doing nothing.
+    """
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from demo.helpers import THING\nfrom definitely_missing_pkg_xyz import other\n"
+        "total = THING + other\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["--strict", str(project / "src")]) == 1, "CP002 fails under --strict"
+    _with_skip(project, "{ file = '.*consumer[.]py' }")
+    assert cli.main(["--strict", str(project / "src")]) == 0
+
+
+def test_skipped_findings_are_counted_but_not_printed(project, capsys):
+    _with_skip(project, "{ file = '.*consumer[.]py' }")
+    cli.main([str(project / "src")])
+    out = capsys.readouterr().out
+    assert "CP004" not in out
+    assert "1 skipped by config" in out
+
+
+def test_show_skipped_prints_them(project, capsys):
+    _with_skip(project, "{ file = '.*consumer[.]py', reason = 'not ours' }")
+    cli.main(["--show-skipped", str(project / "src")])
+    out = capsys.readouterr().out
+    assert "CP004" in out
+    assert "skip rule #1 (file='.*consumer[.]py'): not ours" in out
+
+
+def test_fix_leaves_a_skipped_file_byte_identical(project, capsys):
+    _with_skip(project, "{ file = '.*consumer[.]py' }")
+    target = project / "src" / "demo" / "consumer.py"
+    before = target.read_text(encoding="utf-8")
+    assert cli.main(["--fix", str(project / "src")]) == 0
+    assert target.read_text(encoding="utf-8") == before
+
+
+def test_fix_explains_an_import_nothing_reads(project, capsys):
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from demo.helpers import THING\ndef test_it(THING):\n    return THING\n",
+        encoding="utf-8",
+    )
+    rc = cli.main(["--fix", str(project / "src")])
+    err = capsys.readouterr().err
+    assert "CP003" in err
+    assert "never read in this file" in err
+    assert rc == 1
+
+
+def test_a_rule_matching_the_rewritten_spelling_can_fail_a_run(project, capsys):
+    """The one way a `skip` rule *can* change an exit code, now documented.
+
+    `CP004` never counts, but a rule that matches what `--fix` is about to
+    write rather than what is in the source declines the file with a `CP003`,
+    and that does. A user adding a rule to quieten CI needs to know this can
+    go the other way.
+    """
+    (project / "src" / "demo" / "helpers.py").write_text(
+        "THING = 42\n\n\ndef deco(fn):\n    return fn\n", encoding="utf-8"
+    )
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from demo.helpers import THING, deco\n\n\n@deco\ndef go():\n    return THING\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["--fix", str(project / "src")]) == 0
+
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from demo.helpers import THING, deco\n\n\n@deco\ndef go():\n    return THING\n",
+        encoding="utf-8",
+    )
+    _with_skip(project, "{ decorator = 'helpers[.]deco' }")
+    assert cli.main(["--fix", str(project / "src")]) == 1
+    err = capsys.readouterr().err
+    assert "then covers" in err

@@ -154,7 +154,7 @@ def test_match_captures_ignores_unrelated_names():
 # -- the reference/prose boundary ------------------------------------------
 #
 # `find_string_mentions` only reports a word match when the string could
-# actually *be* a reference to the name (see `_string_references`). Each case
+# actually *be* a reference to the name (see `string_references`). Each case
 # below records why it falls on the side it does. The unsafe direction is a
 # `must_block` case that stops blocking: that is a rename silently breaking
 # working code, so these are the cases to add to rather than relax.

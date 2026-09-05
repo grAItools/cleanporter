@@ -20,10 +20,13 @@ that weakens either is a regression no matter how well it tests:
    before anything is touched; one guard hit leaves the file byte-identical and
    emits `CP003` with the reason. No partial-rewrite or "fix what we can" mode.
 
-Findings: `CP001` violation, `CP002` unresolved, `CP003` skipped-on-purpose.
-Exit codes: `0` clean, `1` violations, `2` operational error. `cli.run` folds
-`CP003` into the failure count -- a declined violation, not a note -- while
-`CP002` counts only under `--strict`/`treat_unresolved_as_error`.
+Findings: `CP001` violation, `CP002` unresolved, `CP003` skipped-on-purpose,
+`CP004` taken out by a `[tool.cleanporter.skip]` rule. Exit codes: `0` clean,
+`1` violations, `2` operational error. `cli.run` folds `CP003` into the failure
+count -- a declined violation, not a note -- while `CP002` counts only under
+`--strict`/`treat_unresolved_as_error` and `CP004` never counts at all: it is
+the author's own configuration reporting back, printed only under
+`--show-skipped`.
 
 The code is `src/cleanporter/`; every module opens with a docstring giving its
 role and reasoning, at length in `guards.py`, `firstparty.py`, `resolver.py`,
@@ -53,6 +56,14 @@ No type checker takes a path: each reads its scope from `pyproject.toml`, so
 every invocation checks the same thing. `--all-files` is not optional either:
 `prek run` otherwise judges only *staged* files, and with nothing staged every
 hook reports "(no files to check) Skipped", which reads exactly like a pass.
+
+**And `--all-files` means every file *git knows about*.** A brand-new module
+you have not `git add`-ed is untracked, so every hook silently skips it while
+still printing six green lines. A change that adds files is therefore not
+checked by the thing that reports it is checked -- `git add` first, or run
+`uv run ruff format --check .` and `uv run ruff check` directly, which do walk
+the working tree. Both `skip.py` and `test_skip.py` reached "all six hooks
+pass" while unformatted this way.
 
 ## Hard rules
 
@@ -96,9 +107,14 @@ hook reports "(no files to check) Skipped", which reads exactly like a pass.
 - **The package complies with its own rule.** `src/` and `tests/` are both
   clean under `cleanporter`; keep them that way -- write `from cleanporter
   import model` and `model.Status`, not `from cleanporter.model import Status`.
-  The sole exception is the public-API re-export block in `__init__.py`, which
-  the string-mention guard blocks and which is deliberately *not* silenced with
-  an `exclude`. Do not add one.
+  The sole exception is the public-API re-export block in `__init__.py`,
+  which is deliberately *not* silenced with an `exclude` or a `skip` rule. Do
+  not add one. It is held by the never-read guard -- nothing in `__init__.py`
+  reads those names, so rewriting the imports would only delete the public
+  surface -- and behind that by the string-mention guard, since the same names
+  appear in `__all__` as string literals. `cleanporter .` reports them as
+  `CP001` and exits 1; under `--fix` they become `CP003` and the file is left
+  byte-identical.
 - **`libcst` is the only runtime dependency.** Tooling belongs in a dependency
   group.
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `test:`, `perf:`,

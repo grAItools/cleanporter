@@ -55,6 +55,7 @@ source_roots = ["src"]
 exempt_modules = ["attrs"]
 exempt_names = ["annotations"]
 python = "/usr/bin/python3"
+skip = [{ decorator = 'gtx\\.field_operator', reason = "DSL body" }]
 """,
         )
     )
@@ -64,6 +65,9 @@ python = "/usr/bin/python3"
     assert cfg.source_roots == ("src",)
     assert cfg.python == "/usr/bin/python3"
     assert cfg.exempt_names == frozenset({"annotations"})
+    assert [(r.index, r.decorator, r.reason) for r in cfg.skip] == [
+        (1, r"gtx\.field_operator", "DSL body")
+    ]
 
 
 def test_exempt_modules_extends_rather_than_replaces_defaults(tmp_path):
@@ -103,6 +107,7 @@ _SAMPLES = {
     "scope": "first-party",
     "python": "/usr/bin/python3",
     "treat_unresolved_as_error": True,
+    "skip": [{"decorator": "gtx\\.field_operator"}],
 }
 
 
@@ -126,3 +131,92 @@ def test_every_known_key_reaches_the_config(tmp_path):
         assert getattr(parsed, key) != getattr(defaults, key), (
             f"tool.cleanporter.{key} is accepted by the parser but never reaches Config"
         )
+
+
+# -- skip rules --------------------------------------------------------------
+
+
+def _skip(tmp_path, table_body: str):
+    return config.load_config(_project(tmp_path, "[tool.cleanporter]\n" + table_body))
+
+
+def test_skip_defaults_to_no_rules(tmp_path):
+    assert config.load_config(_project(tmp_path)).skip == ()
+
+
+def test_skip_accepts_the_array_of_tables_spelling(tmp_path):
+    cfg = _skip(
+        tmp_path,
+        "\n[[tool.cleanporter.skip]]\ndecorator = 'program'\nreason = 'DSL'\n",
+    )
+    assert [(r.index, r.decorator, r.reason) for r in cfg.skip] == [(1, "program", "DSL")]
+
+
+def test_rules_are_numbered_from_one_in_order(tmp_path):
+    cfg = _skip(tmp_path, "skip = [{ file = 'a' }, { file = 'b' }, { file = 'c' }]\n")
+    assert [(r.index, r.file) for r in cfg.skip] == [(1, "a"), (2, "b"), (3, "c")]
+
+
+def test_skip_must_be_a_list(tmp_path):
+    with pytest.raises(config.ConfigError, match="must be a list of tables"):
+        _skip(tmp_path, "skip = 'everything'\n")
+
+
+def test_a_skip_element_must_be_a_table(tmp_path):
+    with pytest.raises(config.ConfigError, match=r"skip\[1\] must be a table"):
+        _skip(tmp_path, "skip = ['everything']\n")
+
+
+def test_an_empty_rule_is_rejected(tmp_path):
+    """It constrains nothing, so it would take the whole project."""
+    with pytest.raises(config.ConfigError, match="sets no matcher"):
+        _skip(tmp_path, "skip = [{}]\n")
+
+
+def test_a_rule_with_only_a_reason_is_rejected(tmp_path):
+    """`reason` is not a matcher, so this would skip everything silently."""
+    with pytest.raises(config.ConfigError, match="sets no matcher"):
+        _skip(tmp_path, "skip = [{ reason = 'just a note' }]\n")
+
+
+def test_an_unknown_rule_key_is_rejected(tmp_path):
+    with pytest.raises(config.ConfigError, match=r"unknown keys: \['module'\]"):
+        _skip(tmp_path, "skip = [{ module = 'pkg' }]\n")
+
+
+def test_a_non_string_rule_value_is_rejected(tmp_path):
+    with pytest.raises(config.ConfigError, match="file must be a string"):
+        _skip(tmp_path, "skip = [{ file = 3 }]\n")
+
+
+def test_two_name_keys_in_one_rule_are_rejected(tmp_path):
+    """They select mutually exclusive kinds, so the rule could never fire."""
+    with pytest.raises(config.ConfigError, match="more than one of"):
+        _skip(tmp_path, "skip = [{ class = 'X', method = 'y' }]\n")
+
+
+def test_a_name_key_may_be_combined_with_file_and_decorator(tmp_path):
+    cfg = _skip(tmp_path, "skip = [{ file = 'a', method = 'y', decorator = 'd' }]\n")
+    assert (cfg.skip[0].file, cfg.skip[0].name, cfg.skip[0].decorator) == ("a", "y", "d")
+    assert cfg.skip[0].name_key == "method"
+
+
+def test_an_uncompilable_pattern_is_rejected(tmp_path):
+    with pytest.raises(config.ConfigError, match="not a valid regex"):
+        _skip(tmp_path, "skip = [{ decorator = '(' }]\n")
+
+
+def test_a_reason_is_not_treated_as_a_pattern(tmp_path):
+    """It is free text, so an unbalanced bracket in it must not be an error."""
+    cfg = _skip(tmp_path, "skip = [{ file = 'a', reason = 'because ( of reasons' }]\n")
+    assert cfg.skip[0].reason == "because ( of reasons"
+
+
+def test_a_file_only_rule_takes_whole_files(tmp_path):
+    assert _skip(tmp_path, "skip = [{ file = 'a' }]\n").skip[0].whole_file
+
+
+def test_a_rule_naming_definitions_does_not_take_whole_files(tmp_path):
+    rules = _skip(tmp_path, "skip = [{ file = 'a', symbol = 's' }, { decorator = 'd' }]\n").skip
+    assert not rules[0].whole_file
+    assert not rules[1].whole_file

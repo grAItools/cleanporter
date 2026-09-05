@@ -55,7 +55,7 @@ def test_a_blocker_suppresses_otherwise_safe_rewrites_in_the_same_file():
 
 
 def test_blocker_finding_formats_as_cp003():
-    src = 'from pkg.sub.mod import Thing\n__all__ = ["Thing"]\n'
+    src = 'from pkg.sub.mod import Thing\n__all__ = ["Thing"]\nx = Thing()\n'
     (blocker,) = outcome(src).blockers
     assert blocker.code == "CP003"
     assert "file not rewritten" in blocker.format()
@@ -131,7 +131,7 @@ def test_two_mentions_of_the_same_name_on_one_line_dedup_to_one_blocker():
 
 
 def test_global_declaration_blocks_the_file():
-    src = "from pkg.sub.mod import Thing\ndef f():\n    global Thing\n    Thing = 3\n"
+    src = "from pkg.sub.mod import Thing\nx = Thing\ndef f():\n    global Thing\n    Thing = 3\n"
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -182,10 +182,20 @@ def test_collision_with_the_new_module_token_is_aliased_not_broken():
     assert "mod = 'a local string'" in result.source
 
 
-def test_import_never_referenced_is_still_removed():
-    result = outcome("from pkg.sub.mod import Thing\nx = 1\n")
-    assert result.status == "fixed"
-    assert "import Thing" not in result.source
+def test_import_never_read_in_the_file_is_kept():
+    """Rewriting it would remove a violation with no use site, and a binding.
+
+    Nothing in the file reads `Thing`, so qualifying it would change no call
+    site -- the rewrite's only effect would be to drop the name from this
+    module's namespace, where a pytest fixture, an entry point or an
+    `importlib` lookup may be reading it. Found in gt4py and icon4py, where
+    exactly this deleted the fixtures a test module imports by name.
+    """
+    src = "from pkg.sub.mod import Thing\nx = 1\n"
+    result = outcome(src)
+    assert result.status == "clean"
+    assert result.source == src
+    assert result.unread == frozenset({"Thing"})
 
 
 # -- fix round 1 (rebinding guard hygiene) -----------------------------------
@@ -644,7 +654,10 @@ def test_alias_in_lazy_annotation_is_renamed_by_local_name():
 
 
 def test_string_outside_an_annotation_still_blocks_under_future_annotations():
-    src = 'from __future__ import annotations\nfrom pkg.sub.mod import Thing\n__all__ = ["Thing"]\n'
+    src = (
+        "from __future__ import annotations\nfrom pkg.sub.mod import Thing\n"
+        '__all__ = ["Thing"]\nx = Thing()\n'
+    )
     result = outcome(src)
     assert result.status == "skipped"
     assert "string literal" in result.blockers[0].detail
@@ -747,6 +760,7 @@ def test_literal_string_argument_is_not_treated_as_a_type_reference():
         "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "from typing import Literal\n"
         "def g(a: Literal['Thing']) -> None: ...\n"
+        "def h(a: Thing) -> None: ...\n"
     )
     result = outcome(src)
     assert result.status == "skipped"
@@ -821,6 +835,7 @@ def test_fully_stringified_literal_annotation_blocks_payload_intact():
         "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "from typing import Literal\n"
         "def g(a: \"Literal['Thing']\") -> None: ...\n"
+        "def h(a: Thing) -> None: ...\n"
     )
     result = outcome(src)
     assert result.status == "skipped"
@@ -850,6 +865,7 @@ def test_fully_stringified_dotted_name_is_not_corrupted():
     src = (
         "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         'def g(a: "other.Thing") -> None: ...\n'
+        "def h(a: Thing) -> None: ...\n"
     )
     result = outcome(src)
     assert result.status == "skipped"
@@ -881,6 +897,7 @@ def test_unparseable_annotation_string_blocks_instead_of_guessing():
     src = (
         "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: 'Thing[') -> None: ...\n"
+        "def h(a: Thing) -> None: ...\n"
     )
     result = outcome(src)
     assert result.status == "skipped"
@@ -1428,14 +1445,14 @@ def test_a_bytes_literal_naming_the_symbol_still_blocks_the_file():
 
 def test_a_split_dunder_all_blocks_the_file():
     """`__all__ = "Thing go".split()` is a name list even though it is not code."""
-    src = 'from pkg.sub.mod import Thing, go\n__all__ = "Thing go".split()\n'
+    src = 'from pkg.sub.mod import Thing, go\n__all__ = "Thing go".split()\nx = Thing()\n'
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
 
 
 def test_a_dunder_all_built_by_extend_blocks_the_file():
-    src = 'from pkg.sub.mod import Thing\n__all__ = []\n__all__.extend(["Thing"])\n'
+    src = 'from pkg.sub.mod import Thing\n__all__ = []\n__all__.extend(["Thing"])\nx = Thing()\n'
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -1443,7 +1460,10 @@ def test_a_dunder_all_built_by_extend_blocks_the_file():
 
 def test_a_dunder_all_built_through_a_name_blocks_the_file():
     """`_EXPORTS = "Thing go".split()` + `__all__ = _EXPORTS` is still a name list."""
-    src = 'from pkg.sub.mod import Thing, go\n_EXPORTS = "Thing go".split()\n__all__ = _EXPORTS\n'
+    src = (
+        'from pkg.sub.mod import Thing, go\n_EXPORTS = "Thing go".split()\n'
+        "__all__ = _EXPORTS\nx = Thing()\n"
+    )
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
@@ -1454,8 +1474,237 @@ def test_an_indented_exec_payload_blocks_the_file():
     src = (
         "from pkg.sub.mod import Thing\n"
         'SRC = """\n    made = Thing()\n"""\n'
+        "y = Thing()\n"
         "def run():\n    exec(SRC)\n"
     )
     result = outcome(src)
     assert result.status == "skipped"
     assert result.source == src
+
+
+# -- [tool.cleanporter.skip] -------------------------------------------------
+#
+# The invariant these hold the fixer to: a skip can only ever *remove* a
+# rewrite. It never adds one, never alters one, and never relaxes a guard.
+
+
+def _rules(*tables: dict[str, str]) -> config_lib.Config:
+    return config_lib._parse_table({"skip": list(tables)}, FIXTURES)
+
+
+def outcome_with(source: str, cfg: config_lib.Config) -> rewrite.FixOutcome:
+    path = FIXTURES / "pkg" / "a.py"
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = resolver_lib.Resolver(mm)
+    rec = analyze.FileRecord(
+        path,
+        source,
+        cst.parse_module(source),
+        analyze.package_of(path, mm),
+        root=cfg.root,
+        skip_rules=cfg.skip,
+    )
+    resolver.warm(analyze.collect_pairs([rec]))
+    return rewrite.fix_record(rec, resolver, cfg)
+
+
+_DSL = """\
+from pkg.sub.mod import Thing, go
+
+
+@field_operator
+def op(a):
+    return Thing(a)
+
+
+def plain(a):
+    return go(a)
+"""
+
+
+def test_a_name_used_inside_a_skipped_region_is_not_rewritten():
+    result = outcome_with(_DSL, _rules({"decorator": "field_operator"}))
+    assert "Thing(a)" in result.source
+    assert "from pkg.sub.mod import Thing" in result.source
+
+
+def test_the_rest_of_the_same_file_is_still_fixed():
+    """Per-name, not per-file: a skip is not a licence to give up on the file."""
+    result = outcome_with(_DSL, _rules({"decorator": "field_operator"}))
+    assert result.status == "fixed"
+    assert "mod.go(a)" in result.source
+
+
+def test_every_line_inside_a_skipped_region_is_byte_identical():
+    """The invariant, asserted against the region the rule actually matched."""
+    cfg = _rules({"decorator": "field_operator"})
+    path = FIXTURES / "pkg" / "a.py"
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    rec = analyze.FileRecord(
+        path,
+        _DSL,
+        cst.parse_module(_DSL),
+        analyze.package_of(path, mm),
+        root=cfg.root,
+        skip_rules=cfg.skip,
+    )
+    (start, end, _rule) = rec.skipped.spans[0]
+    region = _DSL.splitlines()[start - 1 : end]
+    after = outcome_with(_DSL, cfg).source.splitlines()
+    # As a contiguous block, wherever it ended up: the rewrite above it adds a
+    # line, so the region moves down without any of it changing.
+    windows = [after[i : i + len(region)] for i in range(len(after) - len(region) + 1)]
+    assert region in windows, f"the skipped region was not reproduced verbatim: {region}"
+
+
+def test_a_file_rule_leaves_the_file_untouched():
+    result = outcome_with(_DSL, _rules({"file": r".*a\.py"}))
+    assert result.status == "clean"
+    assert result.source == _DSL
+
+
+def test_a_file_rule_that_does_not_match_changes_nothing():
+    result = outcome_with(_DSL, _rules({"file": r".*other\.py"}))
+    assert result.status == "fixed"
+    assert "mod.Thing(a)" in result.source
+
+
+def test_an_import_inside_a_skipped_function_is_left_alone():
+    src = "def outer():\n    from pkg.sub.mod import Thing\n    return Thing()\n"
+    result = outcome_with(src, _rules({"function": "outer"}))
+    assert result.status == "clean"
+    assert result.source == src
+
+
+def test_a_skip_only_ever_removes_rewrites():
+    """A rule can shrink what the fixer does to a name. It never grows it."""
+    with_rule = outcome_with(_DSL, _rules({"decorator": "field_operator"}))
+    without = outcome_with(_DSL, config_lib.Config(root=FIXTURES))
+    assert with_rule.fixed < without.fixed
+    assert "mod.Thing(a)" in without.source, "the plain fix does rewrite the skipped use"
+    assert "mod.go(a)" in with_rule.source, "and the rule leaves the other one alone"
+
+
+def test_keeping_a_name_can_unblock_the_rest_of_the_file():
+    """The honest limit of the invariant above -- a rule can change *more*.
+
+    Every whole-file guard is keyed on the set of names being rewritten, so
+    pinning `Thing` takes the `__all__` blocker with it and `go` is fixed. It
+    is sound -- `Thing` is still bound and `go` is not in `__all__` -- but it
+    is not "a skip only removes rewrites", and the docs say so.
+    """
+    src = (
+        "from pkg.sub.mod import Thing, go\n"
+        '__all__ = ["Thing"]\n\n\n'
+        "@field_operator\ndef op(a):\n    return Thing(a)\n\n\n"
+        "def plain(a):\n    return go(a)\n"
+    )
+    without = outcome_with(src, config_lib.Config(root=FIXTURES))
+    assert without.status == "skipped", "the __all__ guard blocks the whole file"
+
+    with_rule = outcome_with(src, _rules({"decorator": "field_operator"}))
+    assert with_rule.status == "fixed"
+    assert "mod.go(a)" in with_rule.source
+    assert '__all__ = ["Thing"]' in with_rule.source
+    assert "from pkg.sub.mod import Thing" in with_rule.source, "the __all__ name stays bound"
+
+
+# -- the region must survive the rewrite, strings included -------------------
+
+
+def test_a_lazy_annotation_inside_a_region_pins_its_name():
+    """A string annotation is the region's only mention, and not a `Name`.
+
+    Without harvesting names out of string content, `Field` is unpinned, the
+    import is rewritten, and the fixer's own annotation pass then edits the
+    annotation *inside* the region -- the one thing a skip promises cannot
+    happen.
+    """
+    src = (
+        "from __future__ import annotations\n"
+        "from pkg.sub.mod import Thing, go\n\n\n"
+        "@field_operator\ndef op(a: 'Thing') -> 'Thing':\n    return a\n\n\n"
+        "x = go()\n"
+    )
+    result = outcome_with(src, _rules({"decorator": "field_operator"}))
+    assert "def op(a: 'Thing') -> 'Thing':" in result.source
+    assert "from pkg.sub.mod import Thing" in result.source
+    assert "mod.go()" in result.source, "the name used only outside is still fixed"
+
+
+def test_a_rewrite_that_would_create_its_own_skipped_region_is_declined():
+    """A rule can match the spelling the fixer is about to write.
+
+    `mod.go` does not exist before the fix, so nothing is skipped and the body
+    is rewritten -- and the resulting `@mod.go` is then a region the config
+    declares off-limits, covering code that was just edited.
+    """
+    src = "from pkg.sub.mod import go, Thing\n\n\n@go\ndef op():\n    return Thing()\n"
+    result = outcome_with(src, _rules({"decorator": r"mod\.go"}))
+    assert result.status == "skipped"
+    assert result.source == src
+    assert "then covers" in result.blockers[0].detail
+    # The region's own start line is a line in the *rewritten* output, which
+    # is about to be thrown away. The finding must point into the file the
+    # reader actually has -- here line 1, the import the fix would have
+    # rewritten.
+    assert result.blockers[0].line == 1
+
+
+def test_a_form_feed_does_not_shift_the_region_comparison():
+    """`str.splitlines` breaks on characters libCST does not count as lines.
+
+    A form feed inside a string literal shifted every line number after it,
+    so the fixed-point check read a region's text from the wrong place and
+    declined a file whose region never moved. The mirror of that shift can
+    hide a region that really was created, so this is not cosmetic.
+    """
+    src = (
+        "from pkg.sub.mod import go\n"
+        'X = "\x0c\x0c\x0c"\n\n\n'
+        "def plain():\n    return go()\n\n\n"
+        "@field_operator\ndef op(a):\n    return a\n"
+    )
+    result = outcome_with(src, _rules({"decorator": "field_operator"}))
+    assert result.status == "fixed"
+    assert "mod.go()" in result.source
+    assert "@field_operator\ndef op(a):\n    return a\n" in result.source
+
+
+def test_a_rule_matching_before_and_after_is_not_declined():
+    """The check must not fire for the ordinary case, where nothing moved."""
+    result = outcome_with(_DSL, _rules({"decorator": "field_operator"}))
+    assert result.status == "fixed"
+
+
+# -- the never-read guard ----------------------------------------------------
+
+
+def test_a_fixture_imported_by_name_is_kept():
+    """The shape that deleted pytest fixtures in gt4py and icon4py.
+
+    `Thing` is read in the body, but that read binds to the *parameter*, not
+    to the import -- which is why this needs scope analysis and not a token
+    scan.
+    """
+    src = "from pkg.sub.mod import Thing\ndef test_it(Thing):\n    return Thing.x\n"
+    result = outcome_with(src, config_lib.Config(root=FIXTURES))
+    assert result.status == "clean"
+    assert result.source == src
+    assert result.unread == frozenset({"Thing"})
+
+
+def test_a_name_read_anywhere_is_still_rewritten():
+    src = "from pkg.sub.mod import Thing\nx = Thing()\n"
+    result = outcome_with(src, config_lib.Config(root=FIXTURES))
+    assert result.status == "fixed"
+    assert result.unread == frozenset()
+
+
+def test_only_the_unread_name_is_kept_on_a_mixed_line():
+    src = "from pkg.sub.mod import Thing, go\nx = go()\n"
+    result = outcome_with(src, config_lib.Config(root=FIXTURES))
+    assert result.status == "fixed"
+    assert "import Thing" in result.source
+    assert "mod.go()" in result.source
+    assert result.unread == frozenset({"Thing"})
