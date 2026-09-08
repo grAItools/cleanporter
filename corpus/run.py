@@ -38,6 +38,7 @@ unchanged.
     uv run corpus/run.py                 # install, fix, check
     uv run corpus/run.py --keep          # leave the trees for inspection
     uv run corpus/run.py --skip-install  # reuse an existing --work directory
+    uv run corpus/run.py --update        # repin packages.txt to the latest, then stop
 
 Exits 0 when the rewritten corpus behaves exactly like the original, 1 on a
 regression, 2 if the harness itself could not run.
@@ -50,10 +51,12 @@ import collections
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
 import textwrap
+import tomllib
 
 HERE = pathlib.Path(__file__).parent
 MANIFEST = HERE / "packages.txt"
@@ -76,6 +79,154 @@ _NO_RESULT = "NO RESULT"
 def _packages() -> list[str]:
     lines = MANIFEST.read_text(encoding="utf-8").splitlines()
     return [ln.strip() for ln in lines if ln.strip() and not ln.startswith("#")]
+
+
+#: A manifest line, split so that everything except the version can be put
+#: back exactly as it was: the name (with any extras), the pin, and whatever
+#: trailed it -- an environment marker, a comment, or both.
+_REQUIREMENT = re.compile(
+    r"^(?P<indent>\s*)(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?P<extras>\[[^\]]*\])?"
+    # The version may not start with `=`, so that `libcst===1.9.0` fails to
+    # match here and falls into the "not a simple pin" branch below instead of
+    # being quietly demoted to `==`.
+    r"(?:==(?P<version>[^\s;#=][^\s;#]*))?(?P<rest>.*)$"
+)
+
+#: What may follow a pin and still leave the line a simple one: nothing, an
+#: environment marker, or a comment. Whitespace before *anything else* is what
+#: makes ``libcst >= 1.9`` different from ``libcst>=1.9`` -- both are legal,
+#: and only the second one used to be caught.
+_TAIL_OK = re.compile(r"\s*([;#]|$)")
+
+
+def _canonical(name: str) -> str:
+    """PEP 503 normalisation, so ``Django`` and ``django`` are the same key."""
+    return re.sub(r"[-_.]+", "-", name.partition("[")[0]).lower()
+
+
+def _python_floor() -> str:
+    """The oldest Python this project supports, as ``X.Y``.
+
+    Pins are resolved *for that version* rather than for whichever interpreter
+    happens to run this script, so a bump cannot quietly pick a release whose
+    wheels require a newer Python than the corpus job -- or a contributor --
+    is running. Falls back to the running interpreter if `pyproject.toml`
+    stops saying.
+    """
+    try:
+        data = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+        match = re.search(r">=\s*(\d+\.\d+)", str(data["project"]["requires-python"]))
+    except (OSError, KeyError, ValueError):
+        match = None
+    return match.group(1) if match else f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def _resolve_latest(names: list[str], python_version: str) -> dict[str, str] | None:
+    """Latest version of each name, or None when the resolver could not answer.
+
+    ``--no-deps`` is what keeps this to the packages the manifest actually
+    names: the corpus lists direct choices, and their dependencies arrive on
+    their own (kombu with celery). Resolving them too would turn a curated
+    list of ten into a lock file of sixty.
+    """
+    proc = subprocess.run(
+        [
+            "uv",
+            "pip",
+            "compile",
+            "-",
+            "--no-deps",
+            "--no-header",
+            "--no-annotate",
+            "--quiet",
+            "--python-version",
+            python_version,
+        ],
+        input="\n".join(names),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        print(f"corpus: could not resolve the latest versions:\n{proc.stderr}", file=sys.stderr)
+        return None
+    resolved: dict[str, str] = {}
+    for line in proc.stdout.splitlines():
+        requirement = line.split("#", 1)[0].strip()
+        if "==" in requirement:
+            name, _, version = requirement.partition("==")
+            resolved[_canonical(name)] = version.strip()
+    return resolved
+
+
+def _rewrite_manifest(
+    text: str, resolved: dict[str, str]
+) -> tuple[str, list[tuple[str, str, str]]]:
+    """*text* with each pin replaced, plus the ``(name, old, new)`` that moved.
+
+    Comments, blank lines and the order of the file are preserved: the
+    manifest's grouping and the reasoning above it are the point of it, and a
+    bump should read as a column of version numbers changing and nothing
+    else. That extends to what follows a pin -- an environment marker or a
+    trailing comment is part of the line's meaning, so only the version
+    between them is touched. A line the resolver had no answer for is left
+    exactly as it is, and one it cannot parse says so rather than being
+    quietly skipped.
+    """
+    changes: list[tuple[str, str, str]] = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        requirement = line.strip()
+        if not requirement or requirement.startswith("#"):
+            continue
+        match = _REQUIREMENT.match(line)
+        # ``rest`` is what followed the version, and it may only be a marker or
+        # a comment. Anything else means the line uses a spelling this does not
+        # understand -- ``libcst>=1.9``, say, where writing a ``==`` pin in
+        # front of it would produce nonsense.
+        if match is None or not _TAIL_OK.match(match["rest"]):
+            print(f"corpus: leaving {requirement!r} alone; not a simple '==' pin")
+            continue
+        name = match["name"] + (match["extras"] or "")
+        new_version = resolved.get(_canonical(name))
+        if new_version is None or new_version == match["version"]:
+            continue
+        lines[index] = f"{match['indent']}{name}=={new_version}{match['rest']}"
+        changes.append((name, match["version"] or "unpinned", new_version))
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else ""), changes
+
+
+def _update_manifest() -> int:
+    """Repin `packages.txt` to the latest release of everything it names."""
+    # Named the way `_rewrite_manifest` names them, so a line it will refuse
+    # is not *also* reported as one the resolver had no answer for.
+    names = []
+    for requirement in _packages():
+        match = _REQUIREMENT.match(requirement)
+        names.append(match["name"] if match else requirement)
+    floor = _python_floor()
+    print(f"corpus: resolving the latest versions for python {floor} ...", flush=True)
+    resolved = _resolve_latest(names, floor)
+    if resolved is None:
+        return EXIT_ERROR
+    text = MANIFEST.read_text(encoding="utf-8")
+    updated, changes = _rewrite_manifest(text, resolved)
+    missing = [name for name in names if _canonical(name) not in resolved]
+    for name in missing:
+        print(f"corpus: no version resolved for {name!r}; left as it was", file=sys.stderr)
+    if not changes:
+        print(f"corpus: {MANIFEST.name} is already on the latest of all {len(names)} packages")
+        return EXIT_OK
+    width = max(len(name) for name, _, _ in changes)
+    for name, old, new in changes:
+        print(f"  {name:<{width}}  {old} -> {new}")
+    MANIFEST.write_text(updated, encoding="utf-8")
+    print(f"corpus: updated {MANIFEST}, {len(changes)} of {len(names)} package(s) moved")
+    # The manifest is the one input that makes a corpus result reproducible,
+    # so a bump gets its own commit -- otherwise a changed report has two
+    # possible causes and no way to tell them apart.
+    print("corpus: now run the check, and commit the bump on its own")
+    return EXIT_OK
 
 
 def _top_level_dirs(tree: pathlib.Path) -> list[pathlib.Path]:
@@ -320,7 +471,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-install", action="store_true", help="reuse the packages already in --work"
     )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        help=(
+            "repin packages.txt to the latest release of each package, then stop "
+            "(the flags above describe the run, so they do not apply)"
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.update:
+        return _update_manifest()
 
     work = pathlib.Path(args.work).resolve()
     original, rewritten = work / "original", work / "rewritten"

@@ -1,0 +1,158 @@
+name: gt4py
+
+# Rewrites a fresh checkout of gt4py's `main` with `cleanporter --fix` and
+# re-runs gt4py's own unit tests, failing only on a test that passed before and
+# fails after. See corpus/gt4py_check.py for what it does and why.
+#
+# This is the companion to the Corpus workflow, asking the opposite question.
+# The corpus is pinned so that a red run means *this* repository changed; here
+# the code moves and this repository does not, so a red run means the fixer has
+# met something new -- a construct, or a new spelling of an old one, that no
+# pinned wheel and no test here exercises. gt4py earns that treatment because
+# every unsafe-rewrite class in issue #2 came from it, and because those bugs
+# produce code that imports and parses: the fixer's own re-parse backstop
+# passes them, and only running the suite says otherwise.
+on:
+  schedule:
+    # Mondays at 02:23 UTC -- the night from Sunday to Monday in Europe, where
+    # this is maintained, and Sunday evening in the Americas. Off the hour on
+    # purpose: scheduled jobs at :00 queue behind everyone else's.
+    #
+    # Weekly, not daily like the corpus: the corpus is the check that has to
+    # catch a fixer regression within a day, because a week-wide window buries
+    # it under commits. This one cannot be bisected against this repository's
+    # history anyway -- upstream moved too -- so its job is to keep the answer
+    # from ever being more than a week stale, at the price of one long run.
+    - cron: "23 2 * * 1"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "gt4py ref to check out"
+        default: main
+      tests:
+        description: "test selection, relative to the gt4py checkout"
+        default: tests/next_tests/unit_tests
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gt4py:
+    name: Rewrite gt4py and run its tests
+    runs-on: ubuntu-latest
+    # Installing gt4py's environment (jax, scipy) and running its unit tests
+    # twice is the bulk of this; the default 360-minute cap would let a hang
+    # burn six hours of runner time before anyone noticed.
+    timeout-minutes: 120
+    steps:
+      # `persist-credentials: false` on both: this is the only job here that
+      # executes third-party code -- gt4py's `main` and 113 of its
+      # dependencies -- and there is no reason for the job's token to be
+      # sitting in a git config while it does.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # `path:` keeps the two checkouts apart. Depth 1 because nothing here
+      # looks at gt4py's history, only at its tree.
+      - name: Check out gt4py
+        uses: actions/checkout@v7
+        with:
+          repository: GridTools/gt4py
+          ref: ${{ inputs.ref || 'main' }}
+          path: gt4py
+          fetch-depth: 1
+          persist-credentials: false
+
+      # gt4py's lock is in the key too, and it is checked out above precisely
+      # so that it can be: keyed on this repository's lock alone, the cache
+      # would be written once and then never refreshed while gt4py's
+      # dependency set moved underneath it.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            gt4py/uv.lock
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      # gt4py's own environment, from its own lock file and its own
+      # `requires-python`. `next` is the extra that pulls what the tests under
+      # tests/next_tests need (jax, scipy, hypothesis, pytest).
+      #
+      # `--no-default-groups` matters: without it `uv sync` also installs
+      # gt4py's default `dev` group, which pulls sphinx, a linter stack and
+      # atlas4py -- none of it used here, and atlas4py has no wheel for every
+      # platform. Asking for `test` alone is 113 packages instead.
+      #
+      # `--frozen` uses their committed lock as-is. If it has drifted from
+      # their pyproject the job fails here, saying so -- which is the right
+      # shape of red: it names upstream's problem instead of re-resolving into
+      # a dependency set their own CI never tested.
+      - name: Install gt4py
+        working-directory: gt4py
+        run: uv sync --frozen --no-default-groups --extra next --group test
+
+      - name: Say which gt4py is being checked
+        working-directory: gt4py
+        run: |
+          echo "gt4py \`$(git rev-parse --short HEAD)\` ($(git log -1 --format=%cs))" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      # The script writes the `[tool.cleanporter.skip]` rules a gt4py user is
+      # expected to write before it rewrites anything -- without them the run
+      # would fail every week for a reason that is not a defect.
+      #
+      # `shell: bash` is not decoration: the default shell here is `bash -e`
+      # *without* pipefail, so a regression piped into `tee` would exit 0 and
+      # the job would pass while its own report said it had failed. The
+      # selection arrives through the environment rather than through `${{ }}`
+      # interpolation, so a dispatch input is an argument and never a command.
+      - name: Rewrite gt4py and compare its test results
+        shell: bash
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: |
+          uv run corpus/gt4py_check.py gt4py ${TESTS:+--tests "$TESTS"} | tee gt4py-report.txt
+
+      # A named failing test is only diagnosable next to the diff that
+      # produced it, and neither survives the runner.
+      - name: Collect the report and the diff
+        if: always()
+        shell: bash
+        run: |
+          git -C gt4py diff -- . ':!pyproject.toml' > gt4py.diff || true
+          if [ -s gt4py-report.txt ]; then
+            {
+              echo '```'
+              cat gt4py-report.txt
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the report, the diff and the test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gt4py-check
+          path: |
+            gt4py-report.txt
+            gt4py.diff
+            gt4py/.cleanporter-check/
+          # The logs live in a dot-directory on purpose -- that is what keeps
+          # cleanporter's own discovery from walking into them -- and
+          # upload-artifact skips hidden files unless told otherwise, so
+          # without this the step succeeds and silently uploads two of the
+          # three paths.
+          include-hidden-files: true
+          # A step that failed before the report existed should not fail the
+          # upload on top of it.
+          if-no-files-found: ignore
+          retention-days: 30

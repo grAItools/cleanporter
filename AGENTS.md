@@ -50,6 +50,8 @@ uv run prek run --all-files               # every blocking hook: the above six
 uv run --group docs zensical build        # docs build (`serve` for a live preview)
 uv run corpus/run.py                      # rewrite real packages, run them; --skip-install
                                           #   reuses an installed corpus (~30-45 min)
+uv run corpus/run.py --update             # repin corpus/packages.txt to the latest, then stop
+uv run corpus/gt4py_check.py PATH         # rewrite a gt4py checkout, re-run its tests
 ```
 
 No type checker takes a path: each reads its scope from `pyproject.toml`, so
@@ -88,7 +90,11 @@ pass" while unformatted this way.
   third-party packages, then *imports and runs* them. Every fixer safety bug so
   far surfaced there and not in `tests/`: they do not fail a parse, so the
   fixer's own re-parse backstop passes them. CI runs it daily, not per-PR, so
-  nothing else will catch these for you.
+  nothing else will catch these for you. `corpus/gt4py_check.py` is the same
+  check against a *moving* upstream -- a gt4py checkout, rewritten and then
+  running its own suite. CI runs it weekly on Mondays (`gt4py.yml`), and the
+  Actions tab can run it on demand; locally it needs a gt4py checkout with its
+  own environment installed, which is why it is not part of the reflex above.
 - **The two ruff pins must agree.** `uv run ruff check` uses `uv.lock`'s copy;
   the git hook, and so CI, uses the one built from `rev:` in
   `.pre-commit-config.yaml`. `tests/test_toolchain_pins.py` asserts they match.

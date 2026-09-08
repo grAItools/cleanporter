@@ -16,6 +16,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A weekly gt4py check** (`corpus/gt4py_check.py`, `.github/workflows/gt4py.yml`,
+  Mondays at 02:23 UTC and on dispatch). It checks out gt4py's `main`, writes
+  the `[tool.cleanporter.skip]` rules a gt4py user is expected to write, runs
+  `--fix` over the checkout and re-runs gt4py's own unit tests, failing only on
+  a test that passed before and fails after — or on a test that stopped being
+  collected, which a comparison of failures alone would read as an improvement.
+
+  The corpus is pinned so that a red run means *this* repository changed; this
+  asks the opposite question, against code that moves. gt4py earns it because
+  every unsafe-rewrite class in issue #2 came from there, and because those bugs
+  produce code that imports and parses — the fixer's own re-parse backstop
+  passes them, and only running the suite says otherwise.
+
+- **`corpus/run.py --update`**, which repins `packages.txt` to the latest
+  release of every package it names and stops there. Resolution is against the
+  floor of `requires-python` rather than the interpreter you happen to run it
+  on, so a bump cannot pick a version of a named package that the oldest
+  supported Python cannot install — their dependencies are settled by the
+  install that follows, which is what running the check afterwards is for.
+  Comments, environment markers and file order are preserved, so a bump reads
+  as a column of version numbers changing, and a line that is not a simple
+  `==` pin is reported rather than quietly skipped. It does not go on to run
+  the check: a bump belongs in its own commit, or a changed corpus report has
+  two possible causes.
+
 - **`[tool.cleanporter.skip]`: regions you declare off-limits.** A list of rule
   tables matching on `file`, `function`, `method`, `class`, `symbol`,
   `decorator` (AND within a table, OR across the list), each with an optional

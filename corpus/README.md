@@ -7,6 +7,7 @@ the rewritten code then imported and executed to check that nothing moved.
 uv run corpus/run.py                 # install, fix, check  (~30-45 min)
 uv run corpus/run.py --keep          # leave both trees for inspection
 uv run corpus/run.py --skip-install  # reuse an already-installed corpus
+uv run corpus/run.py --update        # repin packages.txt to the latest, then stop
 ```
 
 Exit `0` when the rewrite changed no observable behaviour, `1` on a
@@ -63,6 +64,20 @@ namespace-ish layouts and plain flat modules.
 Adding a package that ships its own tests is worth several that do not; list it
 in `BUNDLED_SUITES` in `run.py` to have that suite run.
 
+`--update` repins every package to its latest release and stops there — the
+other flags describe the run, so they do not apply. It resolves against the
+*floor* of this project's `requires-python` rather than whichever interpreter
+you happen to run it on, so a bump cannot pick a version of a *named* package
+that the oldest supported Python cannot install. Its dependencies are resolved
+by the install that follows, not here, so they can still surprise you; that is
+what running the check afterwards is for.
+
+Comments, environment markers and the order of the file are preserved, so the
+diff is a column of version numbers and nothing else, and a line that is not a
+simple `==` pin is reported rather than quietly skipped. `--update`
+deliberately does not go on to run the check: a bump belongs in its own commit,
+or a changed report has two possible causes and no way to tell them apart.
+
 ## In CI
 
 `.github/workflows/corpus.yml`, daily at 04:17 UTC and on manual dispatch — not
@@ -78,3 +93,43 @@ before anything reports it.
 
 Run it by hand from the Actions tab before merging anything that touches the
 resolver, the guards or the fixer.
+
+## The weekly gt4py check
+
+`gt4py_check.py`, run by `.github/workflows/gt4py.yml` on Mondays at 02:23 UTC
+and on manual dispatch. Same shape as the corpus — rewrite real code, then run
+it, and count only failures that are *new* — pointed at a checkout of
+[gt4py](https://github.com/GridTools/gt4py)'s `main` instead of at pinned
+wheels.
+
+```bash
+uv run corpus/gt4py_check.py /path/to/gt4py          # its .venv must exist
+uv run corpus/gt4py_check.py /path/to/gt4py --tests tests/next_tests/unit_tests
+```
+
+The two ask opposite questions. The corpus is pinned so that a red run means
+*this* repository changed; here the code moves and this repository does not, so
+a red run means the fixer has met something new. gt4py earns the separate check
+because every unsafe-rewrite class in issue #2 came from it, and because those
+bugs produce code that imports and parses — the fixer's own re-parse backstop
+passes them, and only running the suite says otherwise.
+
+It writes the `[tool.cleanporter.skip]` rules a gt4py user is expected to write
+(a DSL body under `@field_operator` is re-parsed by gt4py's own frontend; a
+`conftest.py` namespace *is* pytest's fixture registry) before rewriting
+anything.
+
+Three things it refuses to run on, all of them ways a check like this can
+report success having proved nothing: an interpreter that imports gt4py from
+anywhere but source inside the checkout (an installed copy is not what gets
+rewritten), a checkout with local modifications (a previous run's rewrite would
+be part of the baseline — re-clone, or `git checkout .`), and a `--fix` that
+rewrote nothing under `src/` or the selection (both runs then exercised the
+same code). Each exits 2. Without them the run would fail every week for a reason that is not a
+defect, which is the fastest way to teach everyone to ignore it. A checkout that
+already configures cleanporter is left alone, since its own rules would then be
+the ones worth testing.
+
+Weekly rather than daily: this one cannot be bisected against this
+repository's history anyway — upstream moved too — so its job is to keep the
+answer from ever being more than a week stale.
