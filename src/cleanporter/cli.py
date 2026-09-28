@@ -37,6 +37,11 @@ _CROSS_FILE_NOTE = (
     "cleanporter: note: --fix cannot see dotted references from other files; re-run your tests"
 )
 
+#: `--whole-project` with no pyproject.toml to say where the project starts.
+_NO_PROJECT = (
+    "--whole-project needs a pyproject.toml to mark the project root; none is above any listed path"
+)
+
 _EXIT_ERROR = 2  # the rest of the exit-code rule is `engine.RunResult.exit_code`
 
 
@@ -104,6 +109,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--strict", action="store_true", help="also fail on imports that could not be classified"
     )
     parser.add_argument(
+        "--whole-project",
+        action="store_true",
+        help="analyse the whole project (the directory of pyproject.toml) for evidence, but "
+        "fix, report and count only the given paths; for pre-commit, which passes only "
+        "changed files",
+    )
+    parser.add_argument(
         "--show-skipped",
         action="store_true",
         help="list the imports a [tool.cleanporter.skip] rule took out (CP004)",
@@ -153,8 +165,76 @@ class _Printer(engine.Listener):
             print(f"fixed: {patch.path}", file=self._report)
 
 
+def _project_anchor(
+    paths: list[pathlib.Path],
+) -> tuple[pathlib.Path, list[pathlib.Path]] | str:
+    """For `--whole-project`: the project directory, and *paths* with its path first.
+
+    Each listed path's nearest pyproject.toml is looked up from the path as
+    written, not from a symlink's target. Every path that has one must share
+    it: that is the project, whatever order pre-commit lists files in. Two
+    projects are refused, not reconciled: whichever was picked, a file of the
+    other would be judged on evidence that is not its own project's. A path
+    under none is not placed here; the engine refuses it, and any symlink
+    leading out of the project, as outside the root (`engine.run`).
+
+    The project's first path goes first because the engine names the first
+    path's configuration in its mismatch warning. Returns the error message
+    when there is no project, or more than one.
+    """
+    owners: dict[pathlib.Path, list[pathlib.Path]] = {}
+    for path in paths:
+        pyproject = config_lib.find_pyproject(path, resolve=False)
+        if pyproject is None:
+            continue
+        # Two spellings of one file (a case-insensitive filesystem) agree.
+        same = next((known for known in owners if known.samefile(pyproject)), pyproject)
+        owners.setdefault(same, []).append(path)
+    if not owners:
+        return _NO_PROJECT
+    if len(owners) > 1:
+        return _several_projects(owners)
+    [(pyproject, listed)] = owners.items()
+    first = listed[0]
+    return pyproject.parent, [first, *(p for p in paths if p is not first)]
+
+
+def _relative(path: pathlib.Path) -> str:
+    """*path* relative to the cwd when it is under it, else as it is."""
+    try:
+        return str(path.relative_to(pathlib.Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
+def _several_projects(owners: dict[pathlib.Path, list[pathlib.Path]]) -> str:
+    """The `--whole-project` refusal for listed paths from several projects."""
+    shown = 3
+    projects = "; ".join(
+        f"{_relative(pyproject)} ({', '.join(str(p) for p in listed[:shown])}"
+        + (f" and {len(listed) - shown} more" if len(listed) > shown else "")
+        + ")"
+        for pyproject, listed in owners.items()
+    )
+    return (
+        f"--whole-project judges one project per run; these paths span {len(owners)}: "
+        f"{projects}. Give each project its own hook entry (`files:`), or `exclude:` a "
+        "nested one"
+    )
+
+
 def run(args: argparse.Namespace) -> int:
-    anchor = pathlib.Path(args.paths[0]).resolve()
+    paths = [pathlib.Path(p) for p in args.paths]
+    anchor = paths[0].resolve()
+    if args.whole_project:
+        found = _project_anchor(paths)
+        if isinstance(found, str):
+            # With none, the "project" would be the first path's directory: a
+            # partial tree presented as the whole, which the flag exists to
+            # avoid. With several, any one of them is.
+            print(f"cleanporter: error: {found}", file=sys.stderr)
+            return _EXIT_ERROR
+        anchor, paths = found
     try:
         config = _apply_overrides(config_lib.load_config(anchor), args)
     except config_lib.ConfigError as exc:
@@ -165,8 +245,9 @@ def run(args: argparse.Namespace) -> int:
     # Everything that is not the patch -- warnings, parse errors, findings, the
     # summary -- goes here; see the stream contract in the module docstring.
     report = sys.stdout if mode is engine.Mode.CHECK else sys.stderr
-    paths = [pathlib.Path(p) for p in args.paths]
-    result = engine.run(paths, config, mode, listener=_Printer(report))
+    result = engine.run(
+        paths, config, mode, listener=_Printer(report), whole_project=args.whole_project
+    )
 
     if result.wrote:
         # The one place the tool changes something it cannot fully check: a

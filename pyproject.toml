@@ -45,6 +45,9 @@ dev = [
     "zuban>=0.9.2",
     "pyrefly>=1.2",
     "prek>=0.5",
+    # Parses .pre-commit-hooks.yaml in tests/test_whole_project.py. Not left to
+    # libcst: on 3.13 it depends on pyyaml-ft (`yaml_ft`) instead.
+    "pyyaml>=6.0",
 ]
 docs = ["zensical>=0.0.57"]
 

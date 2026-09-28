@@ -91,6 +91,21 @@ decorator = 'field_operator|scan_operator|program'
 reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
 ```
 
+## pre-commit
+
+```yaml
+repos:
+  - repo: https://github.com/grAItools/cleanporter
+    rev: vX.Y.Z  # a release tag
+    hooks:
+      - id: cleanporter        # or cleanporter-fix, to rewrite
+```
+
+The hooks run with `--whole-project`: a changed file is judged on the evidence
+of a full run over its `pyproject.toml` root, and only the changed files are
+reported. See
+[pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -129,6 +144,8 @@ Full documentation lives at **<https://graitools.github.io/cleanporter/>**:
 
 - [Usage](https://graitools.github.io/cleanporter/usage/) — every flag, the
   finding and exit codes, and CI/`git apply`/sweep workflows.
+- [pre-commit](https://graitools.github.io/cleanporter/pre-commit/) — the
+  `cleanporter` and `cleanporter-fix` hooks, and why they read the whole tree.
 - [Library API](https://graitools.github.io/cleanporter/library/) — a whole
   run from Python: `cleanporter.run`, `RunResult` and `Project`.
 - [Configuration](https://graitools.github.io/cleanporter/configuration/) — the
