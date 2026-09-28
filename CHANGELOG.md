@@ -30,15 +30,18 @@ Breaking under the pre-1.0 policy above:
   `pipx` or `uv tool`, cleanporter runs in an environment without the target
   project's dependencies, so every third-party import used to come back
   `CP002` unless you knew about `--python`. Now, when no interpreter is named,
-  the probe uses the first executable interpreter of `$VIRTUAL_ENV`, then
-  `$UV_PROJECT_ENVIRONMENT` (relative to the project root), then the `.venv`
-  beside the `pyproject.toml` in use (or the first path's directory when there
-  is none); a candidate that is missing or not executable is passed over
-  silently, and nothing else — no `uv` subprocess, no `PATH` search — is
-  consulted. The pick is probed out of process, as if passed with `--python`,
-  unless it is cleanporter's own `sys.executable`, and a one-line
-  `cleanporter: note:` on stderr names it and says why (in `RunResult.notes`,
-  and `Listener.note`, for library callers). Detection only chooses which
+  the probe uses the first executable interpreter found, in uv's order:
+  `$UV_PROJECT_ENVIRONMENT`, then `.venv`, at the project root (the directory
+  of the `pyproject.toml` in use, or the first path's directory when there is
+  none), then the same at the uv workspace root when the project is a member
+  of one, then `$VIRTUAL_ENV`. A candidate that is missing or not executable
+  is passed over silently, and nothing else — no `uv` subprocess, no `PATH`
+  search, no conda — is consulted. The pick is probed out of process, as if
+  passed with `--python`, unless it is cleanporter's own environment (its
+  `sys.executable`, or its `sys.prefix` venv), and a one-line
+  `cleanporter: note:` on stderr names it and says why, including an active
+  `$VIRTUAL_ENV` it passed over (in `RunResult.notes`, and `Listener.note`,
+  for library callers). Detection only chooses which
   environment answers: one lacking a package, or unable to run, leaves the
   import `CP002`, never an optimistic verdict. `python`/`--python` accept
   `auto` (detect; the default) and `self` (cleanporter's own, in process)

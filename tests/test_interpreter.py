@@ -15,13 +15,6 @@ from cleanporter import _interpreter, cli, config, engine, model
 posix_only = pytest.mark.skipif(os.name != "posix", reason="uses bin/python venv layouts")
 
 
-@pytest.fixture(autouse=True)
-def _no_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Detection reads these; the suite's own (``uv run`` sets one) must not leak in."""
-    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
-
-
 def _fake_venv(venv_dir: pathlib.Path) -> pathlib.Path:
     """A venv layout whose interpreter is a symlink to this one, so it really runs."""
     python = venv_dir / "bin" / "python"
@@ -102,19 +95,42 @@ def test_the_projects_dot_venv_is_detected(tmp_path, setting):
     assert choice.python == str(python)
     assert choice.note is not None
     assert str(python) in choice.note
-    assert f"the .venv in {tmp_path}" in choice.note
+    assert f"the .venv in the project root {tmp_path}" in choice.note
     assert "python = 'self'" in choice.note
 
 
 @posix_only
-def test_virtual_env_is_detected_before_the_dot_venv(tmp_path, monkeypatch):
-    _fake_venv(tmp_path / ".venv")
-    active = _fake_venv(tmp_path / "elsewhere")
+def test_the_projects_dot_venv_wins_over_an_active_virtual_env(tmp_path, monkeypatch):
+    """uv's order: a stale activated shell does not pick the project's packages."""
+    project = _fake_venv(tmp_path / ".venv")
+    _fake_venv(tmp_path / "elsewhere")
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "elsewhere"))
     choice = _interpreter.choose(None, tmp_path)
+    assert choice.python == str(project)
+    assert choice.note is not None
+    assert f"not from the active $VIRTUAL_ENV {tmp_path / 'elsewhere'}" in choice.note
+
+
+@posix_only
+def test_virtual_env_is_used_when_the_project_has_no_environment(tmp_path, monkeypatch):
+    active = _fake_venv(tmp_path / "elsewhere")
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "elsewhere"))
+    choice = _interpreter.choose(None, tmp_path / "proj")
     assert choice.python == str(active)
     assert choice.note is not None
-    assert "$VIRTUAL_ENV" in choice.note
+    assert "found from $VIRTUAL_ENV;" in choice.note
+    assert "not from the active" not in choice.note
+
+
+@posix_only
+def test_an_active_virtual_env_that_is_the_projects_is_not_called_passed_over(
+    tmp_path, monkeypatch
+):
+    _fake_venv(tmp_path / ".venv")
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / ".venv"))
+    note = _interpreter.choose(None, tmp_path).note
+    assert note is not None
+    assert "not from the active" not in note
 
 
 @posix_only
@@ -130,12 +146,12 @@ def test_uv_project_environment_is_read_against_the_root(tmp_path, monkeypatch):
 
 
 @posix_only
-def test_virtual_env_is_detected_before_uv_project_environment(tmp_path, monkeypatch):
-    active = _fake_venv(tmp_path / "active")
-    _fake_venv(tmp_path / "uv")
+def test_uv_project_environment_wins_over_an_active_virtual_env(tmp_path, monkeypatch):
+    _fake_venv(tmp_path / "active")
+    uv_env = _fake_venv(tmp_path / "uv")
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "active"))
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "uv"))
-    assert _interpreter.choose(None, tmp_path).python == str(active)
+    assert _interpreter.choose(None, tmp_path).python == str(uv_env)
 
 
 @posix_only
@@ -170,6 +186,118 @@ def test_detecting_cleanporters_own_interpreter_stays_in_process(tmp_path, monke
     assert _interpreter.choose(None, tmp_path) == _interpreter.Choice(None)
 
 
+def _running_in(monkeypatch: pytest.MonkeyPatch, venv_dir: pathlib.Path) -> None:
+    """Pretend cleanporter runs as *venv_dir*'s ``bin/python3`` (``uv run python``)."""
+    monkeypatch.setattr(sys, "executable", str(venv_dir / "bin" / "python3"))
+    monkeypatch.setattr(sys, "prefix", str(venv_dir))
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+
+
+@posix_only
+def test_a_detected_venv_that_is_sys_prefix_stays_in_process(tmp_path, monkeypatch):
+    """``bin/python3`` running, ``bin/python`` detected: one environment, no note."""
+    _fake_venv(tmp_path / ".venv")
+    _running_in(monkeypatch, tmp_path / ".venv")
+    assert _interpreter.choose(None, tmp_path) == _interpreter.Choice(None)
+
+
+@posix_only
+def test_the_prefix_rule_is_not_applied_to_a_named_interpreter(tmp_path, monkeypatch):
+    """A name keeps the strict path-identity rule: a miss costs a subprocess, nothing else."""
+    python = _fake_venv(tmp_path / ".venv")
+    _running_in(monkeypatch, tmp_path / ".venv")
+    assert _interpreter.choose(str(python), tmp_path).python == str(python)
+
+
+@posix_only
+def test_the_prefix_rule_needs_a_virtual_environment(tmp_path, monkeypatch):
+    """Outside a venv ``sys.prefix`` is a base install, which a detected venv never is."""
+    python = _fake_venv(tmp_path / ".venv")
+    _running_in(monkeypatch, tmp_path / ".venv")
+    monkeypatch.setattr(sys, "base_prefix", str(tmp_path / ".venv"))
+    assert _interpreter.choose(None, tmp_path).python == str(python)
+
+
+# -- choose: uv workspaces ----------------------------------------------------------
+
+
+def _workspace(tmp_path: pathlib.Path, table: str) -> pathlib.Path:
+    """A workspace root at *tmp_path* declaring *table*, with a member ``packages/app``."""
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\nname = "ws"\n[tool.uv.workspace]\n{table}\n', encoding="utf-8"
+    )
+    member = tmp_path / "packages" / "app"
+    member.mkdir(parents=True)
+    (member / "pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    return member
+
+
+@posix_only
+@pytest.mark.parametrize("members", ['["packages/*"]', '["packages/app"]', '["**"]'])
+def test_a_workspace_members_environment_is_the_workspace_roots(tmp_path, members):
+    member = _workspace(tmp_path, f"members = {members}")
+    python = _fake_venv(tmp_path / ".venv")
+    choice = _interpreter.choose(None, member)
+    assert choice.python == str(python)
+    assert choice.note is not None
+    assert f"the .venv in the uv workspace root {tmp_path}" in choice.note
+
+
+@posix_only
+def test_uv_project_environment_is_read_against_the_workspace_root(tmp_path, monkeypatch):
+    member = _workspace(tmp_path, 'members = ["packages/*"]')
+    python = _fake_venv(tmp_path / "envs" / "ws")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "envs/ws")
+    assert _interpreter.choose(None, member).python == str(python)
+
+
+@posix_only
+def test_a_members_own_dot_venv_is_tried_first(tmp_path):
+    member = _workspace(tmp_path, 'members = ["packages/*"]')
+    _fake_venv(tmp_path / ".venv")
+    own = _fake_venv(member / ".venv")
+    assert _interpreter.choose(None, member).python == str(own)
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "table",
+    [
+        'members = ["libs/*"]',  # not a member
+        'members = ["*"]',  # `*` does not cross a `/`
+        'members = ["packages/*"]\nexclude = ["packages/app"]',
+        "",  # no members at all
+    ],
+)
+def test_a_project_that_is_not_a_member_does_not_use_the_workspace(tmp_path, table):
+    member = _workspace(tmp_path, table)
+    _fake_venv(tmp_path / ".venv")
+    assert _interpreter.choose(None, member) == _interpreter.Choice(None)
+
+
+@posix_only
+def test_the_workspace_walk_stops_at_the_nearest_declaring_ancestor(tmp_path):
+    """A non-matching inner workspace hides an outer one that would match."""
+    outer_member = _workspace(tmp_path, 'members = ["**"]')
+    (outer_member / "pyproject.toml").write_text(
+        '[project]\nname = "app"\n[tool.uv.workspace]\nmembers = ["other/*"]\n',
+        encoding="utf-8",
+    )
+    project = outer_member / "sub"
+    project.mkdir()
+    _fake_venv(tmp_path / ".venv")
+    assert _interpreter.choose(None, project) == _interpreter.Choice(None)
+
+
+@posix_only
+def test_an_unreadable_ancestor_pyproject_is_passed_over(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("this is [not toml", encoding="utf-8")
+    project = tmp_path / "proj"
+    project.mkdir()
+    _fake_venv(tmp_path / ".venv")
+    assert _interpreter.choose(None, project) == _interpreter.Choice(None)
+
+
 # -- config and command line ------------------------------------------------------
 
 
@@ -181,8 +309,16 @@ def test_the_sentinels_are_not_anchored_as_paths(tmp_path, value):
     assert config.load_config(tmp_path).python == value
 
 
-def test_the_default_config_detects():
+@posix_only
+def test_the_default_config_detects(tmp_path):
+    """No key, no flag: a run under a plain `Config` probes the project's `.venv`."""
     assert config.Config().python is None
+    python = _stub_venv(tmp_path / ".venv")
+    (tmp_path / "app.py").write_text("from functools import partial\n", encoding="utf-8")
+    result = engine.run([tmp_path / "app.py"], config.Config(root=tmp_path))
+    assert len(result.notes) == 1
+    assert str(python) in result.notes[0]
+    assert any(f"interpreter probe '{python}'" in w for w in result.warnings)
 
 
 _PROJECT = '[project]\nname = "demo"\nversion = "0"\n'
@@ -311,3 +447,13 @@ def test_a_package_only_the_project_has_is_classified_through_detection(tmp_path
     own = engine.run([tmp_path / "app.py"], config.Config(root=tmp_path, python="self"))
     assert [f.status for f in own.findings] == [model.Status.UNRESOLVED]
     assert own.notes == ()
+
+
+# -- the corpus harness ----------------------------------------------------------
+
+
+def test_the_corpus_harness_keeps_the_probe_in_process():
+    """Its corpus is importable only through the cwd, so detection must not move it."""
+    harness = pathlib.Path(__file__).resolve().parents[1] / "corpus" / "run.py"
+    text = harness.read_text(encoding="utf-8")
+    assert '"-m", "cleanporter", "--fix", "--python", "self", "."' in text

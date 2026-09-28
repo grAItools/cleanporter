@@ -14,22 +14,33 @@ command line's ``--python``) into the interpreter the resolver is given:
   the probe's failure to report, as it always was;
 * ``"self"`` is cleanporter's own interpreter, in process (the behaviour
   before detection existed);
-* ``None`` (the key absent) or ``"auto"`` detects, trying in order
+* ``None`` (the key absent) or ``"auto"`` detects. The order is uv's: the
+  *project's* environment first, an activated one only when the project has
+  none, so a shell that still has some other environment activated does not
+  decide which packages the project is checked against. In order:
 
-  1. ``$VIRTUAL_ENV`` -- an activated environment, and what ``uv run`` sets;
-  2. ``$UV_PROJECT_ENVIRONMENT`` -- where uv keeps the project environment
-     when it is told not to use ``.venv``; a relative value is read against
-     the project root, as uv reads it against the workspace root;
-  3. ``.venv`` in the project root -- the directory of the ``pyproject.toml``
-     in use, or the discovery root when there is none (`config.Config.root`).
+  1. ``$UV_PROJECT_ENVIRONMENT`` -- where uv keeps the project environment
+     when told not to use ``.venv``; a relative value is read against the
+     project root;
+  2. ``.venv`` in the project root -- the directory of the ``pyproject.toml``
+     in use, or the first path's directory when there is none
+     (`config.Config.root`);
+  3. the same two against the **uv workspace root**, when the project is a
+     member of one: the nearest ancestor whose ``pyproject.toml`` has a
+     ``[tool.uv.workspace]`` table, provided its ``members`` globs match the
+     project root and its ``exclude`` globs do not -- uv's own rule, and the
+     directory uv keeps a member's environment in;
+  4. ``$VIRTUAL_ENV`` -- an activated environment.
 
   The first candidate whose interpreter (``bin/python``, or
   ``Scripts\python.exe`` on Windows) is an executable file wins. A candidate
   that is not one is passed over without a word: detection is a search, not
   a request, so an unset variable and a stale one are the same miss. Nothing
-  else is consulted -- no ``uv`` subprocess, no ``PATH`` search, no walk up
-  the tree -- so the choice is cheap and depends only on the environment
-  variables and the project root. Finding nothing leaves cleanporter's own
+  else is consulted -- no ``uv`` subprocess, no ``PATH`` search, no conda
+  (``$CONDA_PREFIX``), and no walk up the tree beyond the one workspace
+  lookup, which stops at the first ancestor declaring a workspace -- so the
+  choice is cheap and depends only on two environment variables and the
+  project's directories. Finding nothing leaves cleanporter's own
   interpreter, exactly as ``"self"`` would.
 
 Detection only decides *which* environment the probe asks; it never adds an
@@ -39,20 +50,29 @@ closed with a warning (`resolver`), so the worst a pick without the
 project's packages can do is leave imports unresolved, as not detecting did.
 Every answer it does give is proven in the environment the note names.
 
-When the detected interpreter *is* cleanporter's own (`is_this_interpreter`:
-the ``uv run cleanporter`` case, from the project's environment) the probe
-stays in process and there is nothing to say. Any other pick is probed in a
-subprocess, as if it had been named with ``--python``, and `Choice.note`
-says which interpreter was picked and why, so a run's verdicts can always be
-traced to the environment that gave them.
+When the detected environment *is* the one cleanporter runs in, the probe
+stays in process and there is nothing to say: either its interpreter is
+cleanporter's own by path (`is_this_interpreter`), or -- detection only --
+its directory is cleanporter's ``sys.prefix`` and that is a virtual
+environment. The second covers ``uv run python -m cleanporter``, whose
+``sys.executable`` is the venv's ``bin/python3`` rather than the
+``bin/python`` detection looks for: two names in one environment's ``bin``,
+found through the same ``pyvenv.cfg``, so the same ``sys.path``. It is not
+applied to a named interpreter, which keeps the stricter rule. Any other
+pick is probed in a subprocess, as if it had been named with ``--python``,
+and `Choice.note` says which interpreter was picked and why -- and, when an
+activated ``$VIRTUAL_ENV`` was passed over for the project's own, that too --
+so a run's verdicts can always be traced to the environment that gave them.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import os
 import pathlib
 import sys
+import tomllib
 
 #: ``python`` value: detect the project's interpreter (what an absent key does).
 AUTO = "auto"
@@ -105,6 +125,18 @@ def is_this_interpreter(python: str) -> bool:
     return str(pathlib.Path(python).absolute()) == sys.executable
 
 
+def _is_this_environment(venv: pathlib.Path) -> bool:
+    """Whether the virtual environment at *venv* is the one cleanporter runs in.
+
+    Only for a *detected* environment (see the module docstring): its
+    directory, made absolute with no symlink resolved and no ``..`` collapsed,
+    is ``sys.prefix``, and ``sys.prefix`` is a virtual environment's.
+    """
+    if sys.prefix == sys.base_prefix or ".." in venv.parts:
+        return False
+    return str(venv.absolute()) == sys.prefix
+
+
 def choose(python: str | None, root: pathlib.Path) -> Choice:
     """The interpreter for a ``python`` setting of *python* in the project at *root*.
 
@@ -119,29 +151,104 @@ def choose(python: str | None, root: pathlib.Path) -> Choice:
         if not _is_executable_file(candidate):
             continue
         found = str(candidate)
-        if is_this_interpreter(found):
+        if is_this_interpreter(found) or _is_this_environment(venv):
             return Choice(None)
-        return Choice(
-            found,
-            note=(
-                f"classifying stdlib and third-party imports with {found}, found from {why}; "
-                f"set python = {SELF!r} (--python {SELF}) to use cleanporter's own interpreter"
-            ),
-        )
+        return Choice(found, note=_note(found, why, venv))
     return Choice(None)
+
+
+def _note(found: str, why: str, venv: pathlib.Path) -> str:
+    """The line saying *found* was picked, from *why*, and what was passed over."""
+    active = os.environ.get("VIRTUAL_ENV")
+    passed_over = ""
+    if active and str(pathlib.Path(active).absolute()) != str(venv.absolute()):
+        passed_over = f", not from the active $VIRTUAL_ENV {active}"
+    return (
+        f"classifying stdlib and third-party imports with {found}, found from {why}"
+        f"{passed_over}; set python = {SELF!r} (--python {SELF}) to use cleanporter's "
+        "own interpreter"
+    )
 
 
 def _candidates(root: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
     """The environments detection tries, in order, each with how it was found."""
     found: list[tuple[str, pathlib.Path]] = []
+    uv_env = os.environ.get("UV_PROJECT_ENVIRONMENT")
+    for what, base in (("project", root), ("uv workspace", _workspace_root(root))):
+        if base is None:
+            continue
+        if uv_env:
+            found.append((f"$UV_PROJECT_ENVIRONMENT in the {what} root {base}", base / uv_env))
+        found.append((f"the .venv in the {what} root {base}", base / ".venv"))
     active = os.environ.get("VIRTUAL_ENV")
     if active:
         found.append(("$VIRTUAL_ENV", pathlib.Path(active).absolute()))
-    uv_env = os.environ.get("UV_PROJECT_ENVIRONMENT")
-    if uv_env:
-        found.append(("$UV_PROJECT_ENVIRONMENT", root / uv_env))
-    found.append((f"the .venv in {root}", root / ".venv"))
     return found
+
+
+def _workspace_root(root: pathlib.Path) -> pathlib.Path | None:
+    """The uv workspace *root* is a member of, other than itself; else ``None``.
+
+    uv's rule: the nearest ancestor whose ``pyproject.toml`` declares
+    ``[tool.uv.workspace]``, provided its ``members`` globs match *root* and
+    its ``exclude`` globs do not. The walk stops at that first declaring
+    ancestor either way, so it reads at most one workspace table. An
+    ancestor ``pyproject.toml`` that cannot be read or parsed is passed over,
+    like any other miss in detection.
+    """
+    for ancestor in root.parents:
+        table = _uv_workspace_table(ancestor / "pyproject.toml")
+        if table is None:
+            continue
+        relative = root.relative_to(ancestor).parts
+        member = any(_glob_matches(g, relative) for g in _globs(table, "members"))
+        excluded = any(_glob_matches(g, relative) for g in _globs(table, "exclude"))
+        return ancestor if member and not excluded else None
+    return None
+
+
+def _uv_workspace_table(pyproject: pathlib.Path) -> dict[str, object] | None:
+    """The ``[tool.uv.workspace]`` table of *pyproject*; ``None`` for none or unreadable."""
+    if not pyproject.is_file():
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    node: object = data
+    for key in ("tool", "uv", "workspace"):
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    if not isinstance(node, dict):
+        return None
+    return {str(k): v for k, v in node.items()}
+
+
+def _globs(table: dict[str, object], key: str) -> list[str]:
+    """The string entries of *table*'s list *key*; anything else contributes none."""
+    value = table.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
+def _glob_matches(pattern: str, parts: tuple[str, ...]) -> bool:
+    """Whether the relative path *parts* matches the workspace glob *pattern*.
+
+    Component by component, so ``*`` never crosses a ``/``; a ``**``
+    component matches any number of components, as in uv's globs.
+    """
+    return _match_parts(tuple(p for p in pattern.split("/") if p not in {"", "."}), parts)
+
+
+def _match_parts(pattern: tuple[str, ...], parts: tuple[str, ...]) -> bool:
+    if not pattern:
+        return not parts
+    head, rest = pattern[0], pattern[1:]
+    if head == "**":
+        return any(_match_parts(rest, parts[i:]) for i in range(len(parts) + 1))
+    return bool(parts) and fnmatch.fnmatchcase(parts[0], head) and _match_parts(rest, parts[1:])
 
 
 def _venv_python(venv: pathlib.Path) -> pathlib.Path:

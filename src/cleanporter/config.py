@@ -38,7 +38,9 @@ class ConfigError(ValueError):
 
 @dataclasses.dataclass(frozen=True)
 class Config:
-    #: Directory of the pyproject.toml this config came from (or cwd).
+    #: Directory of the pyproject.toml this config came from; `load_config`
+    #: uses the first path's directory when there is none. Defaults to the
+    #: cwd for a `Config` built by hand.
     root: pathlib.Path = dataclasses.field(default_factory=pathlib.Path.cwd)
     #: Glob patterns matched against project-relative POSIX paths.
     exclude: tuple[str, ...] = ()
@@ -53,9 +55,9 @@ class Config:
     #: Individual bound names that are always allowed.
     exempt_names: frozenset[str] = frozenset()
     #: Interpreter used for the stdlib/third-party probe: ``None`` (unset) or
-    #: ``"auto"`` detects the project's own (``$VIRTUAL_ENV``,
-    #: ``$UV_PROJECT_ENVIRONMENT``, ``root/.venv``; see
-    #: `cleanporter._interpreter`), ``"self"`` is cleanporter's own, in
+    #: ``"auto"`` detects the project's own (``$UV_PROJECT_ENVIRONMENT`` or
+    #: ``.venv`` at ``root`` or its uv workspace root, else ``$VIRTUAL_ENV``;
+    #: see `cleanporter._interpreter`), ``"self"`` is cleanporter's own, in
     #: process, and anything else names one. A relative path read from
     #: pyproject.toml arrives already joined to ``root``.
     python: str | None = None

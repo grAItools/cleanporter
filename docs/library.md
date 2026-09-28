@@ -123,10 +123,10 @@ classified by an interpreter probe, which imports each *parent* package
 
 - **Which interpreter.** `Config.python` is `None` by default, which — like
   `"auto"` — *detects* the project's interpreter, exactly as the command does:
-  `$VIRTUAL_ENV`, then `$UV_PROJECT_ENVIRONMENT`, then `.venv` in
-  `Config.root`, the first that is an executable interpreter (see
+  `$UV_PROJECT_ENVIRONMENT` or `.venv` at `Config.root` or its uv workspace
+  root, else `$VIRTUAL_ENV`, the first that is an executable interpreter (see
   [Configuration](configuration.md#the-probe-interpreter)). One that is not the
-  calling process's own `sys.executable` is probed in a subprocess, and the
+  calling process's own environment is probed in a subprocess, and the
   result's `notes` say which it was and why. `"self"` is the calling
   interpreter, in process; any other string names an interpreter.
   Up to 0.4, `None` meant the calling interpreter: pass `python="self"` to

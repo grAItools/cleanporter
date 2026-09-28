@@ -14,11 +14,13 @@ that weakens either is a regression no matter how well it tests:
 1. **The resolver never guesses.** Module or object is decided in layers
    (first-party filesystem → interpreter probe → undetermined). The probe's
    interpreter is the one `--python`/`python =` names, else the project's own
-   detected from `$VIRTUAL_ENV`, `$UV_PROJECT_ENVIRONMENT` or `<root>/.venv`
+   detected, in uv's order, from `$UV_PROJECT_ENVIRONMENT` or `.venv` at the
+   project root, then at its uv workspace root, then `$VIRTUAL_ENV`
    (`_interpreter.py`), else cleanporter's own; `self` forces cleanporter's
    own, `auto` detection; detection picks which environment answers, never an
    answer. It runs in-process only when that is cleanporter's own
-   `sys.executable` by path. What it cannot *prove* is `CP002`,
+   `sys.executable` by path -- or, for a detected venv only, when the venv's
+   directory is cleanporter's `sys.prefix`. What it cannot *prove* is `CP002`,
    never rewritten. No heuristics, no "CapWords means class", no fallback that
    picks an answer.
 2. **The fixer is all-or-nothing per file.** Every rename must be proven safe

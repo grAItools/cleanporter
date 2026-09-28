@@ -158,10 +158,12 @@ class Listener:
     """Told about each warning, file-level error and patch as the run makes it.
 
     Every method does nothing; override the ones you want. The calls come in
-    this order: warnings about the paths, then notes about the project (the
-    interpreter it detected), then warnings about the project, then the files
-    that could not be loaded (sorted by path), then per file a write error or
-    a patch, then warnings from probes the warm-up did not foresee.
+    this order: the warning that the paths belong to different projects, then
+    the notes (the interpreter detected for the probe), then the warnings from
+    building the project (a missing path, nesting roots, a failed warm-up
+    probe), then the files that could not be loaded (sorted by path), then per
+    file a write error or a patch, then warnings from probes the warm-up did
+    not foresee.
     """
 
     def warning(self, message: str) -> None:

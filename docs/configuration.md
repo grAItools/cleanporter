@@ -94,30 +94,50 @@ import unresolvable (`CP002`). cleanporter is usually installed on its own —
 running it is exactly such a one.
 
 So when neither `--python` nor the `python` key names an interpreter (or either
-says `"auto"`), cleanporter looks for the **project's** interpreter, trying in
-order:
+says `"auto"`), cleanporter looks for the **project's** interpreter. The order
+is uv's — the project's own environment first, an activated one only when the
+project has none — so a shell that still has some other environment activated
+does not decide what your project is checked against:
 
-1. `$VIRTUAL_ENV` — an activated virtual environment (`uv run` sets it too);
-2. `$UV_PROJECT_ENVIRONMENT` — where uv keeps the project environment when told
+1. `$UV_PROJECT_ENVIRONMENT` — where uv keeps the project environment when told
    not to use `.venv`; a relative value is read against the project root;
-3. `.venv` in the project root — the directory of the `pyproject.toml` in use,
-   or the first path argument's directory when there is none.
+2. `.venv` in the project root;
+3. the same two against the **uv workspace root**, when the project is a
+   workspace member: the nearest ancestor whose `pyproject.toml` has a
+   `[tool.uv.workspace]` table whose `members` globs match the project root
+   and whose `exclude` globs do not — uv's own rule, and where uv keeps a
+   member's environment. The walk stops at the first ancestor declaring a
+   workspace, member or not;
+4. `$VIRTUAL_ENV` — an activated virtual environment.
 
-The first whose `bin/python` (`Scripts\python.exe` on Windows) is an
+The *project root* is the directory of the `pyproject.toml` in use. **With no
+`pyproject.toml` above the first path argument, it is that path's directory**
+(see [Where the config is found](#where-the-config-is-found)), so detection
+looks for a `.venv` there — which, for `cleanporter src/` in a project without
+a `pyproject.toml`, is `src/.venv`, not the one beside it. In that layout, or
+whenever your environment lives somewhere detection does not look, name it:
+`--python .venv/bin/python`, or `python = ".venv/bin/python"`.
+
+The first candidate whose `bin/python` (`Scripts\python.exe` on Windows) is an
 executable file wins; a candidate that does not exist, or cannot be run, is
 passed over without a word — detection is a search, not a request. Nothing
-else is tried: no `uv` subprocess, no `PATH` search, no walk up the directory
-tree. If nothing is found, the interpreter running cleanporter is used, in
-process, as before.
+else is tried: no `uv` subprocess, no `PATH` search, **no conda environment**
+(`$CONDA_PREFIX` is not read; name a conda interpreter with `--python`), and
+no walk up the directory tree beyond the one workspace lookup. If nothing is
+found, the interpreter running cleanporter is used, in process, as before.
 
-When the interpreter found *is* the one running cleanporter — the same path as
-its `sys.executable`, as when you `uv run cleanporter` from the project's own
+When the environment found *is* the one running cleanporter — its interpreter
+is cleanporter's own `sys.executable`, or its directory is cleanporter's
+`sys.prefix` and that is a virtual environment, as when you `uv run
+cleanporter` or `uv run python -m cleanporter` from the project's own
 environment — the probe runs in process and nothing is printed. Anything else
 is probed in a subprocess, exactly as if it had been passed with `--python`,
-and cleanporter says which one it picked, and why, in one line on stderr:
+and cleanporter says which one it picked, and why, in one line on stderr —
+naming the active `$VIRTUAL_ENV` too when the project's own environment was
+preferred over it:
 
 ```text
-cleanporter: note: classifying stdlib and third-party imports with /work/proj/.venv/bin/python, found from the .venv in /work/proj; set python = 'self' (--python self) to use cleanporter's own interpreter
+cleanporter: note: classifying stdlib and third-party imports with /work/proj/.venv/bin/python, found from the .venv in the project root /work/proj; set python = 'self' (--python self) to use cleanporter's own interpreter
 ```
 
 Detection chooses *which* environment is asked; it never supplies an answer
