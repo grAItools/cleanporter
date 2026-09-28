@@ -38,7 +38,9 @@ class ConfigError(ValueError):
 
 @dataclasses.dataclass(frozen=True)
 class Config:
-    #: Directory of the pyproject.toml this config came from (or cwd).
+    #: Directory of the pyproject.toml this config came from; `load_config`
+    #: uses the first path's directory when there is none. Defaults to the
+    #: cwd for a `Config` built by hand.
     root: pathlib.Path = dataclasses.field(default_factory=pathlib.Path.cwd)
     #: Glob patterns matched against project-relative POSIX paths.
     exclude: tuple[str, ...] = ()
@@ -52,8 +54,13 @@ class Config:
     exempt_modules: frozenset[str] = DEFAULT_EXEMPT_MODULES
     #: Individual bound names that are always allowed.
     exempt_names: frozenset[str] = frozenset()
-    #: Interpreter used for the stdlib/third-party probe (None -> current). A
-    #: relative path read from pyproject.toml arrives already joined to ``root``.
+    #: Interpreter used for the stdlib/third-party probe: ``None`` (unset) or
+    #: ``"auto"`` detects the project's own (``$UV_PROJECT_ENVIRONMENT`` or
+    #: ``.venv`` at ``root``, or at the uv workspace root for a member, else
+    #: ``$VIRTUAL_ENV``;
+    #: see `cleanporter._interpreter`), ``"self"`` is cleanporter's own, in
+    #: process, and anything else names one. A relative path read from
+    #: pyproject.toml arrives already joined to ``root``.
     python: str | None = None
     #: Regions the author declared off-limits; see `cleanporter.skip`.
     skip: tuple[skip_lib.Rule, ...] = ()
@@ -93,7 +100,10 @@ def _python(table: dict[str, object], root: pathlib.Path) -> str:
     A value with no separator (``"python3"``) is a command, not a path, and is
     left for the operating system to look up on ``PATH``: anchoring it would
     turn "whatever ``python3`` is" into "a file called ``python3`` next to
-    pyproject.toml", which is a different request.
+    pyproject.toml", which is a different request. The two words that are not
+    commands at all, ``"auto"`` and ``"self"`` (see `Config.python`), have no
+    separator either and so pass through as written; an interpreter really
+    called ``auto`` or ``self`` is named with one, as ``"./self"``.
 
     A leading ``~`` or ``~user`` is expanded before that test, as a shell
     would have expanded it on a command line; one naming no known user is an

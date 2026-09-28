@@ -517,8 +517,12 @@ def main(argv: list[str] | None = None) -> int:
     shutil.copytree(original, rewritten)
 
     print("running cleanporter --fix over the copy ...", flush=True)
+    # `--python self`: the corpus is importable only from this cwd (`-m` puts
+    # it on sys.path), so the probe must stay in this process. Left to detect,
+    # an activated or `.venv` interpreter would be probed in a subprocess that
+    # cannot see the corpus, and every import would quietly go CP002.
     fix = subprocess.run(
-        [sys.executable, "-m", "cleanporter", "--fix", "."],
+        [sys.executable, "-m", "cleanporter", "--fix", "--python", "self", "."],
         cwd=rewritten,
         capture_output=True,
         text=True,

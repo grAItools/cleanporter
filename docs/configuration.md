@@ -38,7 +38,7 @@ source_roots = ["src"]            # [] = infer from the paths given
 treat_unresolved_as_error = false
 exempt_modules = ["six.moves"]    # extends the built-in defaults
 exempt_names = ["THING"]
-# python = "/path/to/target/venv/bin/python"   # omit = current interpreter
+# python = "/path/to/target/venv/bin/python"   # omit (or "auto") = detect; "self" = cleanporter's own
 
 skip = [
     { decorator = 'field_operator|scan_operator|program', reason = "GT4Py re-parses these bodies" },
@@ -56,7 +56,7 @@ skip = [
 | `treat_unresolved_as_error` | `false` | When `true`, `CP002` (unresolved) findings count toward the failure exit code, so a run that could not classify something exits `1`. |
 | `exempt_modules` | `["typing", "typing_extensions", "collections.abc", "__future__"]` | `from MODULE import X` is allowed when `MODULE` — or any ancestor of it — is in this set. Configured values are **added to** the built-in defaults; they never replace them. |
 | `exempt_names` | `[]` | Individual bound names that are always allowed, whatever module they came from. Checked before the module is even looked at. |
-| `python` | absent (the current interpreter) | The interpreter used for the stdlib/third-party classification probe: a non-empty string; omit the key to use the interpreter running cleanporter. A value containing a path separator is a path, and a *relative* one is read against the `pyproject.toml` directory, like every other path here — so `".venv/bin/python"` works from any subdirectory. A value with no separator (`"python3"`) is a command name, looked up on `PATH` as usual. A leading `~` or `~user` is expanded first (an unknown user, or no home directory, is an error). Environment variables are *not* expanded, and symlinks are not resolved. A Windows drive also makes the value a path: `'C:\venv\Scripts\python.exe'` and `'\\server\share\python.exe'` are used as written, while a drive with no root, `'C:python.exe'`, is an error — it is relative to that drive's current directory, which the project root cannot stand in for. Drives are recognised on every platform, so a configuration means the same everywhere — which means a single letter followed by a colon reads as a drive even on Linux and macOS: `'a:b/python'` is drive `a:` with no root, and so an error, not a relative path under a directory called `a:b`. |
+| `python` | absent (detect the project's interpreter) | The interpreter used for the stdlib/third-party classification probe: a non-empty string. Omit the key, or write `"auto"`, to detect the project's own interpreter; write `"self"` for the interpreter running cleanporter, probed in process — see [The probe interpreter](#the-probe-interpreter). Any other value names an interpreter (an interpreter literally called `auto` or `self` is named with a separator, `"./self"`). A value containing a path separator is a path, and a *relative* one is read against the `pyproject.toml` directory, like every other path here — so `".venv/bin/python"` works from any subdirectory. A value with no separator (`"python3"`) is a command name, looked up on `PATH` as usual. A leading `~` or `~user` is expanded first (an unknown user, or no home directory, is an error). Environment variables are *not* expanded, and symlinks are not resolved. A Windows drive also makes the value a path: `'C:\venv\Scripts\python.exe'` and `'\\server\share\python.exe'` are used as written, while a drive with no root, `'C:python.exe'`, is an error — it is relative to that drive's current directory, which the project root cannot stand in for. Drives are recognised on every platform, so a configuration means the same everywhere — which means a single letter followed by a colon reads as a drive even on Linux and macOS: `'a:b/python'` is drive `a:` with no root, and so an error, not a relative path under a directory called `a:b`. |
 | `skip` | `[]` | Regions of your code the tool must not analyse or rewrite, as a list of rule tables. See [`skip` rules](#skip-rules) below. |
 
 !!! tip "`exempt_modules` matches ancestors"
@@ -83,6 +83,83 @@ These are built in and cannot be switched off through configuration.
 Note that `six.moves` is **not** exempt by default, even though the style
 guide mentions it. Add it explicitly if your codebase needs it.
 
+## The probe interpreter
+
+Stdlib and third-party names are classified by asking a Python interpreter
+(see [How it works](how-it-works.md#2-stdlib-and-third-party-by-interpreter-probe)),
+and the answer can only be as good as that interpreter's environment: one that
+does not have your project's dependencies installed calls every third-party
+import unresolvable (`CP002`). cleanporter is usually installed on its own —
+`pipx install cleanporter`, `uv tool install cleanporter` — so the interpreter
+running it is exactly such a one.
+
+So when neither `--python` nor the `python` key names an interpreter (or either
+says `"auto"`), cleanporter looks for the **project's** interpreter. The order
+is uv's — the project's own environment first, an activated one only when the
+project has none — so a shell that still has some other environment activated
+does not decide what your project is checked against:
+
+1. `$UV_PROJECT_ENVIRONMENT` — where uv keeps the project environment when told
+   not to use `.venv`; a relative value is read against the environment root
+   (below);
+2. `.venv` in the environment root;
+3. `$VIRTUAL_ENV` — an activated virtual environment.
+
+The *environment root* is where uv would put the project's environment: the
+project root, unless the project is a **uv workspace member**, in which case
+it is the workspace root — and the member's own directory is not tried, as uv
+does not use it. Membership follows uv: the *first* directory above the
+project root that holds a `pyproject.toml` decides. If that file has a
+`[tool.uv.workspace]` table whose `members` globs match the project root and
+whose `exclude` globs do not, it is the workspace root; if it is a plain
+project (an `examples/demo` project inside a package), a workspace the project
+is not a member of, or a file that cannot be read, there is no workspace, and
+nothing further up is looked at. A project root that itself declares
+`[tool.uv.workspace]` is its own workspace root, even when an outer
+workspace's `members` would match it. Globs are matched as uv matches them,
+component by component and literally: `"./pkgs/*"` and `"pkgs/*/"` include
+nothing.
+
+The *project root* is the directory of the `pyproject.toml` in use. **With no
+`pyproject.toml` above the first path argument, it is that path's directory**
+(see [Where the config is found](#where-the-config-is-found)), so detection
+looks for a `.venv` there — which, for `cleanporter src/` in a project without
+a `pyproject.toml`, is `src/.venv`, not the one beside it. In that layout, or
+whenever your environment lives somewhere detection does not look, name it:
+`--python .venv/bin/python`, or `python = ".venv/bin/python"`.
+
+The first candidate whose `bin/python` (`Scripts\python.exe` on Windows) is an
+executable file wins; a candidate that does not exist, or cannot be run, is
+passed over without a word — detection is a search, not a request. Nothing
+else is tried: no `uv` subprocess, no `PATH` search, **no conda environment**
+(`$CONDA_PREFIX` is not read; name a conda interpreter with `--python`), and
+no walk up the directory tree beyond the first `pyproject.toml` above the
+project root. If nothing is
+found, the interpreter running cleanporter is used, in process, as before.
+
+When the environment found *is* the one running cleanporter — its interpreter
+is cleanporter's own `sys.executable`, or its directory is cleanporter's
+`sys.prefix` and that is a virtual environment, as when you `uv run
+cleanporter` or `uv run python -m cleanporter` from the project's own
+environment — the probe runs in process and nothing is printed, unless an
+active `$VIRTUAL_ENV` names a *different* directory: then a note says the
+project's environment was used rather than it. (`uv run` sets `$VIRTUAL_ENV`
+to the project's own, so it stays silent.) Anything else is probed in a
+subprocess, exactly as if it had been passed with `--python`, and cleanporter
+says which one it picked, and why, in one line on stderr — naming the active
+`$VIRTUAL_ENV` too when the project's own environment was preferred over it:
+
+```text
+cleanporter: note: classifying stdlib and third-party imports with /work/proj/.venv/bin/python, found from the .venv in the project root /work/proj; set python = 'self' (--python self) to use cleanporter's own interpreter
+```
+
+Detection chooses *which* environment is asked; it never supplies an answer
+the probe did not prove. An interpreter that lacks a package reports it not
+importable (`CP002`), and one that cannot be run at all fails its whole batch
+with a warning (`CP002` again), so a wrong pick can only leave imports
+unresolved — never produce a `CP001` the environment it asked could not back,
+and never a rewrite. `python = "self"` (or `--python self`) turns detection off.
+
 ## How CLI flags layer on top of config
 
 Flags do not replace configured values; with two exceptions they extend or
@@ -94,7 +171,7 @@ having to restate what the project already declares.
 | `--exempt MODULE` | Added to `exempt_modules` (which already contains the built-in defaults). |
 | `--root PATH` | Appended to `source_roots`. Relative values resolve against the project root, i.e. the `pyproject.toml` directory. |
 | `--strict` | OR-ed into `treat_unresolved_as_error`. `--strict` can turn it on; it can never turn it off. |
-| `--python PATH` | **Overrides** the `python` key, but only when the flag is actually given. Like any path on the command line, a relative value is read against the current directory, not the project root. An empty value (`--python ""`) is an error (exit `2`). |
+| `--python PATH` | **Overrides** the `python` key, but only when the flag is actually given — so `--python auto` restores detection over a configured interpreter, and `--python self` turns it off. Like any path on the command line, a relative value is read against the current directory, not the project root. An empty value (`--python ""`) is an error (exit `2`). |
 
 There is no flag that removes an exemption, drops a source root, or relaxes
 `treat_unresolved_as_error` back to `false`. If you need that, change the

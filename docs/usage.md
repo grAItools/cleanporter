@@ -20,7 +20,7 @@ cleanporter [--fix] [--diff] [--python PATH] [--exempt MODULE] [--root PATH]
 | --- | --- |
 | `--fix` | Rewrite violations in place, but only where the rewrite is provably safe. Files that cannot be proven safe are left byte-for-byte unchanged and reported as `CP003`. |
 | `--diff` | Show the rewrite as a unified diff on stdout without writing anything. Ignored when `--fix` is also given: `--fix` wins and writes (it prints the same diff on its way through). |
-| `--python PATH` | Interpreter used to classify stdlib and third-party names. Default: the interpreter running cleanporter. |
+| `--python PATH` | Interpreter used to classify stdlib and third-party names: a path or command, `auto` (the default: detect the project's own, [as described here](configuration.md#the-probe-interpreter)), or `self` (the one running cleanporter). |
 | `--exempt MODULE` | An additional module whose members may be imported by name. Repeatable. Adds to, never replaces, the [default exemptions](configuration.md#default-exemptions) and anything in `exempt_modules`. |
 | `--root PATH` | An additional first-party import root — a directory that is on `sys.path` for the code being analysed. Repeatable. Adds to whatever the analysed paths themselves imply, and to `source_roots`. A relative value is resolved against the directory holding your `pyproject.toml`, not against the current directory. |
 | `--strict` | Also fail (exit `1`) on imports that could not be classified (`CP002`). Equivalent to turning on `treat_unresolved_as_error` for this run. |
@@ -202,12 +202,19 @@ add `--strict`:
 cleanporter --strict src/ tests/
 ```
 
-If CI runs in a different environment from the one your code targets, point
-the classifier at the interpreter that actually has your dependencies
-installed:
+cleanporter finds the project's interpreter by itself — the `.venv` beside
+`pyproject.toml` (the uv workspace root's, for a member), or else an activated virtual
+environment — so a copy installed with `pipx` or `uv tool` still classifies
+your third-party imports. The project root is the directory of the
+`pyproject.toml` found above the first path; with none, it is the first
+path's own directory, so `cleanporter src/` looks for `src/.venv`. If your
+dependencies live somewhere detection does not look — that layout, a conda
+environment, anything else — point the classifier at the interpreter that
+actually has them installed, with `--python` or `python =` in
+`[tool.cleanporter]`:
 
 ```bash
-cleanporter --python .venv/bin/python src/
+cleanporter --python /opt/envs/proj/bin/python src/
 ```
 
 ### Reviewing before applying

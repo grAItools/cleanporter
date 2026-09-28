@@ -12,9 +12,16 @@ format-preservingly via libCST. Two design contracts are the product; a change
 that weakens either is a regression no matter how well it tests:
 
 1. **The resolver never guesses.** Module or object is decided in layers
-   (first-party filesystem → interpreter probe, in-process only when no
-   interpreter is named or `--python`/`python =` names cleanporter's own
-   `sys.executable` by path → undetermined). What it cannot *prove* is `CP002`,
+   (first-party filesystem → interpreter probe → undetermined). The probe's
+   interpreter is the one `--python`/`python =` names, else the project's own
+   detected, in uv's order, from `$UV_PROJECT_ENVIRONMENT` or `.venv` at the
+   project root (the workspace root instead, for a uv workspace member), then
+   `$VIRTUAL_ENV`
+   (`_interpreter.py`), else cleanporter's own; `self` forces cleanporter's
+   own, `auto` detection; detection picks which environment answers, never an
+   answer. It runs in-process only when that is cleanporter's own
+   `sys.executable` by path -- or, for a detected venv only, when the venv's
+   directory is cleanporter's `sys.prefix`. What it cannot *prove* is `CP002`,
    never rewritten. No heuristics, no "CapWords means class", no fallback that
    picks an answer.
 2. **The fixer is all-or-nothing per file.** Every rename must be proven safe

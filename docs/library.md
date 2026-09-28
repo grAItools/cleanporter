@@ -57,6 +57,7 @@ It returns a `RunResult`:
 | `errors` | A finding per file that could not be read, decoded, parsed or written: the files that failed to load, then the failed writes. The command exits `2` when there are any. |
 | `write_errors` | Just the failed writes among `errors` (the `write_error` of each such patch), so they can be told apart from files that never loaded. |
 | `warnings` | Every warning, in the order it arose. |
+| `notes` | Every note, in the order it arose — today, which interpreter was detected for the probe and why (see [Side effects](#side-effects)). Informational: never counted by `exit_code`. |
 | `violations`, `skipped`, `unresolved`, `skipped_by_config` | Counts of `CP001`, `CP003`, `CP002` and `CP004` in `findings`. |
 | `changed`, `wrote` | How many files were rewritten (written under `Mode.FIX`, diffed under `Mode.DIFF`; a failed write does not count), and whether anything was written to disk. |
 
@@ -73,7 +74,7 @@ run that `wrote`, re-run the target's tests, exactly as after the command.
 
 A run over a large tree takes a while, and the command prints each patch the
 moment it exists. Pass a `Listener` subclass as `listener` to do the same: its
-`warning(message)`, `error(finding)` and `patch(patch)` methods are called as
+`warning(message)`, `note(message)`, `error(finding)` and `patch(patch)` methods are called as
 each happens, in the order the command prints them; each does nothing unless
 overridden. Every one of them also ends up in the `RunResult`, so a caller that
 only wants the result passes nothing. A write that fails is reported to
@@ -95,11 +96,12 @@ it looks at any one import, and returns a frozen `Project`:
 2. read, decode and parse every file (one that cannot be is an `errors` entry);
 3. settle the module map's import roots and anchor each file's relative imports;
 4. collect what every file *uses*, across files;
-5. build the `Resolver` with that evidence, and classify every import the run
-   will ask about in one batch.
+5. build the `Resolver` with that evidence and with the interpreter chosen
+   from `Config.python` (detected, unless one is named), and classify every
+   import the run will ask about in one batch.
 
 A `Project` holds the `config`, the parsed `records`, that `resolver`, and the
-`errors` and `warnings` from building it. `analyze_record(record, resolver,
+`errors`, `warnings` and `notes` from building it. `analyze_record(record, resolver,
 config)` and `fix_record(record, resolver, config)` check or fix one of its
 records; `run` is those two, file by file, plus writing, re-analysing and
 counting.
@@ -119,9 +121,20 @@ classified by an interpreter probe, which imports each *parent* package
 (never the imported name itself, and never first-party code — see
 [How it works](how-it-works.md)):
 
-- **In-process by default.** Unless `Config.python` names another
-  interpreter, the probe runs in the calling process. The target's packages are
-  imported into it, run their import-time code there, and stay in
+- **Which interpreter.** `Config.python` is `None` by default, which — like
+  `"auto"` — *detects* the project's interpreter, exactly as the command does:
+  `$UV_PROJECT_ENVIRONMENT` or `.venv` at `Config.root` (at the uv workspace
+  root instead, for a workspace member), else `$VIRTUAL_ENV`, the first that is an executable interpreter (see
+  [Configuration](configuration.md#the-probe-interpreter)). One that is not the
+  calling process's own environment is probed in a subprocess, and the
+  result's `notes` say which it was and why. `"self"` is the calling
+  interpreter, in process; any other string names an interpreter.
+  Up to 0.4, `None` meant the calling interpreter: pass `python="self"` to
+  keep that.
+- **In process when it is the caller's own.** With `python="self"`, when
+  detection finds nothing, or when what it finds (or what is named) is the
+  running interpreter, the probe runs in the calling process. The target's
+  packages are imported into it, run their import-time code there, and stay in
   `sys.modules` after `run` returns.
 - **stdout is redirected, process-wide.** While the probe imports, `sys.stdout`
   is pointed at `sys.stderr` (`contextlib.redirect_stdout`), so a package that
@@ -131,8 +144,9 @@ classified by an interpreter probe, which imports each *parent* package
 - **To isolate a run**, set `python` in the `Config` to a *different*
   interpreter (for example
   `dataclasses.replace(cfg, python="/path/to/venv/bin/python")`, the library
-  equivalent of `--python`). The probe then runs in a subprocess, imports
-  nothing into the caller and redirects nothing. Naming the interpreter that
-  is already running keeps the probe in-process.
+  equivalent of `--python`), or let detection find the project's. The probe
+  then runs in a subprocess, imports nothing into the caller and redirects
+  nothing. Naming the interpreter that is already running keeps the probe
+  in-process.
 
 Under `Mode.FIX` a run also writes files, each atomically.

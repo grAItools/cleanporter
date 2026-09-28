@@ -11,8 +11,10 @@ while `CP002` counts only under ``--strict``.
 Stream contract: when a patch goes to stdout (``--diff``, ``--fix``) stdout
 carries *only* the patch, so ``cleanporter --diff src/ | git apply`` works, and
 findings, warnings and notes go to stderr. Plain check mode produces no patch,
-so its report stays on stdout. The patch is written as bytes, in each file's
-own encoding and line endings, so that it applies to the file on disk.
+so its report stays on stdout. Notes (``cleanporter: note:`` -- the
+interpreter detected for the probe, the ``--fix`` reminder) go to stderr in
+every mode. The patch is written as bytes, in each file's own encoding and
+line endings, so that it applies to the file on disk.
 
 A file that cannot be read, decoded, parsed or written is reported with its
 path and makes the exit code 2, and every other file is still processed.
@@ -41,7 +43,7 @@ _EXIT_ERROR = 2  # the rest of the exit-code rule is `engine.RunResult.exit_code
 def _non_empty(value: str) -> str:
     """An argument that must say something: ``--python ""`` was silently ignored."""
     if not value:
-        msg = "must not be empty; omit the flag to use the current interpreter"
+        msg = "must not be empty; omit the flag to detect the project's interpreter"
         raise argparse.ArgumentTypeError(msg)
     return value
 
@@ -78,7 +80,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--python",
         default=None,
         type=_non_empty,
-        help="interpreter used to classify stdlib/third-party names",
+        metavar="PATH|auto|self",
+        help="interpreter used to classify stdlib/third-party names: a path or command, "
+        "'auto' to detect the project's ($UV_PROJECT_ENVIRONMENT or .venv at the project "
+        "root, or at the uv workspace root for a member, else $VIRTUAL_ENV; the default), "
+        "or 'self' for cleanporter's own",
     )
     parser.add_argument(
         "--exempt",
@@ -132,6 +138,11 @@ class _Printer(engine.Listener):
 
     def warning(self, message: str) -> None:
         print(f"cleanporter: warning: {message}", file=self._report)
+
+    def note(self, message: str) -> None:
+        # stderr in every mode, like the --fix note: it is about the run, not
+        # a finding, and check mode's stdout report stays findings only.
+        print(f"cleanporter: note: {message}", file=sys.stderr)
 
     def error(self, finding: model.Finding) -> None:
         print(finding.format(), file=self._report)

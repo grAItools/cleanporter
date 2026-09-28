@@ -11,10 +11,10 @@ exit code. It builds the `project.Project`, then, per file in discovery order:
   reported with its reason.
 
 It returns a `RunResult`: the findings sorted as the report prints them, the
-patches, the file-level errors, the warnings and the counts. `cli.run` is a
-thin shell over it, and anything else that wants a real run -- an editor
-integration, a pre-commit wrapper, a test -- calls this rather than copying
-the loop.
+patches, the file-level errors, the warnings and notes, and the counts.
+`cli.run` is a thin shell over it, and anything else that wants a real run --
+an editor integration, a pre-commit wrapper, a test -- calls this rather than
+copying the loop.
 
 A `Listener` hears about warnings, file-level errors and patches *as they
 happen*, in the order the command line prints them, so a caller streaming
@@ -98,6 +98,9 @@ class RunResult:
     errors: tuple[model.Finding, ...]
     #: Every warning, in the order it arose.
     warnings: tuple[str, ...]
+    #: Every note, in the order it arose: which interpreter was detected for
+    #: the probe, and why (see `Config.python`). Informational, never a failure.
+    notes: tuple[str, ...] = ()
 
     def _count(self, status: model.Status) -> int:
         return sum(f.status is status for f in self.findings)
@@ -155,13 +158,19 @@ class Listener:
     """Told about each warning, file-level error and patch as the run makes it.
 
     Every method does nothing; override the ones you want. The calls come in
-    this order: warnings about the paths and the project, then the files that
-    could not be loaded (sorted by path), then per file a write error or a
-    patch, then warnings from probes the warm-up did not foresee.
+    this order: the warning that the paths belong to different projects, then
+    the notes (the interpreter detected for the probe), then the warnings from
+    building the project (a missing path, nesting roots, a failed warm-up
+    probe), then the files that could not be loaded (sorted by path), then per
+    file a write error or a patch, then warnings from probes the warm-up did
+    not foresee.
     """
 
     def warning(self, message: str) -> None:
         """A warning, without the ``cleanporter: warning:`` prefix."""
+
+    def note(self, message: str) -> None:
+        """A note, without the ``cleanporter: note:`` prefix."""
 
     def error(self, finding: model.Finding) -> None:
         """A file that could not be read, decoded, parsed or written."""
@@ -185,6 +194,7 @@ class _Tally:
 
     listener: Listener
     warnings: list[str] = dataclasses.field(default_factory=list)
+    notes: list[str] = dataclasses.field(default_factory=list)
     errors: list[model.Finding] = dataclasses.field(default_factory=list)
     findings: list[model.Finding] = dataclasses.field(default_factory=list)
     patches: list[FilePatch] = dataclasses.field(default_factory=list)
@@ -192,6 +202,10 @@ class _Tally:
     def warn(self, message: str) -> None:
         self.warnings.append(message)
         self.listener.warning(message)
+
+    def note(self, message: str) -> None:
+        self.notes.append(message)
+        self.listener.note(message)
 
     def fail(self, finding: model.Finding) -> None:
         self.errors.append(finding)
@@ -218,6 +232,8 @@ def run(
     if mismatch is not None:
         tally.warn(mismatch)
     project = project_lib.build(paths, config)
+    for note in project.notes:
+        tally.note(note)
     for warning in project.warnings:
         tally.warn(warning)
     for error in sorted(project.errors, key=lambda f: (str(f.path), f.line)):
@@ -238,6 +254,7 @@ def run(
         tuple(tally.patches),
         tuple(tally.errors),
         tuple(tally.warnings),
+        tuple(tally.notes),
     )
 
 

@@ -18,8 +18,10 @@ stages are fixed because each needs the one before it:
 4. **Use evidence.** What every file reads -- ``from M import N``, ``M.N``
    through an import, ``from M import *`` -- is collected into a
    `resolver.Evidence`. It needs every record, because it is cross-file.
-5. **Resolver ready.** The resolver is constructed *with* that evidence, then
-   warmed with every pair the run will ask about, in one probe batch.
+5. **Resolver ready.** The resolver is constructed *with* that evidence, and
+   with the interpreter `_interpreter.choose` makes of the ``python`` setting
+   -- the project's own, detected, unless one is named -- then warmed with
+   every pair the run will ask about, in one probe batch.
 
 Stage 4 before stage 5 is the point of the module. The resolver used to be
 built early and told about the evidence afterwards, so a resolver held by
@@ -46,7 +48,7 @@ from cleanporter import analyze, discover, firstparty, model
 from cleanporter import config as config_lib
 from cleanporter import resolver as resolver_lib
 
-from . import _source
+from . import _interpreter, _source
 
 
 @dataclasses.dataclass(frozen=True)
@@ -64,6 +66,8 @@ class Project:
     #: Warnings from expanding the paths (a missing path), building the module
     #: map (roots that nest), and the warm-up probe (a batch that failed).
     warnings: tuple[str, ...]
+    #: Notes: which interpreter detection picked for the probe, and why.
+    notes: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -84,8 +88,9 @@ def build(paths: list[pathlib.Path], config: config_lib.Config) -> Project:
     parsed, errors = _parse(files)
     records = _records(parsed, module_map, config)
     pairs = analyze.collect_pairs(records)
+    interpreter = _interpreter.choose(config.python, config.root)
     resolver = resolver_lib.Resolver(
-        module_map, python=config.python, evidence=_evidence(records, pairs)
+        module_map, python=interpreter.python, evidence=_evidence(records, pairs)
     )
     # Out-of-scope pairs are never asked about, so classifying them -- an
     # import of a third-party package, in the probe -- would be wasted. A
@@ -97,7 +102,8 @@ def build(paths: list[pathlib.Path], config: config_lib.Config) -> Project:
     batch = pairs + analyze.replacement_pairs(pairs)
     resolver.warm([pair for pair in batch if analyze.in_scope(pair[0], resolver, config)])
     warnings.extend(resolver.take_warnings())
-    return Project(config, tuple(records), resolver, tuple(errors), tuple(warnings))
+    notes = () if interpreter.note is None else (interpreter.note,)
+    return Project(config, tuple(records), resolver, tuple(errors), tuple(warnings), notes)
 
 
 def _parse(files: list[pathlib.Path]) -> tuple[list[_Parsed], list[model.Finding]]:

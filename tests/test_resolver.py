@@ -223,32 +223,7 @@ def test_a_stdlib_replacement_is_reachable(tmp_path):
     assert r.replacement_unreachable("collections.abc") is None
 
 
-# -- which interpreter is "this one" -------------------------------------------
-
-
-def test_this_interpreter_is_its_own_executable_path():
-    assert resolver._is_this_interpreter(sys.executable) is True
-
-
-def test_a_symlink_to_this_interpreter_is_not_this_interpreter(tmp_path):
-    """A venv's ``bin/python`` is exactly such a symlink, to another environment."""
-    link = tmp_path / "python"
-    link.symlink_to(sys.executable)
-    assert resolver._is_this_interpreter(str(link)) is False
-
-
-def test_a_path_through_dotdot_is_not_this_interpreter():
-    """``..`` after a symlinked directory runs something else; never collapse it."""
-    here = pathlib.Path(sys.executable)
-    spelled = str(here.parent / ".." / here.parent.name / here.name)
-    assert resolver._is_this_interpreter(spelled) is False
-
-
-def test_a_bare_command_name_is_not_this_interpreter(monkeypatch):
-    """Even from the interpreter's own directory: a subprocess looks it up on PATH."""
-    here = pathlib.Path(sys.executable)
-    monkeypatch.chdir(here.parent)
-    assert resolver._is_this_interpreter(here.name) is False
+# -- probing another environment ---------------------------------------------
 
 
 def _venv_with_onlyhere(tmp_path: pathlib.Path) -> pathlib.Path:
