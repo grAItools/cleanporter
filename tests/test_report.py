@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import pathlib
 
 import pytest
@@ -90,7 +91,6 @@ def test_json_is_one_document_with_every_field(project, capsys):
             "message": "imports object 'THING' from module 'demo.helpers'; "
             "import the module and use 'helpers.THING'",
             "detail": "",
-            "replacement": "helpers.THING",
         },
         {
             "code": "CP002",
@@ -104,7 +104,6 @@ def test_json_is_one_document_with_every_field(project, capsys):
             "message": "could not determine whether 'definitely_missing_pkg_xyz.other' is a "
             "module: 'definitely_missing_pkg_xyz' is not importable in the target interpreter",
             "detail": "'definitely_missing_pkg_xyz' is not importable in the target interpreter",
-            "replacement": None,
         },
     ]
     assert document["errors"] == document["patches"] == []
@@ -164,7 +163,8 @@ def test_json_lists_a_file_it_could_not_process_as_an_error(project, capsys):
     assert error["path"] == "src/demo/broken.py"
     assert error["message"].startswith("file not processed: ")
     assert all(f["path"] != "src/demo/broken.py" for f in document["findings"])
-    assert "broken.py" not in err  # in the document, not on stderr as well
+    # In the document, and echoed to stderr for whoever reads the log.
+    assert "src/demo/broken.py:1:0: CP002 file not processed: " in err
 
 
 def test_json_diff_carries_the_patch_in_the_document(project, capsys):
@@ -228,8 +228,12 @@ def test_sarif_has_the_required_structure(project, capsys):
     assert [r["id"] for r in rules] == ["CP001", "CP002", "CP003", "CP004"]
     for rule in rules:
         assert rule["shortDescription"]["text"]
+        assert rule["fullDescription"]["text"]
+        assert rule["help"]["text"] and rule["help"]["markdown"]
         assert rule["helpUri"] == "https://graitools.github.io/cleanporter/usage/#finding-codes"
+        assert rule["helpUri"] in rule["help"]["markdown"]
     assert run["originalUriBaseIds"]["SRCROOT"]["uri"] == project.as_uri() + "/"
+    assert run["columnKind"] == "unicodeCodePoints"
     [invocation] = run["invocations"]
     assert invocation["executionSuccessful"] is True
     assert invocation["exitCode"] == rc
@@ -248,12 +252,7 @@ def test_sarif_has_the_required_structure(project, capsys):
             "uriBaseId": "SRCROOT",
         }
         assert physical["region"]["startColumn"] == 1  # 1-based; the text report's 0
-    assert results[0]["properties"] == {
-        "parent": "demo.helpers",
-        "name": "THING",
-        "replacement": "helpers.THING",
-    }
-    assert "replacement" not in results[1]["properties"]
+    assert results[0]["properties"] == {"parent": "demo.helpers", "name": "THING"}
 
 
 def test_sarif_strict_makes_cp002_an_error(project, capsys):
@@ -290,6 +289,53 @@ def test_sarif_uri_is_absolute_outside_the_working_directory(project, tmp_path_f
     location = document["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
     assert location["artifactLocation"] == {"uri": elsewhere.as_uri()}
     assert location["region"] == {"startLine": 3, "startColumn": 5}
+
+
+def test_sarif_srcroot_of_the_filesystem_root_is_file_slash_slash_slash():
+    result = engine.RunResult(engine.Mode.CHECK, 0, (), (), (), ())
+    document = json.loads(
+        _report.render("sarif", result, strict=False, show_skipped=False, cwd=pathlib.Path("/"))
+    )
+    assert document["runs"][0]["originalUriBaseIds"]["SRCROOT"]["uri"] == "file:///"
+
+
+#: A filename that is not valid UTF-8, as Python hands it over: a lone surrogate.
+_UNDECODABLE = pathlib.Path(os.fsdecode(b"bad\xff.py"))
+
+
+def test_every_format_survives_a_surrogate_escaped_path(tmp_path):
+    finding = model.Finding(_UNDECODABLE, 1, 0, "p", "n", model.Status.SKIPPED, "why")
+    outside = model.Finding(
+        pathlib.Path(os.fsdecode(b"/elsewhere/\xff.py")), 1, 0, "p", "n", model.Status.SKIPPED
+    )
+    result = engine.RunResult(engine.Mode.CHECK, 1, (finding, outside), (), (), ())
+    outputs = {
+        fmt: _report.render(fmt, result, strict=False, show_skipped=False, cwd=tmp_path)
+        for fmt in ("json", "sarif", "github")
+    }
+    for out in outputs.values():
+        out.encode("utf-8")  # writable to any UTF-8 stdout: no lone surrogate left
+    sarif = json.loads(outputs["sarif"])
+    uris = [
+        r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+        for r in sarif["runs"][0]["results"]
+    ]
+    assert uris == ["bad%FF.py", "file:///elsewhere/%FF.py"]
+    assert json.loads(outputs["json"])["findings"][0]["path"] == "bad\udcff.py"
+    assert outputs["github"].startswith("::error file=bad\\xff.py,")
+
+
+def test_sarif_on_a_real_undecodable_filename(project, capsys):
+    try:
+        (project / "src" / "demo" / _UNDECODABLE).write_text("x = (\n", encoding="utf-8")
+    except (OSError, UnicodeEncodeError):
+        pytest.skip("this filesystem does not take a non-UTF-8 filename")
+    rc, document, _ = _sarif_run(capsys, "src")
+    assert rc == 2  # the file does not parse: a file-level error, not a crash
+    [run] = document["runs"]
+    [notification] = run["invocations"][0]["toolExecutionNotifications"]
+    uri = notification["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+    assert uri == "src/demo/bad%FF.py"
 
 
 def test_sarif_relative_uri_is_percent_encoded(tmp_path):
@@ -392,16 +438,20 @@ def test_github_escapes_a_path_and_a_message(tmp_path):
 
 
 @pytest.mark.parametrize("fmt", ["sarif", "github"])
-def test_diff_is_a_usage_error_for_a_format_without_patches(project, capsys, fmt):
+@pytest.mark.parametrize("extra", [[], ["--fix"]])
+def test_diff_is_a_usage_error_for_a_format_without_patches(project, capsys, fmt, extra):
+    """Refused even beside `--fix`, which otherwise overrides `--diff`: no exception."""
+    before = (project / "src" / "demo" / "consumer.py").read_bytes()
     with pytest.raises(SystemExit) as exc:
-        cli.main(["--format", fmt, "--diff", "src"])
+        cli.main(["--format", fmt, "--diff", *extra, "src"])
     assert exc.value.code == 2
     assert "--diff cannot be combined with --format" in capsys.readouterr().err
+    assert (project / "src" / "demo" / "consumer.py").read_bytes() == before
 
 
 @pytest.mark.parametrize("fmt", ["sarif", "github"])
 def test_fix_writes_without_printing_a_patch_for_a_format_without_patches(project, capsys, fmt):
-    rc, out, err = _run(capsys, "--format", fmt, "--fix", "--diff", "src")  # --fix wins
+    rc, out, err = _run(capsys, "--format", fmt, "--fix", "src")
     assert rc == 0
     assert "+from demo import helpers" not in out + err
     assert "fixed: src/demo/consumer.py" in err
@@ -437,6 +487,33 @@ def test_text_is_the_default_and_unchanged(project, capsys):
     _, text, _ = _run(capsys, "--format", "text", "src")
     assert default == text
     assert default.splitlines()[0].startswith("src/demo/consumer.py:1:0: CP001 ")
+
+
+def test_a_package_writing_to_fd_1_on_import_cannot_corrupt_the_document(
+    project, capfd, monkeypatch
+):
+    """The in-process probe imports third-party parents; one may `os.write(1, ...)`.
+
+    `contextlib.redirect_stdout` alone does not catch that -- it bypasses
+    `sys.stdout` -- so the probe also points descriptor 1 at stderr.
+    """
+    site = project / "site"
+    (site / "loudpkg").mkdir(parents=True)
+    (site / "loudpkg" / "__init__.py").write_text(
+        "import os\nos.write(1, b'LOUD BANNER\\n')\nprint('PRINTED BANNER')\nthing = 1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(site))
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from loudpkg import thing\n", encoding="utf-8"
+    )
+    rc = cli.main(["--format", "json", "--python", "self", "src"])
+    captured = capfd.readouterr()
+    document = json.loads(captured.out)  # nothing but the document
+    assert rc == document["exit_code"] == 1
+    assert [f["code"] for f in document["findings"]] == ["CP001"]
+    assert "LOUD BANNER" in captured.err
+    assert "PRINTED BANNER" in captured.err
 
 
 def test_whole_project_json_reports_only_the_listed_files(project, capsys):

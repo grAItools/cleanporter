@@ -27,8 +27,11 @@ resolver is built (`_interpreter.choose`, from `project.build`); the resolver
 takes an interpreter, not the ``python`` setting's ``"auto"``/``"self"``.
 
 Probing imports third-party packages, and some print on import. In-process,
-``sys.stdout`` is pointed at ``sys.stderr`` for the duration, so a banner
-cannot land in a ``--diff`` patch on stdout (the stream contract in `cli`);
+stdout is pointed at stderr for the duration (`_stdout_to_stderr`) -- both
+``sys.stdout`` and file descriptor 1, since an extension module or a
+``os.write(1, ...)`` bypasses the Python object -- so a banner cannot land in
+a ``--diff`` patch or a ``--format`` document on stdout (the stream contract
+in `cli`);
 out of process, the reply is framed so a banner cannot corrupt it (`_probe`).
 When an out-of-process batch fails anyway -- a crash, a timeout, no reply --
 the batch is still undetermined, and *why* is kept in `take_warnings` for the
@@ -54,9 +57,11 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import os
 import pathlib
 import subprocess
 import sys
+from collections.abc import Iterator
 
 from cleanporter import firstparty, model
 
@@ -389,7 +394,7 @@ class Resolver:
         if self._in_process:
             # Importing a parent runs its code; a package that prints on
             # import must not write into a patch on cleanporter's stdout.
-            with contextlib.redirect_stdout(sys.stderr):
+            with _stdout_to_stderr():
                 flat: dict[str, object] = dict(_probe.classify_many(pairs))
         else:
             reply = self._probe_out_of_process(pairs)
@@ -447,3 +452,40 @@ class Resolver:
             why = status + _stderr_tail(proc.stderr)
         self._failures[why] = self._failures.get(why, 0) + len(pairs)
         return None
+
+
+@contextlib.contextmanager
+def _stdout_to_stderr() -> Iterator[None]:
+    """Send everything written to stdout, by any route, to stderr meanwhile.
+
+    ``contextlib.redirect_stdout`` catches ``print`` and ``sys.stdout.write``;
+    a C extension's ``printf`` or an ``os.write(1, ...)`` goes straight to
+    file descriptor 1, so that is pointed at descriptor 2 as well (`os.dup2`)
+    and put back afterwards. Both are process-wide: another thread's stdout
+    output is diverted too while this is in effect. Python-level buffers are
+    flushed on the way in and out, so what was written before lands on stdout
+    and what was written during lands on stderr. Where descriptor 1 cannot be
+    duplicated (closed, or not a real descriptor), only the Python-level
+    redirection applies.
+    """
+    original = sys.stdout
+    original.flush()
+    try:
+        saved: int | None = os.dup(1)
+    except OSError:
+        saved = None
+    try:
+        if saved is not None:
+            os.dup2(2, 1)
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        # Anything the imported code wrote through a reference to the
+        # original `sys.stdout` object is still buffered: out with it while
+        # descriptor 1 is still stderr.
+        with contextlib.suppress(OSError, ValueError):
+            original.flush()
+        sys.stderr.flush()
+        if saved is not None:
+            os.dup2(saved, 1)
+            os.close(saved)

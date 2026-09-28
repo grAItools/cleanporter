@@ -31,8 +31,7 @@ raise SystemExit(result.exit_code(strict=cfg.treat_unresolved_as_error))
 ```
 
 Each finding is a `cleanporter.model.Finding`: `format()` is the text
-report's line, `message` the part after the code, and `replacement` the
-spelling a `CP001` use site takes after the fix. The command's
+report's line, and `message` the part after the code. The command's
 `--format json|sarif|github` renderers are deliberately private — the
 [formats](usage.md#machine-readable-output) are the interface, not the
 functions — so a program that wants them runs the command, or builds its own
@@ -155,11 +154,16 @@ classified by an interpreter probe, which imports each *parent* package
   running interpreter, the probe runs in the calling process. The target's
   packages are imported into it, run their import-time code there, and stay in
   `sys.modules` after `run` returns.
-- **stdout is redirected, process-wide.** While the probe imports, `sys.stdout`
-  is pointed at `sys.stderr` (`contextlib.redirect_stdout`), so a package that
-  prints on import cannot land in a patch. That redirection is global to the
-  process, so it is **not thread-safe**: another thread writing to stdout
-  meanwhile has its output sent to stderr.
+- **stdout is redirected, process-wide, down to the file descriptor.** While
+  the probe imports, `sys.stdout` is pointed at `sys.stderr`
+  (`contextlib.redirect_stdout`) *and* file descriptor 1 at descriptor 2
+  (`os.dup2`, restored afterwards), so a package that prints on import — or
+  writes to descriptor 1 directly, as an extension module or `os.write(1, …)`
+  does — cannot land in a patch or a `--format` document. Both are global to
+  the process, so this is **not thread-safe**: anything another thread writes
+  to stdout meanwhile, through Python or the descriptor, goes to stderr.
+  `sys.stdout` is flushed before and after. Where descriptor 1 cannot be
+  duplicated (closed, say), only the Python-level redirection applies.
 - **To isolate a run**, set `python` in the `Config` to a *different*
   interpreter (for example
   `dataclasses.replace(cfg, python="/path/to/venv/bin/python")`, the library

@@ -64,22 +64,16 @@ class Finding:
         }[self.status]
 
     @property
-    def replacement(self) -> str | None:
-        """The spelling a `CP001` use site takes after the fix (``helpers.Widget``).
-
-        ``None`` for every other status: nothing is rewritten for those.
-        """
-        if self.status is not Status.VIOLATION:
-            return None
-        return f"{self.parent.rsplit('.', 1)[-1]}.{self.name}"
-
-    @property
     def message(self) -> str:
         """What `format` says after ``PATH:LINE:COLUMN: CODE``."""
-        if self.replacement is not None:
+        if self.status is Status.VIOLATION:
+            # The conventional spelling, as advice -- not necessarily what
+            # `--fix` writes, which can reuse an existing binding of the
+            # module or pick a free alias.
+            token = self.parent.rsplit(".", 1)[-1]
             return (
                 f"imports object '{self.name}' from module '{self.parent}'; "
-                f"import the module and use '{self.replacement}'"
+                f"import the module and use '{token}.{self.name}'"
             )
         if self.status is Status.UNRESOLVED and self.name == "?":
             # A whole file that could not be read, decoded, parsed or written.

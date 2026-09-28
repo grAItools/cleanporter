@@ -27,7 +27,7 @@ cleanporter [--fix] [--diff] [--python PATH] [--exempt MODULE] [--root PATH]
 | `--strict` | Also fail (exit `1`) on imports that could not be classified (`CP002`). Equivalent to turning on `treat_unresolved_as_error` for this run. |
 | `--whole-project` | Read the whole project for evidence, but fix, report and count only the files under `paths`. The project is the directory of the `pyproject.toml` the listed paths sit under — looked up from each path as written, not from a symlink's target — and every listed path that has one must share it: paths from two projects (a nested `examples/` project beside its parent, say) exit `2`, as does a list where none has one. Every listed path, and every file a listed directory expands to, must also lie inside that directory, both as written and with symlinks resolved: one that does not (a script under no `pyproject.toml`, a symlink into another project) is reported as `file not processed`, and the whole run exits `2` with nothing analysed or written. The project is walked as `cleanporter .` run from that directory would walk it. A listed file the walk leaves out — matched by `exclude`, or in a skipped directory — is not reported. A file elsewhere in the tree that cannot be parsed is a warning, not exit `2`. Built for [pre-commit](pre-commit.md), which passes only the changed files: see there for what a run over those alone gets wrong. |
 | `--show-skipped` | List the imports a [`skip` rule](configuration.md#skip-rules) took out of the run (`CP004`). They are counted in the summary either way; this prints them, which is how you check what a pattern actually swallowed. |
-| `--format FORMAT` | How to report: `text` (the default, the human report described on this page), `json`, `sarif` (SARIF 2.1.0, for code scanning) or `github` (GitHub Actions workflow commands, which annotate the lines in a pull request). A structured format puts one document on stdout and nothing else; see [Machine-readable output](#machine-readable-output). `--diff` cannot be combined with `sarif` or `github`. |
+| `--format FORMAT` | How to report: `text` (the default, the human report described on this page), `json`, `sarif` (SARIF 2.1.0, for code scanning) or `github` (GitHub Actions workflow commands, which annotate the lines in a pull request). A structured format puts one document on stdout and nothing else; see [Machine-readable output](#machine-readable-output). `--diff` cannot be combined with `sarif` or `github`, not even alongside `--fix`. |
 | `--version` | Print the version and exit. |
 | `--help` | Print usage and exit. |
 
@@ -175,8 +175,8 @@ This matters if you intend to pipe anything.
   import goes to stderr too (see [How it works](how-it-works.md)).
 - **`--format json`, `sarif` or `github`**: **stdout carries only the
   document**, written once the run is over. Findings and unprocessable files
-  are in it; warnings, notes, the `fixed: <path>` lines and the summary go to
-  **stderr**, as they do under `--diff`. See
+  are in it; warnings, notes, unprocessable files (again), the `fixed: <path>`
+  lines and the summary go to **stderr**, as they do under `--diff`. See
   [Machine-readable output](#machine-readable-output).
 
 The patch is written as raw bytes, each file's lines in that file's own
@@ -201,10 +201,14 @@ format:
 - **stdout carries the document and nothing else**, so it can be redirected
   to a file or piped to `jq` as it is. Everything a human wants to watch —
   warnings, notes (the detected interpreter, the `--fix` reminder to re-run
-  your tests), `fixed: <path>` lines and the summary — still goes to stderr.
-  JSON and SARIF also carry the run's warnings and notes inside the document;
-  the stderr copy is for the person reading the CI log. (The `--fix` reminder
-  is not one of the run's notes: it is on stderr only.)
+  your tests), files that could not be processed, `fixed: <path>` lines and
+  the summary — still goes to stderr. JSON and SARIF also carry the run's
+  warnings, notes and unprocessable files inside the document; the stderr
+  copy is for the person reading the CI log. (The `--fix` reminder is not one
+  of the run's notes: it is on stderr only.) That holds even for a
+  third-party package that writes to stdout while the probe imports it, by
+  `print` or straight to file descriptor 1: see
+  [Side effects](library.md#side-effects).
 - **The exit code is exactly the text report's** — `0`, `1` or `2`, under the
   same rules, `--strict` included. A run that never starts — a malformed
   `[tool.cleanporter]` table, a usage error — exits `2` with its message on
@@ -219,14 +223,22 @@ format:
   falls back to an absolute `file:` URI for a file outside it.)
 - **Columns**: JSON's `column` is 0-based, as in the text report's
   `PATH:LINE:COLUMN`. SARIF and GitHub count columns from 1, and get that
-  number plus one.
+  number plus one. Columns count Unicode code points (SARIF's
+  `"columnKind": "unicodeCodePoints"`).
+- **Filenames that are not valid UTF-8** (possible on Linux) never break a
+  report. JSON is ASCII-only and carries such a name as Python holds it, with
+  each undecodable byte a lone surrogate escape (`bad\udcff.py` for the byte
+  `0xff`) — valid JSON, though a strict UTF-8 consumer may refuse to decode
+  it; `os.fsencode` turns it back into the bytes. SARIF percent-encodes the
+  bytes (`bad%FF.py`); GitHub gets them backslash-escaped (`bad\xff.py`).
 
 What happens to a patch depends on the format. JSON has a place for one, so
 under `--diff` (or `--fix`) each rewrite is in its `patches` list and nothing
 else is written to stdout. SARIF and GitHub annotations have none, so `--diff`
-with them is a usage error (exit `2`), and `--fix` with them writes the files,
-prints a `fixed: <path>` line to stderr for each, and reports what is left —
-`git diff` shows what changed.
+with them is a usage error (exit `2`) — also alongside `--fix`, which
+otherwise overrides `--diff`, so the rule has no exception. `--fix` with them
+writes the files, prints a `fixed: <path>` line to stderr for each, and
+reports what is left — `git diff` shows what changed.
 
 The formatters behind `--format` are not part of the
 [library API](library.md): the formats are the interface.
@@ -257,9 +269,8 @@ A finding:
 | `level` | `error`, `warning` or `note`, as above. |
 | `path`, `line`, `column` | Where the `from` import starts; `column` is 0-based. |
 | `parent`, `name` | The `from PARENT import NAME` it is about. |
-| `message` | The text report's message, after the code. |
+| `message` | The text report's message, after the code. For `CP001` it suggests the conventional spelling (`helpers.Widget`); `--fix` may write a different one — reusing an existing binding of the module, or a free alias when the name is taken — so read the patch, not the message, for what is written. |
 | `detail` | The bare reason, for `CP002`–`CP004` (empty for `CP001`). |
-| `replacement` | For `CP001`, what each use of the name becomes (`helpers.Widget`); otherwise `null`. |
 
 ```bash
 $ cleanporter --format json src/ 2>/dev/null | jq '.findings[0]'
@@ -273,8 +284,7 @@ $ cleanporter --format json src/ 2>/dev/null | jq '.findings[0]'
   "parent": "mypkg.helpers",
   "name": "Widget",
   "message": "imports object 'Widget' from module 'mypkg.helpers'; import the module and use 'helpers.Widget'",
-  "detail": "",
-  "replacement": "helpers.Widget"
+  "detail": ""
 }
 ```
 
@@ -282,19 +292,27 @@ $ cleanporter --format json src/ 2>/dev/null | jq '.findings[0]'
 
 A [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
 log with one run. `tool.driver` names cleanporter and its version and carries
-one rule per finding code, `CP001`–`CP004`, whose `helpUri` is
+one rule per finding code, `CP001`–`CP004`, each with a short and full
+description, `help` (text and Markdown) and a `helpUri` pointing at
 [the finding codes table](#finding-codes) above. Each result has its
 `ruleId`, `level`, message, and a location whose URI is relative to the
-`SRCROOT` base (the current directory); `properties` holds `parent`, `name`
-and, for `CP001`, `replacement`. A file that could not be processed is not a
+`SRCROOT` base (the current directory); `properties` holds `parent` and
+`name`. A file that could not be processed is not a
 result: it is an error-level `toolExecutionNotifications` entry, and the
 invocation's `executionSuccessful` is `false`. Warnings and notes are
 notifications too, and `exitCode` is the process's.
 
 To show the findings in GitHub code scanning:
 
+!!! warning "Run it from the repository root"
+
+    Result URIs are relative to the directory cleanporter runs in, and code
+    scanning resolves them against the repository root. Run the step from the
+    root — no `working-directory:` — and pass paths relative to it, or the
+    alerts will point at files that do not exist.
+
 ```yaml
-- name: cleanporter
+- name: cleanporter  # from the repository root: SARIF paths are relative to it
   run: cleanporter --format sarif src/ tests/ > cleanporter.sarif
   continue-on-error: true  # let the upload run; code scanning gates the PR instead
 - uses: github/codeql-action/upload-sarif@v3
@@ -319,7 +337,15 @@ per finding, which GitHub Actions turns into an annotation on the line:
 `error`, `warning` or `notice` follows the severity above; an unprocessable
 file is an `::error` titled `CP002`. In the message `%`, CR and LF are escaped
 as `%25`, `%0D` and `%0A`; in the `file=` and `title=` properties `:` and `,`
-are escaped as well (`%3A`, `%2C`), as GitHub's parser requires.
+are escaped as well (`%3A`, `%2C`), as GitHub's parser requires. As with
+SARIF, `file=` is relative to the current directory, so run the step from the
+repository root.
+
+GitHub caps how many annotations it shows: at the time of writing, 10 of each
+level (`error`, `warning`, `notice`) per step and 50 per job. Past that, the
+rest are dropped from the pull request view — though every line is still in
+the step's log. On a large backlog, `--format sarif` with code scanning shows
+everything.
 
 ```yaml
 - name: Enforce Google style guide 2.2 (imports)

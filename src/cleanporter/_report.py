@@ -20,9 +20,16 @@ is shown and what it means:
   or here: it is listed apart (``errors`` in JSON, a tool execution
   notification in SARIF) and it is what makes the exit code 2.
 
-Columns: `model.Finding.column` is 0-based, as libcst counts and as the text
-report prints it, and so is JSON's ``column``. SARIF and GitHub count from 1,
-and get ``column + 1``.
+Columns: `model.Finding.column` is 0-based, counted in code points as libcst
+counts and as the text report prints it, and so is JSON's ``column``. SARIF
+and GitHub count from 1, and get ``column + 1``.
+
+Paths are whatever the filesystem holds, and on POSIX that need not be
+UTF-8: a name Python decoded with ``surrogateescape`` carries lone
+surrogates. JSON escapes them (``\udcff``); SARIF percent-encodes the
+original bytes (`_uri`); GitHub's ``file=`` gets them backslash-escaped. None
+of the three can fail to encode, so an odd filename cannot turn a report into
+a traceback.
 
 The module is private: its output formats are the documented interface, not
 these functions.
@@ -51,34 +58,58 @@ SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
 
 type Json = bool | int | str | list[Json] | dict[str, Json] | None
 
-#: One SARIF rule per finding code: id, name, description, default level.
-_RULES: tuple[tuple[str, str, str, str], ...] = (
-    (
+
+@dataclasses.dataclass(frozen=True)
+class _Rule:
+    """One SARIF rule: a finding code and what to say about it."""
+
+    id: str
+    name: str
+    short: str
+    full: str
+    level: str
+
+
+_RULES: tuple[_Rule, ...] = (
+    _Rule(
         "CP001",
         "object-import",
         "An object is imported by name; import its module instead.",
+        "Google Python Style Guide section 2.2: 'from P import S' is used only when S is a "
+        "module. cleanporter proved that S is not a module, so the import should name the "
+        "module and each use should go through it. `cleanporter --fix` rewrites it where that "
+        "is provably safe.",
         "error",
     ),
-    (
+    _Rule(
         "CP002",
         "unresolved",
         "Could not prove whether the imported name is a module or an object.",
+        "cleanporter never guesses: the parent could not be imported by the probe "
+        "interpreter, the name is both a submodule and a binding, or a first-party name has "
+        "no evidence on disk. Never rewritten; fails the run only under --strict.",
         "warning",
     ),
-    (
+    _Rule(
         "CP003",
         "not-rewritten",
         "A violation deliberately not rewritten; it still fails the run.",
+        "Structurally a violation, but the fixer declined to rewrite it, for the reason in "
+        "the message (a wildcard import, a re-export, a rewrite it cannot prove safe). The "
+        "file is left byte-identical; a human decides what to do.",
         "error",
     ),
-    (
+    _Rule(
         "CP004",
         "skipped-by-config",
         "Taken out of the run by a [tool.cleanporter.skip] rule; never fails the run.",
+        "The import matched a skip rule in [tool.cleanporter.skip], so it was never "
+        "analysed. This is the project's own configuration reporting back, listed only "
+        "under --show-skipped.",
         "note",
     ),
 )
-_RULE_INDEX = {rule[0]: index for index, rule in enumerate(_RULES)}
+_RULE_INDEX = {rule.id: index for index, rule in enumerate(_RULES)}
 
 #: The GitHub workflow command for each level.
 _GITHUB_COMMANDS = {"error": "error", "warning": "warning", "note": "notice"}
@@ -174,7 +205,6 @@ def _json_finding(finding: model.Finding, *, strict: bool) -> Json:
         "name": finding.name,
         "message": finding.message,
         "detail": finding.detail,
-        "replacement": finding.replacement,
     }
 
 
@@ -222,14 +252,37 @@ def _relative(path: pathlib.Path, cwd: pathlib.Path) -> str | None:
     return None if posix == ".." or posix.startswith("../") else posix
 
 
+def _uri(posix: str) -> str:
+    """*posix*, a POSIX-spelled path, as a URI path: its bytes, percent-encoded.
+
+    Encoding the *bytes* (`os.fsencode`) is what makes a filename that is not
+    valid UTF-8 -- carried in a `str` as lone surrogates -- a URI rather than
+    a `UnicodeEncodeError`.
+    """
+    return urllib.parse.quote(os.fsencode(posix), safe="/")
+
+
+def _file_uri(path: pathlib.Path, *, directory: bool = False) -> str:
+    """The ``file:`` URI of the absolute *path*; with a trailing ``/`` for a *directory*.
+
+    Built by hand rather than by `pathlib.Path.as_uri`, which fails on a
+    surrogate-escaped name.
+    """
+    posix = path.as_posix()
+    if not posix.startswith("/"):  # a Windows drive: C:/x -> /C:/x
+        posix = f"/{posix}"
+    if directory and not posix.endswith("/"):
+        posix = f"{posix}/"
+    return f"file://{_uri(posix)}"
+
+
 def _sarif_location(path: pathlib.Path, line: int, column: int, cwd: pathlib.Path) -> Json:
     relative = _relative(path, cwd)
     artifact: dict[str, Json]
     if relative is None:
-        absolute = path if path.is_absolute() else cwd / path
-        artifact = {"uri": absolute.as_uri()}
+        artifact = {"uri": _file_uri(path if path.is_absolute() else cwd / path)}
     else:
-        artifact = {"uri": urllib.parse.quote(relative), "uriBaseId": "SRCROOT"}
+        artifact = {"uri": _uri(relative), "uriBaseId": "SRCROOT"}
     return {
         "physicalLocation": {
             "artifactLocation": artifact,
@@ -239,16 +292,7 @@ def _sarif_location(path: pathlib.Path, line: int, column: int, cwd: pathlib.Pat
 
 
 def _sarif(result: engine.RunResult, options: _Options) -> str:
-    rules: list[Json] = [
-        {
-            "id": code,
-            "name": name,
-            "shortDescription": {"text": description},
-            "helpUri": HELP_URI,
-            "defaultConfiguration": {"level": default},
-        }
-        for code, name, description, default in _RULES
-    ]
+    rules: list[Json] = [_sarif_rule(rule) for rule in _RULES]
     results: list[Json] = [
         _sarif_result(f, strict=options.strict, cwd=options.cwd) for f in _shown(result, options)
     ]
@@ -275,7 +319,8 @@ def _sarif(result: engine.RunResult, options: _Options) -> str:
                         "rules": rules,
                     }
                 },
-                "originalUriBaseIds": {"SRCROOT": {"uri": options.cwd.as_uri().rstrip("/") + "/"}},
+                "originalUriBaseIds": {"SRCROOT": {"uri": _file_uri(options.cwd, directory=True)}},
+                "columnKind": "unicodeCodePoints",
                 "invocations": [
                     {
                         "executionSuccessful": not result.errors,
@@ -290,6 +335,21 @@ def _sarif(result: engine.RunResult, options: _Options) -> str:
     return _dump(document)
 
 
+def _sarif_rule(rule: _Rule) -> Json:
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "shortDescription": {"text": rule.short},
+        "fullDescription": {"text": rule.full},
+        "help": {
+            "text": f"{rule.full} See {HELP_URI}",
+            "markdown": f"{rule.full}\n\nSee [finding codes]({HELP_URI}).",
+        },
+        "helpUri": HELP_URI,
+        "defaultConfiguration": {"level": rule.level},
+    }
+
+
 def _notification(level: str, text: str) -> Json:
     """A tool execution notification with no location: a warning or a note."""
     return {"level": level, "message": {"text": text}}
@@ -297,8 +357,6 @@ def _notification(level: str, text: str) -> Json:
 
 def _sarif_result(finding: model.Finding, *, strict: bool, cwd: pathlib.Path) -> Json:
     properties: dict[str, Json] = {"parent": finding.parent, "name": finding.name}
-    if finding.replacement is not None:
-        properties["replacement"] = finding.replacement
     return {
         "ruleId": finding.code,
         "ruleIndex": _RULE_INDEX[finding.code],
@@ -325,7 +383,9 @@ def escape_property(value: str) -> str:
 def _github_command(command: str, finding: model.Finding, cwd: pathlib.Path) -> str:
     """One annotation, titled with the finding's code."""
     relative = _relative(finding.path, cwd)
-    file = relative if relative is not None else str(finding.path)
+    spelled = relative if relative is not None else str(finding.path)
+    # A surrogate-escaped name cannot be written to stdout; spell its bytes.
+    file = os.fsencode(spelled).decode("utf-8", "backslashreplace")
     properties = ",".join(
         f"{key}={escape_property(value)}"
         for key, value in (

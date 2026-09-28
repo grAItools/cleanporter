@@ -48,16 +48,20 @@ Breaking under the pre-1.0 policy above:
 - **Machine-readable output: `--format json|sarif|github`.** The default,
   `text`, is unchanged. `json` is one document with the tool version, exit
   code, counts, findings (code, level, path, line, column, parent, name,
-  message, reason and, for `CP001`, the replacement spelling), unprocessable
-  files, warnings, notes and — under `--diff`/`--fix` — the patches. `sarif`
+  message and `detail`), unprocessable files, warnings, notes and — under
+  `--diff`/`--fix` — the patches. `sarif`
   is a SARIF 2.1.0 log, one rule per finding code, ready for
   `github/codeql-action/upload-sarif`. `github` prints workflow commands that
   annotate pull requests. In each, stdout carries only the document, the exit
   code is the text report's, `CP004` is listed only under `--show-skipped`,
   and severity follows the exit code (`CP002` is a warning, an error under
   `--strict`). `--diff` with `sarif` or `github`, which have no place for a
-  patch, is a usage error. CLI-only: there is no configuration key. For
-  library callers, `model.Finding` gains `message` and `replacement`. See
+  patch, is a usage error, even alongside `--fix`. CLI-only: there is no
+  configuration key. For library callers, `model.Finding` gains `message`.
+  So that stdout really holds only the document, the in-process probe now
+  also points file descriptor 1 at stderr while it imports (it redirected
+  only `sys.stdout` before), so a package that writes to the descriptor on
+  import cannot corrupt a report or a `--diff` patch either. See
   [Machine-readable output](https://graitools.github.io/cleanporter/usage/#machine-readable-output).
 - **cleanporter finds the project's interpreter by itself.** Installed with
   `pipx` or `uv tool`, cleanporter runs in an environment without the target

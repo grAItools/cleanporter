@@ -19,11 +19,12 @@ line endings, so that it applies to the file on disk.
 ``--format json|sarif|github`` swaps the report for one document on stdout,
 rendered by `_report` once the run is over, and stdout then carries *only*
 that document. Everything else the text report would print -- warnings,
-notes, ``fixed:`` lines, the summary -- goes to stderr, as it does while a
-patch is on stdout; findings and file-level errors are in the document
-instead. A patch has a place only in JSON (``patches``), so ``--diff`` with
-``sarif`` or ``github`` is a usage error, and ``--fix`` with them writes
-without printing the diff.
+notes, file-level errors, ``fixed:`` lines, the summary -- goes to stderr, as
+it does while a patch is on stdout; findings are in the document instead, and
+file-level errors are in it too. A patch has a place only in JSON
+(``patches``), so ``--diff`` with ``sarif`` or ``github`` is a usage error --
+with or without ``--fix`` -- and ``--fix`` with them writes without printing
+the diff.
 
 A file that cannot be read, decoded, parsed or written is reported with its
 path and makes the exit code 2, and every other file is still processed.
@@ -189,15 +190,19 @@ class _Printer(engine.Listener):
 class _StructuredPrinter(_Printer):
     """`_Printer` for ``--format json|sarif|github``: stdout is kept for the document.
 
-    Warnings and notes still stream to stderr; a file-level error and a patch
-    are in the document instead, so only the ``fixed:`` line is printed.
+    Warnings, notes and file-level errors still stream to stderr, for the
+    person reading a CI log; a patch is in the document instead (or, for
+    SARIF and GitHub, nowhere), so only its ``fixed:`` line is printed.
     """
 
     def __init__(self) -> None:
         super().__init__(sys.stderr)
 
     def error(self, finding: model.Finding) -> None:
-        pass
+        # A path that is not valid UTF-8 must not turn the echo into a
+        # traceback before the document is written: spell its bytes.
+        line = finding.format().encode("utf-8", "backslashreplace").decode("utf-8")
+        print(line, file=self._report)
 
     def patch(self, patch: engine.FilePatch) -> None:
         if patch.written:
@@ -355,7 +360,7 @@ def _write_patch(data: bytes) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    if args.format in _PATCHLESS_FORMATS and args.diff and not args.fix:
+    if args.format in _PATCHLESS_FORMATS and args.diff:
         # Exits 2, as every other usage error does.
         parser.error(
             f"--diff cannot be combined with --format {args.format}, which has no place "

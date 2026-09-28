@@ -239,8 +239,10 @@ Importing a parent runs its code, and some packages print on import (a
 "Welcome to ..." banner). None of that can reach a patch or corrupt the
 probe's reply:
 
-- **In process**, `sys.stdout` points at stderr while the probe runs, so a
-  banner is printed on stderr and `--diff`'s stdout stays a clean patch.
+- **In process**, stdout points at stderr while the probe runs — both
+  `sys.stdout` and file descriptor 1, so an extension module's `printf` or an
+  `os.write(1, ...)` is caught too — so a banner is printed on stderr and
+  `--diff`'s stdout stays a clean patch, and `--format`'s a clean document.
 - **Out of process**, the probe also points its `sys.stdout` at stderr, and
   its reply is *framed* by markers that are extracted wherever they sit in
   the output. The framing is what copes with output written below Python —
@@ -248,11 +250,10 @@ probe's reply:
   pipe's C-level buffer can flush it after the reply — without the probe
   needing anything beyond the handful of stdlib modules it is allowed.
 
-The in-process swap is of `sys.stdout` only: output an extension module
-writes directly to file descriptor 1 during an in-process probe still lands
-on cleanporter's stdout; it is a known limit rather than something the
-in-process path can close without rewiring the process's own descriptors
-under the code it is importing.
+The in-process swap rewires the process's own descriptor 1 for the
+duration, and restores it afterwards; it is process-wide, and so not
+thread-safe for a library caller (see
+[Side effects](library.md#side-effects)).
 
 ### 3. Undetermined
 
