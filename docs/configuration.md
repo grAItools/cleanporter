@@ -51,7 +51,7 @@ skip = [
 | Key | Default | Description |
 | --- | --- | --- |
 | `exclude` | `[]` | Glob patterns (list of strings). Each is matched against the project-relative POSIX path of a candidate file or directory, and also against its absolute POSIX path. A pattern containing no glob metacharacter (`*`, `?`, `[`) additionally matches a directory prefix, so `"tests/"` excludes `tests/` and everything under it. |
-| `scope` | `"all"` | `"all"` reports violations everywhere, including stdlib and third-party imports. `"first-party"` reports only imports whose top-level package is one of your own analysis roots. |
+| `scope` | `"all"` | `"all"` reports violations everywhere, including stdlib and third-party imports. `"first-party"` reports — and `--fix` rewrites — only imports whose top-level package is one of your own analysis roots. |
 | `source_roots` | `[]` | Explicit first-party import roots — directories that are on `sys.path` for the code being analysed — relative to the `pyproject.toml` directory. Combined with, not substituted for, whatever the analysed paths themselves imply. A declared root outranks an inferred one. |
 | `treat_unresolved_as_error` | `false` | When `true`, `CP002` (unresolved) findings count toward the failure exit code, so a run that could not classify something exits `1`. |
 | `exempt_modules` | `["typing", "typing_extensions", "collections.abc", "__future__"]` | `from MODULE import X` is allowed when `MODULE` — or any ancestor of it — is in this set. Configured values are **added to** the built-in defaults; they never replace them. |
@@ -152,6 +152,10 @@ With `scope = "first-party"`, only imports whose top-level package is one of
 your analysis roots are considered; stdlib and third-party imports are passed
 over without being resolved at all. This is a useful staging step on a large
 legacy codebase: fix your own modules first, then widen to `"all"`.
+
+The scope governs `--fix` and `--diff` exactly as it governs checking: both
+modes make one decision per import, so an import that is not reported is never
+rewritten.
 
 The first-party test looks at the **top-level component only**. If `mypkg` is
 first-party then `mypkg.anything.at.all` is treated as first-party, whether or

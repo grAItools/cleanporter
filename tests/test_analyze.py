@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 
 import libcst as cst
@@ -520,3 +521,223 @@ def test_build_keeps_the_encoding_and_bytes_and_reports_an_undecodable_file(tmp_
     assert error.path == pkg / "bad.py"
     assert error.line == 1
     assert "cannot decode file" in error.detail
+
+
+# -- check and fix agree -------------------------------------------------------
+def test_scope_first_party_neither_reports_nor_rewrites_stdlib():
+    """B1: check passed over `from os.path import join`, and `--fix` rewrote it."""
+    src = 'from os.path import join\nprint(join("a", "b"))\n'
+    cfg = config.Config(scope="first-party")
+    path = FIXTURES / "pkg" / "a.py"
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = resolver_lib.Resolver(mm)
+    rec = _record(src, path, mm)
+    resolver.warm(_warm_pairs(rec))
+    assert analyze.analyze_record(rec, resolver, cfg) == []
+    result = rewrite.fix_record(rec, resolver, cfg)
+    assert (result.status, result.source) == ("clean", src)
+
+
+class _RecordingFixer(rewrite._Fixer):
+    """A `_Fixer` that remembers every import it chose to rewrite.
+
+    Keyed ``(line, parent, name)`` -- the same key `_key` gives a finding --
+    so two imports of one name (``Widget`` and ``Widget as Widget``) are
+    compared separately rather than collapsing into one.
+    """
+
+    def __init__(self, rec, resolver, cfg):
+        super().__init__(rec, resolver, cfg)
+        self.rewritten: set[tuple[int, str, str]] = set()
+
+    def _partition(self, imp, parent, scope):
+        keep, fix = super()._partition(imp, parent, scope)
+        line = self._line_of(imp)
+        self.rewritten |= {(line, parent, name) for name, _asname in fix}
+        return keep, fix
+
+
+#: One package reaching every finding the decision can produce -- stdlib and
+#: first-party objects, modules, exemptions, a wildcard, an unresolvable and
+#: an unanchorable parent, relative, aliased, re-exported, load-bearing,
+#: never-read, unreachable-replacement, function-local, TYPE_CHECKING-gated,
+#: skip-pinned, skip-covered and guard-blocked imports.
+_AGREEMENT_TREE = {
+    "__init__.py": "from app.helpers import THING as THING\n",
+    "helpers.py": "THING = 1\n\ndef go():\n    return 2\n\nclass Widget:\n    pass\n",
+    "sub/__init__.py": "",
+    "sub/tool.py": "def dump():\n    return 3\n",
+    # `app.shadow` binds `mod` to an int while `app/shadow/mod.py` exists, so
+    # the replacement `from app.shadow import mod` cannot be trusted.
+    "shadow/__init__.py": "mod = 1\n",
+    "shadow/mod.py": "def thing():\n    return 4\n",
+    "far.py": "from app.shadow.mod import thing\n\nx = thing()\n",
+    "loose.py": "from ..... import nothing\n\nx = nothing\n",
+    "relay.py": "from app.helpers import go\n\ndef run():\n    return go()\n",
+    "consumer.py": "from app.relay import go\n\nvalue = go()\n",
+    "skipped.py": (
+        "from app.helpers import Widget\n"
+        "\n"
+        "def kept():\n"
+        "    from app.helpers import go\n"
+        "    return Widget(), go()\n"
+    ),
+    "blocked.py": 'from app.helpers import go\n\n__all__ = ["go"]\nx = go()\n',
+    "user.py": (
+        "from __future__ import annotations\n"
+        "from typing import TYPE_CHECKING, Any\n"
+        "from os.path import join\n"
+        "from collections import OrderedDict as OD\n"
+        "from app.helpers import THING, go, Widget\n"
+        "from app import helpers\n"
+        "from app.sub.tool import dump\n"
+        "from app.sub.tool import *\n"
+        "from definitely_missing_pkg_xyz import thing\n"
+        "from .helpers import go as g2\n"
+        "from app.helpers import Widget as Widget\n"
+        "from json import dumps\n"
+        "if TYPE_CHECKING:\n"
+        "    from app.sub.tool import dump as d2\n"
+        "\n"
+        "def f() -> tuple[object, ...]:\n"
+        "    from os.path import basename\n"
+        "    return (basename('x'), OD(), join('a'), THING, go(), Widget, dump(), thing,\n"
+        "            g2(), helpers)\n"
+        "\n"
+        "x: Any = 1\n"
+        "y: d2 = 2\n"
+    ),
+}
+
+_AGREEMENT_CONFIGS: dict[str, dict[str, object]] = {
+    "default": {},
+    "first-party": {"scope": "first-party"},
+    "exempt": {"exempt_names": ["go"], "exempt_modules": ["os"]},
+    "skip": {"skip": [{"function": "kept"}]},
+    "skip-file": {"skip": [{"file": r".*user\.py"}]},
+    "first-party+skip": {"scope": "first-party", "skip": [{"function": "kept"}]},
+}
+
+_Key = tuple[int, str, str]
+
+
+def _key(finding: model.Finding) -> _Key:
+    return (finding.line, finding.parent, finding.name)
+
+
+def _violations(findings: list[model.Finding]) -> set[_Key]:
+    return {_key(f) for f in findings if f.status is model.Status.VIOLATION}
+
+
+@dataclasses.dataclass
+class _Agreement:
+    rewritten: set[_Key]
+    #: Plain ``check``: nothing is known about never-read names.
+    check: list[model.Finding]
+    #: ``--fix``: the fixer's never-read names handed back.
+    fix_mode: list[model.Finding]
+
+
+def _agreement(tmp_path: pathlib.Path, table: dict[str, object]) -> dict[str, _Agreement]:
+    """Per file (relative to the package), what each mode did with each import."""
+    root = tmp_path / "app"
+    for rel, text in _AGREEMENT_TREE.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    cfg = config._parse_table(table, tmp_path)
+    records, resolver, errors, _warnings = analyze.build([root], cfg)
+    assert errors == []
+    out: dict[str, _Agreement] = {}
+    for rec in records:
+        fixer = _RecordingFixer(rec, resolver, cfg)
+        cst.MetadataWrapper(rec.tree, unsafe_skip_copy=True).visit(fixer)
+        out[rec.path.relative_to(root).as_posix()] = _Agreement(
+            fixer.rewritten,
+            analyze.analyze_record(rec, resolver, cfg),
+            analyze.analyze_record(rec, resolver, cfg, frozenset(fixer.unread)),
+        )
+    assert sorted(out) == sorted(_AGREEMENT_TREE)
+    return out
+
+
+def test_check_and_fix_agreement_the_fixer_rewrites_only_cp001s(tmp_path):
+    """One decision drives both modes, so they cannot drift again.
+
+    Across every config shape that changes the decision -- scope, exemptions,
+    skip rules -- every import the fixer chose to rewrite is one plain
+    ``check`` reports as `CP001`, and with the fixer's never-read names handed
+    back (as ``--fix`` does) the two sets are equal. Nothing check calls
+    compliant, unresolved or declined is ever rewritten.
+    """
+    for label, table in _AGREEMENT_CONFIGS.items():
+        for name, a in _agreement(tmp_path / label, table).items():
+            check, fix_mode = _violations(a.check), _violations(a.fix_mode)
+            assert a.rewritten <= check, (label, name, a.rewritten - check)
+            assert a.rewritten == fix_mode, (label, name, a.rewritten ^ fix_mode)
+
+
+def _rung(finding: model.Finding) -> str:
+    """Which outcome of `analyze.Decider.decide` produced *finding*."""
+    if finding.status is not model.Status.SKIPPED:
+        if finding.status is model.Status.UNRESOLVED and finding.detail == analyze._UNANCHORED:
+            return "CP002 unanchored"
+        return finding.code
+    known = {
+        analyze._WILDCARD: "CP003 wildcard",
+        analyze._REEXPORT: "CP003 re-export",
+        analyze._UNREAD: "CP003 never read",
+    }
+    if finding.detail in known:
+        return known[finding.detail]
+    if finding.detail.startswith("another file imports"):
+        return "CP003 load-bearing"
+    if finding.detail.startswith("the replacement"):
+        return "CP003 unreachable"
+    return "CP003 other"
+
+
+def test_the_agreement_tree_reaches_every_outcome(tmp_path):
+    """Guard for the test above: its tree must keep exercising every outcome.
+
+    An edit that drops a case would otherwise leave the agreement test passing
+    over less than it claims to.
+    """
+    runs = {label: _agreement(tmp_path / label, t) for label, t in _AGREEMENT_CONFIGS.items()}
+    rungs = {
+        _rung(f) for files in runs.values() for a in files.values() for f in a.check + a.fix_mode
+    }
+    assert rungs == {
+        "CP001",
+        "CP002",
+        "CP002 unanchored",
+        "CP003 wildcard",
+        "CP003 re-export",
+        "CP003 never read",
+        "CP003 load-bearing",
+        "CP003 unreachable",
+        "CP004",
+    }
+
+    # CP004 both ways: pinned by name at module level, and covered by a rule
+    # (the import inside the skipped function) -- plus a whole-file rule.
+    skipped = runs["skip"]["skipped.py"].fix_mode
+    assert [(f.line, f.code) for f in skipped] == [(1, "CP004"), (4, "CP004")]
+    assert {f.code for f in runs["skip-file"]["user.py"].fix_mode} == {"CP004"}
+
+    # The three no-finding outcomes: a module, an exemption, out of scope.
+    def names(label: str) -> set[tuple[str, str]]:
+        return {(f.parent, f.name) for a in runs[label].values() for f in a.check}
+
+    assert ("app", "helpers") not in names("default")
+    assert ("app.helpers", "go") in names("default")
+    assert ("app.helpers", "go") not in names("exempt")
+    assert ("os.path", "join") in names("default")
+    assert ("os.path", "join") not in names("first-party")
+
+
+def test_the_agreement_check_is_not_vacuous(tmp_path):
+    user = _agreement(tmp_path / "all", {})["user.py"]
+    assert {(3, "os.path", "join"), (5, "app.helpers", "go")} <= user.rewritten
+    user = _agreement(tmp_path / "fp", {"scope": "first-party"})["user.py"]
+    assert not {k for k in user.rewritten | _violations(user.check) if k[1] == "os.path"}
+    assert (5, "app.helpers", "go") in user.rewritten

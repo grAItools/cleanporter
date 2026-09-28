@@ -30,6 +30,17 @@ def test_basic_rewrite_reports_fixed():
     assert result.blockers == []
 
 
+def test_scope_first_party_leaves_stdlib_imports_alone():
+    """B1: ``check`` passed over these under ``first-party``, so ``--fix`` must too."""
+    src = 'from os.path import join\nfrom pkg.sub.mod import Thing\nx = join("a"), Thing()\n'
+    result = outcome(src, config_lib.Config(scope="first-party"))
+    assert result.status == "fixed"
+    assert result.fixed == 1
+    assert result.source == (
+        'from os.path import join\nfrom pkg.sub import mod\nx = join("a"), mod.Thing()\n'
+    )
+
+
 def test_compliant_file_reports_clean():
     src = "from pkg.sub import mod\nx = mod.Thing()\n"
     result = outcome(src)
