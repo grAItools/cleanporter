@@ -16,6 +16,17 @@ class Kind(enum.Enum):
     #: ``__init__``. The binding wins at import time, so this cannot be
     #: decided statically -- report it, never guess.
     AMBIGUOUS = "ambiguous"
+    #: First-party, but neither on disk as a submodule nor provably bound in
+    #: the parent: a generated ``_version.py``, a ``_pb2`` module, a Cython
+    #: module built out of tree, a sibling portion of a namespace package, a
+    #: name only a PEP 562 ``__getattr__`` could supply. Absence is not
+    #: evidence of an object, so this is reported, never guessed.
+    UNDETERMINED = "undetermined"
+    #: First-party parent, not on disk, and bound (at least in part) by a
+    #: ``from M import X`` whose ``M`` is third-party: the interpreter probe
+    #: has to answer for ``M.X`` before there is a verdict. Never a final
+    #: answer; `resolver.Resolver` settles it.
+    DEFERRED = "deferred"
 
 
 class Status(enum.Enum):

@@ -362,22 +362,25 @@ def test_an_init_that_imports_the_submodule_itself_leaves_the_import_fixable(
     assert [f.code for f in _findings_by_file(pkg)["consumer.py"]] == ["CP001"]
 
 
-def test_a_replacement_this_run_cannot_see_is_skipped(tmp_path: pathlib.Path) -> None:
+def test_an_import_from_a_module_this_run_cannot_see_is_unresolved(
+    tmp_path: pathlib.Path,
+) -> None:
     """Missing evidence is not evidence of an object, so nothing is rewritten.
 
-    ``pkg.missing.mod`` is claimed to be an object because nothing on disk
-    says otherwise, while the import it appears in only makes sense if it is
-    a module. That is the shape of a run pointed at one distribution of a
-    namespace package: the map answers for the whole first-party top-level
-    name, scanned subtree or not.
+    Nothing on disk says what ``pkg.missing.mod`` is -- the shape of a run
+    pointed at one distribution of a namespace package, where the map answers
+    for the whole first-party top-level name, scanned subtree or not. This
+    used to be called an object by absence, reported ``CP001`` and then
+    declined only by the replacement check; with no evidence either way it is
+    ``CP002`` from the start.
     """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
     (pkg / "consumer.py").write_text("from pkg.missing.mod import OTHER\nx = OTHER\n")
     findings = _findings_by_file(pkg)["consumer.py"]
-    assert [f.code for f in findings] == ["CP003"]
-    assert "no submodule 'mod' under this run's import roots" in findings[0].detail
+    assert [f.code for f in findings] == ["CP002"]
+    assert "'pkg.missing.mod' is not a module or package on disk" in (findings[0].detail)
 
 
 # -- [tool.cleanporter.skip] -------------------------------------------------

@@ -109,6 +109,15 @@ into, regardless of `exclude`:
 Within the directories it does walk, cleanporter picks up files with a `.py`
 suffix.
 
+The same list applies, *at an import root only*, to the scan that decides
+what is first-party (see
+[How it works](how-it-works.md#1-first-party-from-the-filesystem)), so a
+`build/` or `dist/` at a root is not mistaken for a first-party package. Below
+a root those are ordinary package names — pip has a real
+`pip/_internal/operations/build/` — and are scanned. `exclude` is *not*
+applied to that scan: it chooses which files are analysed, and an excluded
+module still exists for the files that import it.
+
 ### An explicitly named path bypasses every filter
 
 Naming a file on the command line is taken as deliberate. Such a path skips

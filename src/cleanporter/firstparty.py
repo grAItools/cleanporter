@@ -5,7 +5,8 @@ on ``sys.path`` for these files) and enumerate every dotted name that is a
 package or module. That lets us:
 
 * classify ``from PARENT import NAME`` for first-party ``PARENT`` with certainty
-  (is ``PARENT.NAME`` a directory/``.py`` under the tree?), and
+  (is ``PARENT.NAME`` a directory/``.py`` under the tree, or does ``PARENT``'s
+  own source bind ``NAME``?), and
 * compute a file's dotted module name so relative imports (``from . import x``,
   ``from .a.b import Y``) can be resolved to an absolute ``PARENT``.
 
@@ -17,13 +18,43 @@ Roots are inferred per path and then ranked against each other -- declared
 roots outrank inferred ones, deeper outranks shallower, and a root another file
 has shown to be a package is demoted out of the running. See `qualname_for` and
 `demote_roots`, where the rules and the cases that forced them are written out.
+
+**Object only on positive evidence.** A submodule that is *not* on disk is not
+thereby an object. A checkout routinely lacks real submodules: a
+``_version.py`` setuptools_scm writes at build time, a protobuf ``_pb2``, a
+Cython module whose ``.pyx`` is all the tree holds, the sibling portion of a
+PEP 420 namespace package installed from another distribution. Calling those
+objects once made ``--fix`` turn ``from pkg import _version`` into
+``pkg._version`` -- an ``AttributeError`` whenever ``pkg/__init__`` had not
+happened to import it. So when ``PARENT.NAME`` is not on disk,
+`ModuleMap.classify` reads what the parent's source *binds* ``NAME`` to, and
+follows every binding to where it comes from (`ModuleMap._lookup_in` spells
+out how): a ``def`` is an object, ``from .sub import helpers`` is whatever
+``sub.helpers`` is, ``from os import path`` is the probe's to answer
+(`Deferral`). An object or a module needs every binding to agree; anything
+else is `model.Kind.UNDETERMINED`, with the reason in
+`ModuleMap.unresolved_reason`.
+
+**What the scan skips.** At an import root, the directories discovery never
+walks (`discover.ALWAYS_SKIP_DIRS`: ``build``, ``dist``, ``node_modules``,
+``site-packages``, ``__pycache__``) are not scanned: a ``build/lib/pkg`` copy
+of the tree is not a second first-party package, and a ``dist/`` does not
+make ``dist`` a first-party name. *Below* a root they are ordinary names --
+pip really has a ``pip/_internal/operations/build/`` package -- so only
+``__pycache__`` and dot-directories are skipped there. ``exclude`` is
+deliberately *not* honoured here. It says which files to analyse, not which
+modules exist; an excluded directory still holds modules other files import,
+and dropping them from the map would turn those imports from a proven module
+into ``CP002`` for no gain in safety.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
+import sys
 
-from cleanporter import _bindings, model
+from cleanporter import _bindings, discover, model
 
 #: Suffixes CPython will import as an extension module.
 EXTENSION_SUFFIXES = frozenset({".so", ".pyd"})
@@ -82,6 +113,119 @@ def _nesting_warnings(roots: list[pathlib.Path]) -> list[str]:
     return out
 
 
+@dataclasses.dataclass(frozen=True)
+class _Evidence:
+    """Everything a module's source says one of its names could be bound to.
+
+    A name can be bound by several statements -- ``try: from ._speedups
+    import f`` with ``def f`` in the ``except`` -- and without running the
+    module which one wins is unknown, so every binding is kept and the verdict
+    is decided over all of them: an object only if every one is an object, a
+    module only if every one is a module.
+    """
+
+    #: What the bindings read here resolved to: ``True`` a module, ``False``
+    #: an object.
+    kinds: frozenset[bool] = frozenset()
+    #: ``(module, name)`` pairs outside the first-party tree that a binding
+    #: was imported from; only the interpreter probe can answer for them.
+    external: frozenset[tuple[str, str]] = frozenset()
+    #: Non-empty when some binding cannot be known without running code: the
+    #: innermost reason why. It decides the verdict whatever else was found.
+    unknown: str = ""
+    #: The first hop of the chain that led to `unknown` (``'pkg' imports 'X'
+    #: from 'pkg.core'``), so a reason names where the chain starts and where
+    #: it failed without reciting every link in between.
+    via: str = ""
+
+    def __or__(self, other: _Evidence) -> _Evidence:
+        first = self if self.unknown else other
+        return _Evidence(
+            self.kinds | other.kinds, self.external | other.external, first.unknown, first.via
+        )
+
+    def through(self, hop: str) -> _Evidence:
+        """This (undetermined) evidence, reached by *hop*."""
+        return _Evidence(unknown=self.unknown, via=hop)
+
+    @property
+    def reason(self) -> str:
+        """`unknown`, prefixed with the hop that led to it."""
+        return f"{self.via}, and {self.unknown}" if self.via else self.unknown
+
+    @property
+    def empty(self) -> bool:
+        """True when nothing binds the name at all."""
+        return not (self.kinds or self.external or self.unknown)
+
+
+_NOTHING = _Evidence()
+_OBJECT = _Evidence(kinds=frozenset({False}))
+_MODULE = _Evidence(kinds=frozenset({True}))
+#: `ModuleMap._low` when no in-progress lookup has been reached.
+_NO_BACK_EDGE = sys.maxsize
+#: `ModuleMap._low` once a lookup has been cut short by a limit: below every
+#: depth, so nothing on the way back up is memoised.
+_TRUNCATED = -1
+#: How many lookups deep a chain of re-exports and star imports is followed
+#: before the answer is "undetermined". Real chains are a handful long; the
+#: limit exists so that a pathological one ends in a finding, not in a
+#: ``RecursionError``.
+_MAX_DEPTH = 64
+#: How many module evaluations one top-level question may cost. Memoisation
+#: keeps acyclic graphs linear, but lookups inside a cycle cannot be memoised
+#: until the cycle closes, so a large cyclic knot of star imports could
+#: otherwise take exponential time.
+_MAX_EVALUATIONS = 20_000
+#: Reason given when a non-monotone step reads a value that is still being
+#: computed further up the chain (see `ModuleMap._lookup`).
+_CIRCULAR = "that is part of a circular import, so what it binds depends on import order"
+
+
+@dataclasses.dataclass(frozen=True)
+class Deferral:
+    """A first-party ``PARENT.NAME`` whose verdict rests on third-party imports.
+
+    ``PARENT`` binds ``NAME`` with ``from M import X`` for some ``M`` outside
+    the analysed tree -- ``from os import path``, ``from numpy import
+    ndarray``. Whether that is a module is the interpreter probe's question,
+    not this map's, so the map hands back what it did find and which pairs the
+    probe must answer; `resolver.Resolver` combines them by the same rule
+    `_Evidence` states.
+    """
+
+    #: Verdicts of the first-party bindings: ``True`` module, ``False`` object.
+    local: frozenset[bool]
+    #: The third-party ``(M, X)`` pairs to ask the probe about.
+    pairs: tuple[tuple[str, str], ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _Verdict:
+    kind: model.Kind
+    reason: str = ""
+    deferral: Deferral | None = None
+
+
+def disagreement(parent: str, name: str) -> str:
+    """The reason given for a name whose bindings disagree about being a module."""
+    return (
+        f"'{parent}' binds '{name}' more than once, to a module and to something "
+        "that is not, and which binding wins is decided at run time"
+    )
+
+
+def _anchor(package: str, level: int, module: str | None) -> str | None:
+    """Absolute name of ``from <level dots><module> import ...`` read in *package*."""
+    if level == 0:
+        return module
+    parts = package.split(".") if package else []
+    if level - 1 >= len(parts):
+        return None
+    base = parts[: len(parts) - (level - 1)]
+    return ".".join([*base, module] if module else base)
+
+
 class ModuleMap:
     """Enumerates first-party packages/modules under a set of import roots.
 
@@ -118,8 +262,28 @@ class ModuleMap:
         #: while scanning because `submodules` is asked once per rewritten
         #: file and deriving it by filtering `_modules` would be quadratic.
         self._children: dict[str, set[str]] = {}
+        #: dotted names some claimant provides with no source to read: a
+        #: namespace package (no ``__init__.py``) or an extension module.
+        self._sourceless: set[str] = set()
+        self._verdicts: dict[tuple[str, str], _Verdict] = {}
+        #: Finished `_lookup` results. One computed while a lookup further up
+        #: the chain was still in progress is partial and is not kept.
+        self._memo: dict[tuple[str, str], _Evidence] = {}
+        #: Lookups in progress, with their depth on the chain.
+        self._active: dict[tuple[str, str], int] = {}
+        #: Shallowest in-progress lookup reached since the current one began.
+        self._low = _NO_BACK_EDGE
+        #: Module evaluations spent on the current top-level question.
+        self._evaluations = 0
+        #: `_star_shadowing` questions in progress, so that packages whose
+        #: star imports lead back to one another end rather than recurse.
+        self._shadow_checks: dict[tuple[str, str], int] = {}
         for root in self.roots:
             self._scan(root, root)
+        #: Top-level names of everything scanned, for `is_first_party`.
+        self._tops: frozenset[str] = frozenset(
+            d.split(".", 1)[0] for d in self._packages | self._modules
+        )
 
     @classmethod
     def from_paths(
@@ -163,6 +327,8 @@ class ModuleMap:
         for child in sorted(directory.iterdir()):
             if child.name == "__pycache__" or child.name.startswith("."):
                 continue
+            if directory == root and child.name in discover.ALWAYS_SKIP_DIRS and child.is_dir():
+                continue  # only at a root: see the module docstring
             if child.is_dir() and _is_pkg_dir(child):
                 dotted = self._dotted(root, child)
                 self._packages.add(dotted)
@@ -171,6 +337,8 @@ class ModuleMap:
                 if init.is_file():
                     self._inits.setdefault(dotted, []).append(init)
                     self._sources.setdefault(dotted, []).append(init)
+                else:
+                    self._sourceless.add(dotted)
                 self._scan(root, child)
             elif _is_importable_file(child):
                 stem = _module_stem(child)
@@ -180,6 +348,8 @@ class ModuleMap:
                     self._note_child(dotted)
                     if child.suffix == ".py":
                         self._sources.setdefault(dotted, []).append(child)
+                    else:
+                        self._sourceless.add(dotted)
 
     def _note_child(self, dotted: str) -> None:
         package, _, leaf = dotted.rpartition(".")
@@ -192,26 +362,396 @@ class ModuleMap:
 
     # -- queries -----------------------------------------------------------
     def is_first_party(self, dotted: str) -> bool:
+        """True when *dotted*'s top-level component lives under an import root.
+
+        Anything the scan found counts, and so does a bare file or directory
+        of that name directly under a root -- a directory holding no Python
+        still makes the name first-party rather than something to import and
+        probe. The exception is a directory the scan skips on purpose, so a
+        ``build/`` or ``dist/`` artifact at a root does not claim the name of
+        the PyPI package ``build``.
+        """
         top = dotted.split(".", 1)[0]
-        return any(top == p.split(".", 1)[0] for p in self._packages | self._modules) or any(
-            (root / top).exists() or (root / f"{top}.py").exists() for root in self.roots
-        )
+        if top in self._tops:
+            return True
+        for root in self.roots:
+            candidate = root / top
+            if (root / f"{top}.py").exists():
+                return True
+            if candidate.exists() and not (top in discover.ALWAYS_SKIP_DIRS and candidate.is_dir()):
+                return True
+        return False
 
     def classify(self, parent: str, name: str) -> model.Kind | None:
-        """First-party answer, or ``None`` if ``parent`` is not first-party."""
+        """First-party answer, or ``None`` if ``parent`` is not first-party.
+
+        `model.Kind.MODULE` when ``parent.name`` is on disk and ``parent``'s
+        ``__init__`` does not also bind ``name`` (`model.Kind.AMBIGUOUS` when
+        it does). Otherwise the answer comes from what ``parent``'s source
+        binds ``name`` to, each binding followed to where it comes from (see
+        `_lookup_in`): `model.Kind.OBJECT` or `model.Kind.MODULE` when every
+        binding agrees, `model.Kind.DEFERRED` when some come from a
+        third-party module only the probe can answer for (see `deferral`),
+        and `model.Kind.UNDETERMINED` for everything else, with the reason in
+        `unresolved_reason`. Missing is never an object.
+        """
         if not self.is_first_party(parent):
             return None
+        return self._verdict(parent, name).kind
+
+    def unresolved_reason(self, parent: str, name: str) -> str:
+        """Why `classify` said `model.Kind.UNDETERMINED`; empty for any other verdict."""
+        return self._verdict(parent, name).reason
+
+    def deferral(self, parent: str, name: str) -> Deferral | None:
+        """What a `model.Kind.DEFERRED` verdict is waiting on; ``None`` otherwise."""
+        return self._verdict(parent, name).deferral
+
+    def _verdict(self, parent: str, name: str) -> _Verdict:
+        key = (parent, name)
+        if key not in self._verdicts:
+            self._verdicts[key] = self._decide(parent, name)
+        return self._verdicts[key]
+
+    def _decide(self, parent: str, name: str) -> _Verdict:
         full = f"{parent}.{name}"
-        on_disk = full in self._packages or full in self._modules
-        shadowed = any(
-            name in _bindings.top_level_bindings(str(init), parent)
-            for init in self._inits.get(parent, ())
-        )
-        if on_disk and shadowed:
-            return model.Kind.AMBIGUOUS
-        if on_disk:
-            return model.Kind.MODULE
-        return model.Kind.OBJECT
+        if full in self._packages or full in self._modules:
+            kind, why = self._submodule(parent, name)
+            return _Verdict(kind, why if kind is model.Kind.UNDETERMINED else "")
+        if parent not in self._packages and parent not in self._modules:
+            return _Verdict(
+                model.Kind.UNDETERMINED,
+                f"'{parent}' is not a module or package on disk under this run's "
+                "import roots, so nothing here shows what it binds",
+            )
+        self._evaluations = 0
+        found = self._lookup(parent, name)
+        if found.unknown:
+            return _Verdict(
+                model.Kind.UNDETERMINED,
+                f"'{full}' is not on disk under this run's import roots, and {found.reason}",
+            )
+        if found.empty:
+            return _Verdict(
+                model.Kind.UNDETERMINED,
+                f"'{full}' is neither on disk under this run's import roots "
+                f"nor bound in '{parent}'",
+            )
+        if found.external:
+            return _Verdict(
+                model.Kind.DEFERRED,
+                deferral=Deferral(found.kinds, tuple(sorted(found.external))),
+            )
+        if len(found.kinds) > 1:
+            return _Verdict(model.Kind.UNDETERMINED, disagreement(parent, name))
+        return _Verdict(model.Kind.MODULE if True in found.kinds else model.Kind.OBJECT)
+
+    def _submodule(self, package: str, name: str) -> tuple[model.Kind, str]:
+        """Verdict for ``package.name`` *on disk*: whether ``__init__`` leaves it alone.
+
+        ``from package import name`` binds ``getattr(package, "name")`` and
+        imports the submodule only when that attribute is absent, so the
+        submodule is what it gets only if nothing in ``__init__`` binds the
+        name first. `model.Kind.MODULE` when provably nothing does;
+        `model.Kind.AMBIGUOUS` when something does -- a statement in the
+        ``__init__`` itself, or a star import that brings the name in (``from
+        ._impl import *`` where ``_impl`` defines ``helpers`` shadows
+        ``pkg/helpers.py`` exactly as ``helpers = ...`` would);
+        `model.Kind.UNDETERMINED` when that cannot be read: an ``__init__``
+        that cannot be parsed, a star import from a module this run cannot
+        read, a cycle of star imports back to this question. Reading any of
+        those as "binds nothing" would call the submodule reachable on no
+        evidence.
+        """
+        for init in self._inits.get(package, ()):
+            bindings = _bindings.top_level_bindings(str(init), package)
+            if bindings is None:
+                return model.Kind.UNDETERMINED, (
+                    f"'{init}' cannot be read or parsed, so whether it rebinds '{name}' is unknown"
+                )
+            if name in bindings:
+                return model.Kind.AMBIGUOUS, (
+                    f"'{package}.{name}' is both a submodule and bound in '{package}'"
+                )
+        return self._star_shadowing(package, name)
+
+    def _star_shadowing(self, package: str, name: str) -> tuple[model.Kind, str]:
+        """The star-import half of `_submodule`.
+
+        "The star imports bind nothing, so the submodule is reachable" is a
+        non-monotone step, exactly like the ones `_lookup` guards: read off a
+        cycle cut short, "nothing" is not proof. So this takes part in the
+        same low-link bookkeeping. It notes the depth it started at; asking
+        the same question again while it is in progress is a cycle, and marks
+        everything computed since as partial so none of it is memoised; and a
+        "nothing" whose evaluation reached anything still in progress is
+        `_CIRCULAR`, not `model.Kind.MODULE`. A binding found is still a
+        binding -- the star union only grows -- so ``AMBIGUOUS`` stands.
+        """
+        key = (package, name)
+        full = f"{package}.{name}"
+        if key in self._shadow_checks:
+            self._low = min(self._low, self._shadow_checks[key] - 1)
+            return model.Kind.UNDETERMINED, f"'{full}' is a submodule, and {_CIRCULAR}"
+        self._shadow_checks[key] = len(self._active)
+        outer, self._low = self._low, _NO_BACK_EDGE
+        found = _NOTHING
+        try:
+            for init in self._inits.get(package, ()):
+                ns = _bindings.namespace(str(init))
+                for level, target in ns.stars if ns is not None else ():
+                    found |= self._via_star(package, _anchor(package, level, target), name)
+        finally:
+            del self._shadow_checks[key]
+        inner = self._low
+        self._low = min(outer, inner)
+        if found.unknown:
+            return model.Kind.UNDETERMINED, (
+                f"'{full}' is a submodule, but {found.reason}, so whether a star import "
+                "shadows it is unknown"
+            )
+        if not found.empty:
+            return model.Kind.AMBIGUOUS, (
+                f"'{full}' is both a submodule and bound in '{package}' by a star import"
+            )
+        if inner != _NO_BACK_EDGE:
+            return model.Kind.UNDETERMINED, (
+                f"'{full}' is a submodule, and whether a star import shadows it: {_CIRCULAR}"
+            )
+        return model.Kind.MODULE, ""
+
+    def _no_source(self, module: str) -> str:
+        if self._sources.get(module):
+            return f"some file claiming '{module}' has no source to read"
+        if module in self._packages:
+            return f"'{module}' is a namespace package, with no __init__.py to read"
+        if module in self._modules:
+            return f"'{module}' is an extension module, with no source to read"
+        return f"'{module}' is not on disk under this run's import roots"
+
+    def _lookup(self, module: str, name: str) -> _Evidence:
+        """What ``module.name`` can hold once *module* has run, read from its source.
+
+        Every file claiming *module* is asked (see `is_reexport` for why) and
+        they must agree.
+
+        Star-import and re-export chains can loop, and can reach the same
+        module along many paths -- a diamond of star imports is exponential to
+        walk naively. Arriving at a lookup that is still in progress is a
+        cycle, and the loop back is cut: it returns nothing. This is Tarjan's
+        low-link bookkeeping. A lookup that reached nothing still in progress
+        above it (the root of its strongly connected component, or not in a
+        cycle at all) is final and memoised; one that did is partial, and is
+        not.
+
+        Cutting is only sound where combining answers is *monotone*: the star
+        union, where a loop back can only re-add what the evaluation in
+        progress already counts. Every step that is not -- "nothing binds it,
+        so the fallback applies" (`_via_from`, a listed-but-unbound
+        ``__all__`` name, a PEP 562 ``__getattr__``, "no star import shadows
+        this submodule" in `_star_shadowing`) or "these files agree" --
+        would read a cut as a real absence and answer differently depending
+        on where the cycle happened to be entered. So each such step asks
+        whether its inputs reached anything in progress (`_tracked`) and, if
+        they did, answers `_CIRCULAR` instead. Reaching something in progress
+        is a property of the cycle, not of the entry point: every lookup in a
+        cycle reaches back into it however it is entered, and once the cycle
+        is complete its root's memoised answer carries the verdict (unknown
+        is absorbing) to every later question. So the answer does not depend
+        on the order questions are asked in.
+
+        Chains are followed at most `_MAX_DEPTH` deep and a question may cost
+        at most `_MAX_EVALUATIONS` evaluations; past either, the answer is
+        undetermined and nothing computed on the way is memoised. That limit
+        is the one place order can still matter: whether a question hits it
+        depends on how much earlier questions already memoised, so a verdict
+        near the limit may differ between runs that ask different questions
+        -- but only between undetermined and the correct answer, never
+        between two answers.
+        """
+        key = (module, name)
+        if key in self._memo:
+            return self._memo[key]
+        if key in self._active:
+            self._low = min(self._low, self._active[key])
+            return _NOTHING
+        if len(self._active) >= _MAX_DEPTH or self._evaluations >= _MAX_EVALUATIONS:
+            self._low = _TRUNCATED
+            return _Evidence(
+                unknown="the chain of re-exports and star imports behind it is too long or "
+                "too tangled to follow"
+            )
+        self._evaluations += 1
+        depth = self._active[key] = len(self._active)
+        outer, self._low = self._low, _NO_BACK_EDGE
+        try:
+            found = self._evaluate(module, name)
+        finally:
+            del self._active[key]
+        inner = self._low
+        if inner >= depth:
+            # Final: this lookup closed every cycle it took part in.
+            self._memo[key] = found
+            inner = _NO_BACK_EDGE
+        self._low = min(outer, inner)
+        return found
+
+    def _tracked(self, module: str, name: str) -> tuple[_Evidence, bool]:
+        """`_attribute`, plus whether it reached a lookup still in progress."""
+        outer, self._low = self._low, _NO_BACK_EDGE
+        found = self._attribute(module, name)
+        inner = self._low
+        self._low = min(outer, inner)
+        return found, inner != _NO_BACK_EDGE
+
+    def _evaluate(self, module: str, name: str) -> _Evidence:
+        sources = self._sources.get(module, [])
+        if module in self._sourceless or not sources:
+            return _Evidence(unknown=self._no_source(module))
+        if len(sources) == 1:
+            return self._lookup_in(sources[0], module, name)[0]
+        answers = {self._lookup_in(source, module, name) for source in sources}
+        if any(touched for _, touched in answers):
+            return _Evidence(unknown=_CIRCULAR, via=f"'{module}' is claimed by several files")
+        if len(answers) == 1:
+            return answers.pop()[0]
+        return _Evidence(unknown=f"the files claiming '{module}' disagree about '{name}'")
+
+    def _lookup_in(self, source: pathlib.Path, module: str, name: str) -> tuple[_Evidence, bool]:
+        """`_lookup` for one file claiming *module*: every binding of *name* in it.
+
+        * A ``def``, a ``class`` or an assignment binds an object; a plain
+          ``import X as NAME`` binds a module.
+        * ``from M import X as NAME`` binds whatever ``M.X`` is, so it is
+          followed there (`_via_from`): a submodule on disk is a module, a
+          first-party ``M`` is read the same way, recursively, and a
+          third-party ``M`` is left for the probe. That includes ``from .
+          import NAME``, which binds the submodule ``NAME`` -- one this run
+          cannot see, when it is not on disk, and so never evidence of an
+          object.
+        * ``from M import *`` is followed into a first-party ``M`` (see
+          `_via_star`).
+
+        A PEP 562 ``__getattr__`` is consulted only when nothing binds the
+        name, so it only matters then. Also returns whether any of this
+        reached a lookup still in progress.
+        """
+        ns = _bindings.namespace(str(source))
+        if ns is None:
+            return _Evidence(unknown=f"'{source}' cannot be parsed"), False
+        package = module if source.name == "__init__.py" else module.rpartition(".")[0]
+        outer, self._low = self._low, _NO_BACK_EDGE
+        found = _NOTHING
+        if name in ns.defined:
+            found |= _OBJECT
+        if name in ns.module_imports:
+            found |= _MODULE
+        for level, origin, original in ns.from_imports.get(name, ()):
+            found |= self._via_from(module, name, _anchor(package, level, origin), original)
+        for level, target in ns.stars:
+            found |= self._via_star(module, _anchor(package, level, target), name)
+        inner = self._low
+        self._low = min(outer, inner)
+        touched = inner != _NO_BACK_EDGE
+        if ns.has_getattr and not found.unknown and (found.empty or touched):
+            getattr_hook = f"'{module}' defines a module-level __getattr__ (PEP 562)"
+            if touched:
+                return _Evidence(unknown=_CIRCULAR, via=getattr_hook), touched
+            return _Evidence(unknown=f"{getattr_hook} that may supply it"), touched
+        return found, touched
+
+    def _via_from(self, module: str, name: str, origin: str | None, original: str) -> _Evidence:
+        """What ``from ORIGIN import ORIGINAL [as NAME]`` inside *module* binds.
+
+        When ``ORIGIN`` does not bind ``ORIGINAL``, the import falls back to
+        the submodule ``ORIGIN.ORIGINAL`` -- so "nothing there" is not an
+        empty answer but an undetermined one, and that is exactly the step a
+        cycle must not be allowed to fake (see `_lookup`).
+        """
+        if origin is None:
+            return _Evidence(
+                unknown=f"'{module}' has a relative import that climbs above its top-level package"
+            )
+        if not self.is_first_party(origin):
+            return _Evidence(external=frozenset({(origin, original)}))
+        submodule = f"{origin}.{original}"
+        on_disk = submodule in self._packages or submodule in self._modules
+        own = f"'{module}' binds '{name}' by importing its own submodule"
+        if (origin, original) == (module, name) and not on_disk:
+            # ``from . import NAME`` in the package's own ``__init__``.
+            return _Evidence(unknown=f"{own} of that name")
+        prefix = f"'{module}' imports '{original}' from '{origin}'"
+        found, touched = self._tracked(origin, original)
+        if found.unknown:
+            return found.through(prefix)
+        if touched:
+            return _Evidence(unknown=_CIRCULAR, via=prefix)
+        if found.empty:
+            if origin == module:
+                return _Evidence(unknown=f"{own} '{original}', which is not on disk")
+            return _Evidence(
+                unknown=f"{prefix}, which neither binds it nor has a submodule of that name on disk"
+            )
+        return found
+
+    def _via_star(self, module: str, target: str | None, name: str) -> _Evidence:
+        """What ``from TARGET import *`` inside *module* binds under *name*.
+
+        Only a first-party *target* with source can be followed. What it
+        exports is its static ``__all__`` when it has one, its public names
+        when it has none, and unknowable when ``__all__`` is built at runtime.
+        A name ``__all__`` lists but the target does not bind is imported as
+        the submodule of that name, so it is not simply absent.
+        """
+        if target is None:
+            return _Evidence(
+                unknown=f"'{module}' has a relative star import that climbs above its top-level "
+                "package"
+            )
+        prefix = f"'{module}' star-imports from '{target}'"
+        if not self.is_first_party(target):
+            return _Evidence(
+                unknown=f"{prefix}, which is not first-party, so this run cannot read it"
+            )
+        sources = self._sources.get(target, [])
+        if target in self._sourceless or not sources:
+            return _Evidence(unknown=f"{prefix}, and {self._no_source(target)}")
+        answers: set[_Evidence] = set()
+        partial = False
+        for source in sources:
+            ns = _bindings.namespace(str(source))
+            if ns is None or ns.all_dynamic:
+                return _Evidence(
+                    unknown=f"{prefix}, whose __all__ cannot be read without running it"
+                )
+            listed = ns.all_names is not None and name in ns.all_names
+            exported = listed if ns.all_names is not None else name[:1] != "_"
+            found, touched = self._tracked(target, name) if exported else (_NOTHING, False)
+            if listed and not found.unknown and (found.empty or touched):
+                found = _Evidence(
+                    unknown=_CIRCULAR
+                    if touched
+                    else f"its __all__ lists '{name}' without binding it, so the star import "
+                    "would import a submodule that is not on disk"
+                )
+            answers.add(found)
+            partial = partial or touched
+        if partial and len(sources) > 1:
+            return _Evidence(unknown=_CIRCULAR, via=f"{prefix}, which is claimed by several files")
+        if len(answers) != 1:
+            return _Evidence(unknown=f"{prefix}, and the files claiming it disagree about '{name}'")
+        found = answers.pop()
+        if found.unknown:
+            return found.through(prefix)
+        return found
+
+    def _attribute(self, module: str, name: str) -> _Evidence:
+        """``module.name`` as an import of it sees it: the submodule on disk, or `_lookup`."""
+        full = f"{module}.{name}"
+        if full in self._packages or full in self._modules:
+            kind, why = self._submodule(module, name)
+            return _MODULE if kind is model.Kind.MODULE else _Evidence(unknown=why)
+        return self._lookup(module, name)
 
     def submodules(self, dotted: str) -> frozenset[str]:
         """Leaf names of the modules and subpackages directly under *dotted*.
@@ -257,11 +797,15 @@ class ModuleMap:
         "not a re-export", the guard stands down, and the rewrite deletes an
         attribute another file imports. Saying yes for a file that does not
         win costs a fix that was safe; saying no for one that does costs
-        working code.
+        working code. A claimant that cannot be read or parsed answers yes, for
+        the same reason.
         """
         return any(
-            name in _bindings.import_bound_names(str(source))
-            for source in self._sources.get(parent, ())
+            names is None or name in names
+            for names in (
+                _bindings.import_bound_names(str(source))
+                for source in self._sources.get(parent, ())
+            )
         )
 
     def qualname_for(self, path: pathlib.Path, relative_level: int = 0) -> str | None:

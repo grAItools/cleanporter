@@ -45,15 +45,104 @@ runs, no side effects are possible.
   subpackages
 - an extension module `PARENT/NAME.*.so` or `PARENT/NAME.*.pyd`
 
-If nothing on disk matches, `NAME` is an **object**, and that is a `CP001`
-violation.
+When nothing on disk matches, the answer comes from what the parent's own
+source *binds* `NAME` to — `PARENT/__init__.py` for a package, `PARENT.py` for
+a plain module — read with the same rules as the ambiguity check below
+(conditional bodies included), and each binding is followed to where it
+comes from:
+
+- a `def`, a `class` or an assignment binds an **object**;
+- a plain `import X as NAME` binds a **module**;
+- `from M import X as NAME` binds whatever `M.X` is, so it is followed
+  there. A submodule on disk is a module — `from . import _version as
+  version` makes `PARENT.version` a module, and so does `from .sub import
+  helpers` when `sub/helpers.py` exists. A first-party `M` is read the same
+  way, recursively. A *third-party* `M` is not
+  this layer's to answer: `from os import path` in the parent sends
+  `os.path` to the interpreter probe (layer 2), in the same single batch as
+  everything else, and its answer is the parent's;
+- `from M import *` is followed into a first-party `M`, honouring its
+  `__all__` when that is a single literal list or tuple of strings, and its
+  public names when it has none. A name `__all__` lists but `M` does not bind
+  is imported by the star import as the submodule of that name.
+
+A name is an **object** — a `CP001` violation — only when every binding
+resolves to an object, and a **module** only when every binding resolves to a
+module. A try/except pair that binds an accelerated function or a pure-Python
+fallback is an object when both halves are; one that binds a module or
+`None` is not decided. If more than one file claims `PARENT` (a stale
+`pkg.py` beside `pkg/`), they must all agree.
+
+Missing is not the same as an object. A checkout routinely lacks real
+submodules: the `_version.py` setuptools_scm writes at build time, a protobuf
+`_pb2`, a Cython module whose `.pyx` is all the tree holds, the sibling
+portion of a PEP 420 namespace package that another distribution installs.
+Each of those is reported `CP002`, never rewritten, whenever the evidence runs
+out:
+
+- `NAME` is neither on disk nor bound in the parent;
+- the parent binds it with `from . import NAME` (or `from PARENT import NAME`
+  inside its own `__init__`) and the submodule is not on disk, or imports it
+  from a first-party module that neither binds it nor has it on disk;
+- a binding comes from a first-party module with no source to read — an
+  extension module, a namespace package — or from a third-party one the
+  probe cannot import;
+- the bindings disagree: a module under one, an object under another;
+- the parent star-imports from a module this run cannot read (third-party, or
+  first-party without source), or from one whose `__all__` is built at run
+  time. This holds even when the parent *also* binds `NAME` directly: which
+  of the two runs last depends on statement order, which this layer
+  deliberately does not reason about;
+- nothing binds `NAME` but the parent defines a module-level `__getattr__`
+  (PEP 562), which could supply it;
+- the parent is a namespace package (no `__init__.py`), an extension module,
+  or not on disk at all, so there is no source to show what it binds;
+- the answer runs through a **circular import**. `pkg/__init__.py` doing
+  `from .m import *` then `ver = None`, while `pkg/m.py` does `from pkg import
+  ver`, gives `pkg.m.ver` either `None` or nothing at all depending on which
+  module is imported first. Star imports that merely loop back add nothing and
+  are followed; but a `from` import, a listed-but-unbound `__all__` name, a
+  `__getattr__` fallback or files that must agree, read through a cycle, are
+  undetermined — and the verdict is the same whichever file of the run asks
+  first;
+- the chain of re-exports is more than 64 links deep, or so tangled with
+  cycles that following it would take thousands of steps. That ends in a
+  finding rather than a crash or a hang. Whether a chain near that limit hits
+  it can depend on which other imports the same run looked at first (their
+  answers are remembered, and shorten the walk), so such a name can be
+  `CP002` in one run and correctly decided in another — but never decided
+  wrongly.
+
+The finding names the evidence that was missing, and the first link of the
+chain that led there, for example `'pkg._version' is not on disk under this
+run's import roots, and 'pkg' binds '_version' by importing its own submodule
+of that name`, or `'pkg.helpers' is neither on disk under this run's import
+roots nor bound in 'pkg'`. A first-party name that ends up here is *not* handed to the
+interpreter probe: that would import first-party code, which is what this
+layer exists to avoid. Pointing cleanporter at the whole tree, or declaring
+`source_roots`, is what settles a sibling portion it cannot see.
+
+At an import root, the scan that builds this map skips the directories file
+discovery skips — dot-directories, `__pycache__`, `build`, `dist`,
+`node_modules`, `site-packages` — so a `build/lib/` copy of the package is not
+a second first-party tree, and a `build/` or `dist/` at a root does not claim
+the name of the PyPI package `build`. *Inside* a package those names are
+ordinary: pip has a real `pip/_internal/operations/build/` package, and only
+dot-directories and `__pycache__` are skipped there. `exclude` patterns are
+deliberately not applied to the scan: they choose which files are analysed,
+not which modules exist, and an excluded module is still one other files
+import.
 
 There is one shape this layer refuses to decide. If `NAME` is *both* a
 submodule on disk *and* bound as a top-level name in `PARENT/__init__.py` —
 the lazy re-export idiom, where `__init__.py` does `from .NAME import NAME` or
 assigns a class of the same name — then the binding wins at import time, and
 which one you get cannot be determined without running the code. That is
-reported ambiguous (`CP002`), never guessed.
+reported ambiguous (`CP002`), never guessed. A star import counts as a
+binding here too: `from ._impl import *` where `_impl` defines a function
+`helpers` shadows `PARENT/helpers.py` exactly as `helpers = ...` would, and a
+star import from a module this run cannot read might, so it leaves the
+submodule undetermined.
 
 Reading `__init__.py` for those bindings is a parse, not an import:
 cleanporter walks the `ast` for the names bound at module level, descending
@@ -148,7 +237,9 @@ under the code it is importing.
 
 When neither layer can decide — the parent could not be imported here because
 it is an optional or GPU dependency, its import raised, the ambiguous
-re-export shape above, or a relative import that could not be anchored — the
+re-export shape above, a first-party name that is neither on disk nor bound in
+its parent to something it can follow, or a relative import that could not be
+anchored — the
 import is reported `CP002` with the reason, and `--fix` leaves it exactly as
 it is.
 
