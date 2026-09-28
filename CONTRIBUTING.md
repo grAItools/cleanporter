@@ -171,7 +171,10 @@ The test suite **asserts that the documentation matches the code**. Tests in
 - a CLI flag exists that the documentation does not mention;
 - a `[tool.cleanporter]` config key exists that the documentation does not
   mention;
-- a finding code (`CP001`, `CP002`, `CP003`) is undocumented.
+- a finding code (`CP001`, `CP002`, `CP003`) is undocumented;
+- a name `cleanporter` exports, a field or property of `RunResult`, a field of
+  `FilePatch` or `Project`, or a `Listener` method is missing from
+  `docs/library.md`.
 
 This is deliberate, not an accident of over-testing. **Adding a flag or a config
 key without documenting it will fail the suite**, and that is the intended

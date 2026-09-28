@@ -4,8 +4,9 @@
 derive from it -- its `FileFacts`, the import units, where each import
 starts, libcst's position metadata when something needs it, and whatever
 `cleanporter.skip` takes out of the file -- so a record survives being
-analysed more than once (the CLI re-parses into a fresh record after a fix and
-analyses it again).
+analysed more than once (`engine.run` re-parses into a fresh record after a
+fix and analyses it again). Building the records of a run, and the resolver
+they are analysed against, is `project.build`'s job.
 
 Visitor dispatch over a libcst tree is most of what a check costs, so a check
 walks each tree exactly once (`collect_facts`) and derives every other answer
@@ -33,11 +34,11 @@ from collections.abc import Iterator, Mapping
 import libcst as cst
 from libcst import metadata
 
-from cleanporter import config, discover, firstparty, model
+from cleanporter import config, firstparty, model
 from cleanporter import resolver as resolver_lib
 from cleanporter import skip as skip_lib
 
-from . import _imports, _source
+from . import _imports
 
 
 @dataclasses.dataclass
@@ -72,8 +73,8 @@ class FileRecord:
     #: decoded text would not encode back to them.
     raw: bytes | None = dataclasses.field(default=None, repr=False, compare=False)
     #: The tree's `FileFacts`, when the caller already walked it for them
-    #: (`build` must, before it can know ``base_pkg``); otherwise collected on
-    #: first use.
+    #: (`project.build` must, before it can know ``base_pkg``); otherwise
+    #: collected on first use.
     _facts: FileFacts | None = dataclasses.field(default=None, repr=False, compare=False)
     _units: list[ImportUnit] | None = dataclasses.field(default=None, repr=False, compare=False)
     _positions: Mapping[cst.CSTNode, metadata.CodeRange] | None = dataclasses.field(
@@ -523,9 +524,9 @@ def in_scope(parent: str, resolver: resolver_lib.Resolver, config: config.Config
 
     The one statement of the rule. Under ``scope = "first-party"`` an import
     from outside the analysis roots is not reported, so not rewritten
-    (`Decider.decide`), and not classified either: `build` leaves it out of
-    the probe batch and the fixer does not look it up for a binding to reuse
-    (`rewrite._Fixer._build_existing`). Only the top-level component is
+    (`Decider.decide`), and not classified either: `project.build` leaves it
+    out of the probe batch and the fixer does not look it up for a binding to
+    reuse (`rewrite._Fixer._build_existing`). Only the top-level component is
     tested (`resolver.Resolver.is_first_party`).
     """
     return config.scope != "first-party" or resolver.is_first_party(parent)
@@ -672,99 +673,3 @@ def analyze_record(
             )
         )
     return findings
-
-
-def build(
-    paths: list[pathlib.Path], config: config.Config
-) -> tuple[list[FileRecord], resolver_lib.Resolver, list[model.Finding], list[str]]:
-    """Expand paths, parse files, build the resolver and warm its cache.
-
-    Returns the parsed records, the resolver, a finding for each file that
-    could not be read, decoded or parsed (every other file is still built), and
-    any warnings produced while expanding ``paths`` (e.g. missing paths) or
-    while probing the target interpreter (a probe batch that failed, and why).
-    """
-    files, warnings = discover.iter_python_files(paths, config)
-    roots = tuple(config.root / r for r in config.source_roots)
-    module_map = firstparty.ModuleMap.from_paths(files, declared=roots)
-    warnings.extend(module_map.warnings)
-    resolver = resolver_lib.Resolver(module_map, python=config.python)
-
-    parsed: list[tuple[pathlib.Path, _source.Decoded, cst.Module, FileFacts]] = []
-    errors: list[model.Finding] = []
-    evidence: dict[str, list[pathlib.Path]] = {}
-    for f in files:
-        try:
-            decoded = _source.read(f)
-        except _source.SourceError as exc:
-            # Reported like a parse error -- a file that was not checked, so
-            # exit 2 -- and the run carries on with every other file.
-            errors.append(
-                model.Finding(f, exc.line, 0, "?", "?", model.Status.UNRESOLVED, str(exc))
-            )
-            continue
-        try:
-            tree = cst.parse_module(decoded.text)
-        except cst.ParserSyntaxError as exc:  # pragma: no cover - defensive
-            errors.append(
-                model.Finding(
-                    f,
-                    exc.raw_line,
-                    exc.raw_column,
-                    "?",
-                    "?",
-                    model.Status.UNRESOLVED,
-                    f"parse error: {exc.message}",
-                )
-            )
-            continue
-        # The one walk of this tree: everything below reads these facts.
-        facts = collect_facts(tree)
-        parsed.append((f, decoded, tree, facts))
-        for head in facts.absolute_import_heads():
-            evidence.setdefault(head, []).append(f)
-
-    # Every file's absolute imports say which directories are packages, so
-    # settle the root set before anchoring anyone's relative imports.
-    module_map.demote_roots(evidence)
-    records: list[FileRecord] = []
-    for f, decoded, tree, facts in parsed:
-        level = facts.max_relative_level()
-        records.append(
-            FileRecord(
-                f,
-                decoded.text,
-                tree,
-                package_of(f, module_map, level),
-                module_map.qualname_for(f, level) or "",
-                root=config.root,
-                skip_rules=config.skip,
-                encoding=decoded.encoding,
-                raw=decoded.raw,
-                _facts=facts,
-            )
-        )
-
-    pairs = collect_pairs(records)
-    # Every *use* of ``M.N`` in the run is evidence that M must keep binding
-    # N, which constrains what M's own imports may be rewritten to. A use is
-    # any of: ``from M import N``, ``M.N`` through a module binding, or
-    # ``from M import *`` (which could need any of them). See
-    # `Resolver.is_load_bearing`.
-    uses: set[tuple[str, str]] = set(pairs)
-    star: set[str] = set()
-    for rec in records:
-        uses |= rec.facts.attribute_pairs(rec.base_pkg)
-        star |= rec.facts.star_imported_modules(rec.base_pkg)
-    resolver.note_uses(uses, star)
-    # Out-of-scope pairs are never asked about, so classifying them -- an
-    # import of a third-party package, in the probe -- would be wasted. A
-    # replacement pair shares its import's top-level package, so it is in
-    # scope exactly when that import is; a first-party re-export of a
-    # third-party name still reaches the probe, because `Resolver.warm` adds
-    # its origin to the batch itself. The *use* evidence above is left whole:
-    # it is only ever consulted about a first-party module.
-    batch = pairs + replacement_pairs(pairs)
-    resolver.warm([pair for pair in batch if in_scope(pair[0], resolver, config)])
-    warnings.extend(resolver.take_warnings())
-    return records, resolver, errors, warnings

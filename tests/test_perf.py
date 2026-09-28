@@ -7,7 +7,7 @@ import pathlib
 import libcst as cst
 from libcst import metadata
 
-from cleanporter import analyze, config, firstparty
+from cleanporter import analyze, config, firstparty, project
 from cleanporter import resolver as resolver_lib
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -35,7 +35,7 @@ def test_positions_are_computed_once_and_cached():
 def test_repeated_analysis_does_not_rewalk_the_tree(monkeypatch):
     rec = _record()
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", rec.path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     resolver.warm(analyze.collect_pairs([rec]))
 
     assert rec.units, "the one walk happens here, before counting starts"
@@ -77,7 +77,8 @@ def test_build_walks_each_tree_exactly_once(monkeypatch, tmp_path):
         return real_visit(self, visitor)
 
     monkeypatch.setattr(cst.Module, "visit", counting_visit)
-    records, _resolver, errors, _warnings = analyze.build([pkg], config.Config(root=tmp_path))
+    built = project.build([pkg], config.Config(root=tmp_path))
+    records, errors = built.records, built.errors
 
     assert not errors
     assert len(records) == 4

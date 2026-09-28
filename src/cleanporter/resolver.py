@@ -29,18 +29,27 @@ cannot land in a ``--diff`` patch on stdout (the stream contract in `cli`);
 out of process, the reply is framed so a banner cannot corrupt it (`_probe`).
 When an out-of-process batch fails anyway -- a crash, a timeout, no reply --
 the batch is still undetermined, and *why* is kept in `take_warnings` for the
-CLI to print, with the tail of the probe's stderr: the per-import reason ("not
-importable in the target interpreter") is the only thing the user would
-otherwise see, and it blames the packages rather than the probe.
+run to report (`project.build`, then `engine.run`), with the tail of the
+probe's stderr: the per-import reason ("not importable in the target
+interpreter") is the only thing the user would otherwise see, and it blames
+the packages rather than the probe.
 
 Answers are cached per ``(parent, name)``, and `warm` classifies a whole batch
 of pairs up front -- one subprocess round-trip for a run rather than one per
 import.
+
+What a run's files *use* (`Evidence`) is cross-file knowledge the resolver
+cannot derive from one pair, and it is a required constructor argument
+rather than something told to the resolver later: what `is_load_bearing`
+answers no longer depends on who asks first. (Probe verdicts still can depend
+on the order pairs are asked in; see `warm`.) `project.build` collects the
+evidence before building the resolver for a run.
 """
 
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import json
 import os
 import pathlib
@@ -107,18 +116,52 @@ def _is_this_interpreter(python: str) -> bool:
     return str(pathlib.Path(python).absolute()) == sys.executable
 
 
+@dataclasses.dataclass(frozen=True)
+class Evidence:
+    """What the files of a run *use*, which constrains what their imports may become.
+
+    Cross-file evidence, so it can only be collected once every file of the
+    run is parsed -- `project.build` does it -- and it is fixed from then on:
+    a `Resolver` takes it at construction and never learns more.
+    """
+
+    #: Every ``(module, name)`` some analysed file reads, however spelled:
+    #: ``from module import name``, or ``module.name`` through an import.
+    uses: frozenset[tuple[str, str]] = frozenset()
+    #: Modules some analysed file star-imports, which could need any name.
+    star_imported: frozenset[str] = frozenset()
+
+
+#: No evidence at all, for a resolver built outside a run -- passed explicitly.
+NO_EVIDENCE = Evidence()
+
+
 class Resolver:
-    def __init__(self, module_map: firstparty.ModuleMap, python: str | None = None) -> None:
+    """Answers "module or object?" for one run, and caches every answer.
+
+    *evidence* is what the run's files use (`Evidence`), and only
+    `is_load_bearing` reads it. It is required, so a resolver built outside a
+    run -- a test, a caller classifying a handful of names -- says so by
+    passing `NO_EVIDENCE`, and `is_load_bearing` then answers False for
+    everything: no evidence, no claim. That is exactly what a run over a
+    single file sees, and it is why `project.build` is the way to get a
+    resolver for a run: it collects the evidence before constructing the
+    resolver, so the two cannot disagree.
+    Everything else a resolver says is independent of it.
+    """
+
+    def __init__(
+        self,
+        module_map: firstparty.ModuleMap,
+        python: str | None = None,
+        *,
+        evidence: Evidence,
+    ) -> None:
         self._map = module_map
         self._python = python or sys.executable
         self._in_process = python is None or _is_this_interpreter(python)
         self._cache: dict[tuple[str, str], bool | None] = {}
-        #: Every ``(module, name)`` some analysed file *uses*. Populated by
-        #: `analyze.build`; empty when the resolver is used standalone, which
-        #: makes `is_load_bearing` answer False -- no evidence, no claim.
-        self._uses: frozenset[tuple[str, str]] = frozenset()
-        #: Modules some analysed file star-imports, which could need any name.
-        self._star_imported: frozenset[str] = frozenset()
+        self._evidence = evidence
         self._notes: dict[tuple[str, str], str] = {}
         self._probe_path = str(pathlib.Path(_probe.__file__).resolve())
         #: Why each failed probe batch failed (kind + stderr tail; the
@@ -202,11 +245,6 @@ class Resolver:
         is just never mis-rewritten as third-party.
         """
         return self._map.is_first_party(dotted)
-
-    def note_uses(self, uses: set[tuple[str, str]], star_imported: set[str]) -> None:
-        """Record every ``module.name`` the analysed files read, however spelled."""
-        self._uses = frozenset(uses)
-        self._star_imported = frozenset(star_imported)
 
     def qualname_for(self, path: pathlib.Path, relative_level: int = 0) -> str | None:
         """Dotted module name of *path*, or None when it is not under a root."""
@@ -314,9 +352,11 @@ class Resolver:
 
         The evidence is limited to the files under analysis, which is the same
         boundary every other guard has: a consumer outside the run is the
-        documented cross-file limitation, unchanged.
+        documented cross-file limitation, unchanged. It is the `Evidence` the
+        resolver was built with; with none, the answer is always False.
         """
-        used = (module, name) in self._uses or module in self._star_imported
+        evidence = self._evidence
+        used = (module, name) in evidence.uses or module in evidence.star_imported
         return used and self._map.is_reexport(module, name)
 
     def reason(self, parent: str, name: str) -> str:
@@ -331,7 +371,7 @@ class Resolver:
         rule effective (`_probe.classify_many`): a pair asked on its own,
         later, can find a parent whose binding an earlier leaf import has
         already replaced. Every pair a run needs is collected in
-        `analyze.build`, so that path is the one that matters.
+        `project.build`, so that path is the one that matters.
         """
         pending: list[tuple[str, str]] = []
         deferred: list[tuple[str, str]] = []

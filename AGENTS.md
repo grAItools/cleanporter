@@ -120,8 +120,9 @@ pass" while unformatted this way.
   reads those names, so rewriting the imports would only delete the public
   surface -- and behind that by the string-mention guard, since the same names
   appear in `__all__` as string literals. `cleanporter .` reports them as
-  `CP001` and exits 1; under `--fix` they become `CP003` and the file is left
-  byte-identical.
+  `CP001` -- or `CP003` for a name another analysed file reads
+  (`cleanporter.run` in a test: the load-bearing guard) -- and exits 1 either
+  way; under `--fix` they are all `CP003` and the file is left byte-identical.
 - **`libcst` is the only runtime dependency.** Tooling belongs in a dependency
   group.
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `test:`, `perf:`,

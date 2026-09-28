@@ -112,7 +112,8 @@ reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
 cleanporter is run over its own source. `src/` and `tests/` are compliant,
 with one deliberate exception: the package's public API is re-exported from
 `cleanporter/__init__.py`, so `cleanporter .` reports those re-exports as
-`CP001` and exits 1.
+`CP001` — or `CP003`, for a name the test suite reads through the package —
+and exits 1.
 
 That is not an oversight, and it is not silenced with an `exclude`. The
 findings are true — the package really does import objects by name there —
@@ -127,6 +128,8 @@ Full documentation lives at **<https://graitools.github.io/cleanporter/>**:
 
 - [Usage](https://graitools.github.io/cleanporter/usage/) — every flag, the
   finding and exit codes, and CI/`git apply`/sweep workflows.
+- [Library API](https://graitools.github.io/cleanporter/library/) — a whole
+  run from Python: `cleanporter.run`, `RunResult` and `Project`.
 - [Configuration](https://graitools.github.io/cleanporter/configuration/) — the
   `[tool.cleanporter]` reference and how CLI flags layer over it.
 - [How it works](https://graitools.github.io/cleanporter/how-it-works/) — the

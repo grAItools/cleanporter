@@ -16,6 +16,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A library API for a whole run: `cleanporter.run(paths, config, mode)`.**
+  It does everything the command does except print and pick an exit code —
+  builds the project, diffs or fixes per `Mode` (`CHECK`, `DIFF`, `FIX`), writes
+  under `FIX`, re-parses and re-analyses — and returns a `RunResult`: the sorted
+  findings, a `FilePatch` per rewritten file (the patch bytes, before/after
+  contents, whether it was written — and, when a write failed, the error, so
+  the rewrite is not lost), file-level errors with the failed writes also in
+  `write_errors`, warnings, counts, and `exit_code(strict=...)`, the command's
+  own 0/1/2 rule. An optional `engine.Listener` hears about each warning, error
+  and patch as it happens, which is how the command still streams patches. The
+  page also documents the side effects of the in-process probe (imports left
+  in `sys.modules`, a process-wide stdout redirect) and how `python` avoids
+  them. Documented on the
+  new [Library API](https://graitools.github.io/cleanporter/library/) page;
+  `Mode`, `Project`, `RunResult` and `run` join the names `cleanporter`
+  exports.
+
 - **A weekly gt4py check** (`corpus/gt4py_check.py`, `.github/workflows/gt4py.yml`,
   Mondays at 02:23 UTC and on dispatch). It checks out gt4py's `main`, writes
   the `[tool.cleanporter.skip]` rules a gt4py user is expected to write, runs
@@ -88,6 +105,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own re-parse backstop passed them. See `corpus/README.md`.
 
 ### Changed
+
+- **`cleanporter.build` returns a `Project`, not a 4-tuple, and the resolver
+  gets its cross-file evidence at construction.** `build` (now in the new
+  `project` module) takes a run's paths through fixed stages — files, parsed
+  records, the settled module map, what every file uses, and then a resolver
+  built *with* that evidence and warmed — and returns a frozen `Project` with
+  `config`, `records`, `resolver`, `errors` and `warnings`. `Resolver` takes a
+  **required** keyword-only `evidence` (a `resolver.Evidence`), so what
+  `is_load_bearing` answers no longer depends on whether someone remembered to
+  call a setter; a resolver built outside a run passes
+  `resolver.NO_EVIDENCE` explicitly, and then never calls a re-export
+  load-bearing, as before. `cli.run` is now a thin shell over `engine.run`;
+  its output, streams and exit codes are byte-for-byte unchanged.
 
 - **`--fix` writes a relative import's replacement relative.** `from .sub.mod
   import C` used to become `from pkg.sub import mod`; it now becomes `from .sub
@@ -246,6 +276,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transformer and `fix_record`. A pure move: `--diff` output and exit codes are
   byte-identical before and after over the test fixtures, this repository,
   `pygments`, `packaging` and `_pytest`.
+
+### Removed
+
+- **`analyze.build`** — use `project.build` (still exported as
+  `cleanporter.build`), which returns a `Project` rather than a
+  `(records, resolver, errors, warnings)` tuple.
+- **`Resolver.note_uses`** — pass the evidence to the constructor instead:
+  `Resolver(module_map, python, evidence=...)`.
 
 ### Fixed
 

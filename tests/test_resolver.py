@@ -23,14 +23,14 @@ def _pkg(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 def test_first_party_module_and_object(tmp_path):
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     assert r.is_module("amb", "mod") is True
     assert r.is_module("amb.mod", "Q") is False
 
 
 def test_first_party_name_that_is_nowhere_is_unresolved(tmp_path):
     """Neither on disk nor bound: missing is not an object, and the probe is not asked."""
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     assert r.is_module("amb", "Nope") is None
     assert r.reason("amb", "Nope") == (
         "'amb.Nope' is neither on disk under this run's import roots nor bound in 'amb'"
@@ -40,7 +40,7 @@ def test_first_party_name_that_is_nowhere_is_unresolved(tmp_path):
 def test_warm_carries_the_first_party_reason(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text("from . import _version\n", encoding="utf-8")
-    r = resolver.Resolver(firstparty.ModuleMap([root]))
+    r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     r.warm([("amb", "_version")])
     assert r.is_module("amb", "_version") is None
     assert "by importing its own submodule of that name" in r.reason("amb", "_version")
@@ -53,7 +53,7 @@ def test_warm_carries_the_first_party_reason(tmp_path):
 def _reexporting(tmp_path: pathlib.Path, init: str) -> resolver.Resolver:
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text(init, encoding="utf-8")
-    return resolver.Resolver(firstparty.ModuleMap([root]))
+    return resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
 
 
 def test_a_third_party_origin_is_answered_by_the_probe(tmp_path):
@@ -128,7 +128,7 @@ def test_a_third_party_origin_must_agree_with_the_local_bindings(tmp_path):
 
 
 def test_stdlib_falls_through_to_the_probe(tmp_path):
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     assert r.is_module("os", "path") is True
     assert r.is_module("collections", "OrderedDict") is False
 
@@ -136,19 +136,19 @@ def test_stdlib_falls_through_to_the_probe(tmp_path):
 def test_ambiguous_is_unresolved_with_an_explanatory_reason(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text('mod = "shadow"\n', encoding="utf-8")
-    r = resolver.Resolver(firstparty.ModuleMap([root]))
+    r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     assert r.is_module("amb", "mod") is None
     assert "both a submodule" in r.reason("amb", "mod")
 
 
 def test_unimportable_parent_is_unresolved_with_its_own_reason(tmp_path):
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     assert r.is_module("definitely_missing_pkg_xyz", "thing") is None
     assert "not importable" in r.reason("definitely_missing_pkg_xyz", "thing")
 
 
 def test_warm_batches_and_matches_individual_lookups(tmp_path):
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     pairs = [("amb", "mod"), ("collections", "OrderedDict"), ("os", "path")]
     r.warm(pairs)
     assert [r.is_module(p, n) for p, n in pairs] == [True, False, True]
@@ -157,7 +157,7 @@ def test_warm_batches_and_matches_individual_lookups(tmp_path):
 def test_warm_then_reason_agree_for_an_ambiguous_pair(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text('mod = "shadow"\n', encoding="utf-8")
-    r = resolver.Resolver(firstparty.ModuleMap([root]))
+    r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     r.warm([("amb", "mod")])
     assert r.is_module("amb", "mod") is None
     assert "both a submodule" in r.reason("amb", "mod")
@@ -167,20 +167,20 @@ def test_warm_then_reason_agree_for_an_ambiguous_pair(tmp_path):
 
 
 def test_a_replacement_for_a_real_submodule_is_reachable(tmp_path):
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     assert r.replacement_unreachable("amb.mod") is None
 
 
 def test_a_top_level_parent_needs_no_replacement_check(tmp_path):
     """``from amb import X`` is replaced by ``import amb``: nothing to shadow."""
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     assert r.replacement_unreachable("amb") is None
 
 
 def test_a_replacement_the_parents_init_shadows_is_unreachable(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text("from amb.mod import mod\n", encoding="utf-8")
-    r = resolver.Resolver(firstparty.ModuleMap([root]))
+    r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     reason = r.replacement_unreachable("amb.mod")
     assert reason is not None
     assert "the replacement 'from amb import mod'" in reason
@@ -192,7 +192,7 @@ def test_a_replacement_a_star_import_shadows_is_unreachable(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text("from ._impl import *\n", encoding="utf-8")
     (root / "amb" / "_impl.py").write_text("def mod(): ...\n", encoding="utf-8")
-    r = resolver.Resolver(firstparty.ModuleMap([root]))
+    r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     assert r.is_module("amb", "mod") is None
     reason = r.replacement_unreachable("amb.mod")
     assert reason is not None
@@ -201,7 +201,7 @@ def test_a_replacement_a_star_import_shadows_is_unreachable(tmp_path):
 
 def test_a_replacement_the_run_cannot_see_is_unreachable(tmp_path):
     """Nothing on disk and nothing bound: the replacement cannot be trusted."""
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     reason = r.replacement_unreachable("amb.nowhere")
     assert reason is not None
     assert "'amb.nowhere' is neither on disk under this run's import roots" in reason
@@ -210,7 +210,7 @@ def test_a_replacement_the_run_cannot_see_is_unreachable(tmp_path):
 def test_a_replacement_the_parent_binds_to_an_object_is_unreachable(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text("def gone(): ...\n", encoding="utf-8")
-    r = resolver.Resolver(firstparty.ModuleMap([root]))
+    r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     reason = r.replacement_unreachable("amb.gone")
     assert reason is not None
     assert "'amb' binds 'gone' to something that is not a module" in reason
@@ -218,7 +218,7 @@ def test_a_replacement_the_parent_binds_to_an_object_is_unreachable(tmp_path):
 
 def test_a_stdlib_replacement_is_reachable(tmp_path):
     """The probe answers for the emitted import exactly as for the read one."""
-    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
+    r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]), evidence=resolver.NO_EVIDENCE)
     assert r.replacement_unreachable("os.path") is None
     assert r.replacement_unreachable("collections.abc") is None
 
@@ -279,7 +279,9 @@ def test_another_venv_of_the_same_python_is_probed_in_its_own_environment(tmp_pa
     importable", and ``libcst`` (only in cleanporter's) came back classified.
     """
     python = _venv_with_onlyhere(tmp_path)
-    r = resolver.Resolver(firstparty.ModuleMap([]), python=str(python))
+    r = resolver.Resolver(
+        firstparty.ModuleMap([]), python=str(python), evidence=resolver.NO_EVIDENCE
+    )
     r.warm([("onlyhere", "helper"), ("libcst", "parse_module")])
     assert r.is_module("onlyhere", "helper") is False
     assert r.is_module("libcst", "parse_module") is None

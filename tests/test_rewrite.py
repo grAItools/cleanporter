@@ -6,7 +6,7 @@ import pathlib
 
 import libcst as cst
 
-from cleanporter import analyze, firstparty, model, rewrite
+from cleanporter import analyze, firstparty, model, project, rewrite
 from cleanporter import config as config_lib
 from cleanporter import resolver as resolver_lib
 
@@ -16,7 +16,7 @@ FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 def outcome(source: str, config: config_lib.Config | None = None) -> rewrite.FixOutcome:
     path = FIXTURES / "pkg" / "a.py"
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = analyze.FileRecord(path, source, cst.parse_module(source), analyze.package_of(path, mm))
     resolver.warm(analyze.collect_pairs([rec]))
     return rewrite.fix_record(rec, resolver, config if config is not None else config_lib.Config())
@@ -1334,7 +1334,8 @@ def _tree(tmp_path: pathlib.Path, **files: str) -> pathlib.Path:
 
 def _fix_all(pkg: pathlib.Path) -> None:
     cfg = config_lib.Config(root=pkg.parent)
-    records, resolver, _e, _w = analyze.build([pkg], cfg)
+    built = project.build([pkg], cfg)
+    records, resolver = built.records, built.resolver
     for rec in records:
         out = rewrite.fix_record(rec, resolver, cfg)
         if out.status == "fixed":
@@ -1355,7 +1356,9 @@ def test_a_load_bearing_reexport_is_kept_but_the_rest_of_the_file_is_fixed(
     )
     (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
 
-    records, resolver, _e, _w = analyze.build([pkg], config_lib.Config(root=pkg.parent))
+    built = project.build([pkg], config_lib.Config(root=pkg.parent))
+
+    records, resolver = built.records, built.resolver
     tool = next(r for r in records if r.path.name == "tool.py")
     result = rewrite.fix_record(tool, resolver, config_lib.Config(root=pkg.parent))
 
@@ -1510,7 +1513,7 @@ def _rules(*tables: dict[str, str]) -> config_lib.Config:
 def outcome_with(source: str, cfg: config_lib.Config) -> rewrite.FixOutcome:
     path = FIXTURES / "pkg" / "a.py"
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = analyze.FileRecord(
         path,
         source,
@@ -1731,7 +1734,7 @@ def test_only_the_unread_name_is_kept_on_a_mixed_line():
 def _encoded_outcome(source: str, encoding: str, raw: bytes | None) -> rewrite.FixOutcome:
     path = FIXTURES / "pkg" / "a.py"
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = analyze.FileRecord(
         path,
         source,
@@ -1803,7 +1806,8 @@ def _fix_in(tmp_path: pathlib.Path, target: str, source: str) -> rewrite.FixOutc
         init.write_text("class Obj:\n    pass\n")
     (top / target).write_text(source)
     cfg = config_lib.Config(root=tmp_path)
-    records, resolver, _e, _w = analyze.build([top], cfg)
+    built = project.build([top], cfg)
+    records, resolver = built.records, built.resolver
     rec = next(r for r in records if r.path.resolve() == (top / target).resolve())
     return rewrite.fix_record(rec, resolver, cfg)
 
@@ -1860,7 +1864,8 @@ def test_importing_from_a_top_level_package_itself_keeps_that_line(
     src = "from . import Thing\nfrom os.path import join\nx = Thing(join)\n"
     (solo / "mod.py").write_text(src)
     cfg = config_lib.Config(root=tmp_path)
-    records, resolver, _e, _w = analyze.build([solo], cfg)
+    built = project.build([solo], cfg)
+    records, resolver = built.records, built.resolver
     rec = next(r for r in records if r.path.name == "mod.py")
     result = rewrite.fix_record(rec, resolver, cfg)
     assert result.status == "fixed"

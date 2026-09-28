@@ -7,7 +7,7 @@ import pathlib
 
 import libcst as cst
 
-from cleanporter import analyze, config, firstparty, model, rewrite
+from cleanporter import analyze, config, firstparty, model, project, rewrite
 from cleanporter import resolver as resolver_lib
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -23,7 +23,7 @@ def _record(
 
 def _fix(source: str, path: pathlib.Path) -> str:
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = _record(source, path, mm)
     resolver.warm(_warm_pairs(rec))
     return rewrite.fix_record(rec, resolver, config.Config()).source
@@ -41,7 +41,7 @@ def _warm_pairs(rec: analyze.FileRecord) -> list[tuple[str, str]]:
 
 def _analyze(source: str, path: pathlib.Path):
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = _record(source, path, mm)
     resolver.warm(_warm_pairs(rec))
     return analyze.analyze_record(rec, resolver, config.Config())
@@ -185,7 +185,8 @@ def test_scope_first_party_never_classifies_other_imports(tmp_path: pathlib.Path
 
     monkeypatch.setattr(resolver_lib.Resolver, "_probe", recording)
     cfg = config.Config(root=tmp_path, scope="first-party")
-    records, resolver, errors, _warnings = analyze.build([pkg], cfg)
+    built = project.build([pkg], cfg)
+    records, resolver, errors = built.records, built.resolver, built.errors
     assert not errors
     for rec in records:
         rewrite.fix_record(rec, resolver, cfg)
@@ -193,7 +194,7 @@ def test_scope_first_party_never_classifies_other_imports(tmp_path: pathlib.Path
     assert asked == []
 
     cfg_all = config.Config(root=tmp_path, scope="all")
-    analyze.build([pkg], cfg_all)
+    project.build([pkg], cfg_all)
     assert ("functools", "partial") in asked, "the recorder must see an unscoped run's probe"
 
 
@@ -214,7 +215,8 @@ def test_scope_first_party_still_classifies_a_reexported_third_party_name(
 
     monkeypatch.setattr(resolver_lib.Resolver, "_probe", recording)
     cfg = config.Config(root=tmp_path, scope="first-party")
-    records, resolver, errors, _warnings = analyze.build([pkg], cfg)
+    built = project.build([pkg], cfg)
+    records, resolver, errors = built.records, built.resolver, built.errors
     assert not errors
     assert asked == [("os", "path")], "only the re-export's origin, batched by warm"
     assert resolver.is_module("pkg", "path") is True
@@ -225,7 +227,7 @@ def test_scope_first_party_still_classifies_a_reexported_third_party_name(
 def _analyze_with(source: str, config: config.Config):
     path = FIXTURES / "pkg" / "a.py"
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = _record(source, path, mm)
     resolver.warm([(u.parent, u.name) for u in rec.units if u.parent and not u.star])
     return analyze.analyze_record(rec, resolver, config)
@@ -255,7 +257,8 @@ def _reexport_tree(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 def _findings_by_file(pkg: pathlib.Path):
-    records, resolver, _errors, _warnings = analyze.build([pkg], config.Config(root=pkg.parent))
+    built = project.build([pkg], config.Config(root=pkg.parent))
+    records, resolver = built.records, built.resolver
     return {
         rec.path.name: analyze.analyze_record(rec, resolver, config.Config(root=pkg.parent))
         for rec in records
@@ -306,7 +309,8 @@ def test_a_name_both_imported_and_defined_is_not_protected(tmp_path: pathlib.Pat
         "    def dump():\n        return 0\n"
     )
     (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
-    _records, resolver, _e, _w = analyze.build([pkg], config.Config(root=pkg.parent))
+    built = project.build([pkg], config.Config(root=pkg.parent))
+    resolver = built.resolver
     assert resolver.is_load_bearing("pkg.tool", "dump") is False
 
 
@@ -456,7 +460,7 @@ def _skip_config(*tables: dict[str, str]) -> config.Config:
 
 def _analyze_rules(source: str, path: pathlib.Path, cfg: config.Config):
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = analyze.FileRecord(
         path,
         source,
@@ -529,7 +533,8 @@ def test_a_skipped_file_still_contributes_reexport_evidence(tmp_path: pathlib.Pa
     from cleanporter import config as config_lib
 
     cfg = config_lib._parse_table({"skip": [{"file": r".*conftest\.py"}]}, tmp_path)
-    records, resolver, _errors, _warnings = analyze.build([root], cfg)
+    built = project.build([root], cfg)
+    records, resolver = built.records, built.resolver
     assert resolver.is_load_bearing("demo.helpers", "THING"), (
         "the skipped file's import must still count as a use"
     )
@@ -570,7 +575,9 @@ def test_build_keeps_the_encoding_and_bytes_and_reports_an_undecodable_file(tmp_
     (pkg / "latin.py").write_bytes(b"# coding: latin-1\nx = '\xe9'\n")
     (pkg / "bad.py").write_bytes(b"x = '\xe9'\n")
 
-    records, _resolver, errors, _warnings = analyze.build([pkg], config.Config(root=tmp_path))
+    built = project.build([pkg], config.Config(root=tmp_path))
+
+    records, errors = built.records, built.errors
 
     by_name = {rec.path.name: rec for rec in records}
     assert sorted(by_name) == ["__init__.py", "crlf.py", "latin.py"]
@@ -591,7 +598,7 @@ def test_scope_first_party_neither_reports_nor_rewrites_stdlib():
     cfg = config.Config(scope="first-party")
     path = FIXTURES / "pkg" / "a.py"
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = _record(src, path, mm)
     resolver.warm(_warm_pairs(rec))
     assert analyze.analyze_record(rec, resolver, cfg) == []
@@ -709,8 +716,9 @@ def _agreement(tmp_path: pathlib.Path, table: dict[str, object]) -> dict[str, _A
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text, encoding="utf-8")
     cfg = config._parse_table(table, tmp_path)
-    records, resolver, errors, _warnings = analyze.build([root], cfg)
-    assert errors == []
+    built = project.build([root], cfg)
+    records, resolver, errors = built.records, built.resolver, built.errors
+    assert errors == ()
     out: dict[str, _Agreement] = {}
     for rec in records:
         fixer = _RecordingFixer(rec, resolver, cfg)

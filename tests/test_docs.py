@@ -12,13 +12,14 @@ keeps -- do not relax them without changing the code first.
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 import re
 
 import pytest
 
 import cleanporter
-from cleanporter import cli, config, model
+from cleanporter import cli, config, engine, model, project
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
@@ -26,6 +27,7 @@ README = ROOT / "README.md"
 USAGE = DOCS / "usage.md"
 CONFIGURATION = DOCS / "configuration.md"
 SAFETY = DOCS / "safety.md"
+LIBRARY = DOCS / "library.md"
 
 #: Every Markdown file a reader is expected to see.
 ALL_PAGES = [README, *sorted(DOCS.glob("*.md"))]
@@ -50,6 +52,31 @@ def test_every_cli_flag_is_documented() -> None:
     }
     missing = sorted(f for f in flags if f not in text)
     assert missing == [], f"undocumented flags in {USAGE.name}: {missing}"
+
+
+def _public_members(cls: type) -> set[str]:
+    """*cls*'s own public methods and properties (not inherited, not dunder)."""
+    return {name for name in vars(cls) if not name.startswith("_")}
+
+
+def test_every_public_api_name_is_documented() -> None:
+    """The library page names everything `cleanporter` exports, and every result member.
+
+    A name counts as documented when it appears in code spans as itself --
+    `` `name` `` -- or as a call, `` `name( ``; a mere prefix of a longer
+    name does not count.
+    """
+    text = _text(LIBRARY)
+    names = {name for name in cleanporter.__all__ if name != "__version__"}
+    names |= _public_members(engine.RunResult)  # fields and properties alike
+    names |= {f.name for f in dataclasses.fields(engine.RunResult)}
+    names |= {f.name for f in dataclasses.fields(engine.FilePatch)}
+    names |= {f.name for f in dataclasses.fields(project.Project)}
+    names |= _public_members(engine.Listener)
+    names |= {"FilePatch", "Listener"}
+    names |= {f"Mode.{m.name}" for m in engine.Mode}
+    missing = sorted(n for n in names if f"`{n}`" not in text and f"`{n}(" not in text)
+    assert missing == [], f"undocumented library API in {LIBRARY.name}: {missing}"
 
 
 def test_every_config_key_is_documented() -> None:
