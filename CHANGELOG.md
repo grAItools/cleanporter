@@ -277,6 +277,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   byte-identical before and after over the test fixtures, this repository,
   `pygments`, `packaging` and `_pytest`.
 
+- **The source is now clean under every type checker.** `mypy --strict`,
+  `pyright` and `zuban` each reported the same nine errors, all of them
+  narrowing failures rather than genuine unsoundness: a runtime-built
+  `isinstance` tuple (`_TRY_TYPES`, kept for an `ast.TryStar` that has existed
+  since 3.11 and so is unconditional at this package's 3.12 floor), two libcst
+  unions whose members are siblings rather than subtypes, and one signature
+  written wider than its only call sites. All nine are fixed without a
+  `cast` or an `Any` -- which is what made the error budget below removable.
+
+- **Lint and type checking now have one definition.**
+  `.pre-commit-config.yaml` is it. mypy and pyright used to run through
+  `tests/test_typecheck_baseline.py`, a pytest wrapper that counted their
+  errors and compared the total against a pinned budget; that only existed
+  because the raw tools always exited non-zero. With the budget at zero the
+  wrapper bought nothing, so it is deleted and both run as plain local hooks
+  next to `zuban`. CI's lint job is now `uv run prek run --all-files` rather
+  than its own spelling of the same commands, so it cannot drift from the git
+  hooks. Scope moved into `pyproject.toml` for all three checkers
+  (`[tool.mypy] files`, `[tool.pyright] include`), so no invocation needs a
+  path argument. `pyright` now also covers `tests/` (excluding
+  `tests/fixtures/`, which is input data rather than project code), which
+  turned up two narrowing failures in `tests/test_analyze.py`; `mypy --strict`
+  still checks `src/cleanporter` only.
+
+- **The two ruff pins are now asserted to agree.** Ruff is installed twice and
+  unavoidably: `uv run ruff check` uses `uv.lock`'s copy, while the git hook --
+  and so CI, which runs the hooks -- uses the one built from `rev:` in
+  `.pre-commit-config.yaml`. Nothing made them match, so a `uv lock --upgrade`
+  could silently leave the documented local command and the check that gates a
+  pull request running different linters. `tests/test_toolchain_pins.py` fails
+  when they diverge.
+
+- **Commits on `main` no longer carry a spurious failed check.** The zuban job
+  carried `continue-on-error: true`, which does not do what it looks like: the
+  *workflow run* concludes `success`, but the job keeps a check run of its own
+  and that still concludes `failure`. Commit lists and commit pages render
+  check runs, not workflow runs, so every commit wore a red X beside a green
+  CI. Worth knowing before reaching for that setting again: the only thing
+  that decides a job's check run is whether its steps exit non-zero. The job
+  was first rewritten to exit 0 on every path, and has since been folded into
+  the lint job, where zuban gates for real (above).
+
+- **The string-mention guard now distinguishes a reference from prose.** It used
+  to block a file whenever a rewritten name appeared as a whole word in any
+  non-docstring string literal. That is the single largest source of declined
+  files by a wide margin — across a 974-file third-party corpus it accounted
+  for 3,140 of 3,195 `CP003` findings — and the overwhelming majority of those
+  matches were prose no rename could reach (`"expected Type, got int"`,
+  `"--include=PATTERN"`, `"@pytest.yield_fixture is deprecated"`).
+
+    A word match is now only reported when the string could *be* a reference:
+    its content is parsed, and the name has to turn up as a `Name`, an
+    attribute leaf, a keyword-argument name, an `import` alias, or inside a
+    nested forward reference — or the content has to read as a dotted/colon
+    path (`"mypkg.cli:main"`). Prose neither parses nor reads as a path, so it
+    is cleared. A doctest (`>>>` anywhere) and a bytes literal still block, as
+    does anything the parse cannot classify.
+
+    Nothing that was provably unsafe becomes fixable: `getattr` arguments,
+    `monkeypatch.setattr` dotted paths and eagerly evaluated string
+    annotations (`"list[Widget]"`, `"Widget | None"`) all still block, and so
+    does a written-out `exec` payload — content is parsed both as written and
+    `textwrap.dedent`-ed, so an indented block is still recognised as code.
+    `__all__` is stronger than that: it is a name list *by declaration*, so
+    every string in one blocks however it is spelled, including
+    `__all__ = "Widget helper".split()`, which no content inspection can read
+    as code. One level of indirection is followed, so `__all__ = _EXPORTS`
+    covers whatever built `_EXPORTS`. cleanporter's own `__init__.py` still declines on its `__all__`,
+    so the dogfooding story in the README is unchanged. The boundary is
+    pinned by a table of 43 named cases in `tests/test_guards.py`; add
+    counterexamples there rather than relaxing the rule.
+
+    Two shapes are given up deliberately, and are listed under *Known
+    limitations* in the fixer-safety docs: a regex literal that matches the
+    name at runtime, and an `eval`/`exec` payload assembled rather than
+    written out.
+
+- **Strings in an annotation slot or an `__all__` list are treated as code
+  even when they do not parse.** `find_string_mentions` takes a new
+  `strict_ids` argument for string nodes the caller has already proven to be
+  code by context. This is what separates prose (cleared) from a *malformed
+  type* such as `"Widget["`, or a name list such as `"Widget helper"`, which
+  block — a distinction nothing about the content alone can draw.
+
 ### Removed
 
 - **`analyze.build`** — use `project.build` (still exported as
@@ -632,92 +716,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     time on `from .exceptions import UsageError as UsageError`, which the old
     guard had been shielding by accident, via unrelated prose mentions of
     `UsageError` elsewhere in the same file.
-
-### Changed
-
-- **The source is now clean under every type checker.** `mypy --strict`,
-  `pyright` and `zuban` each reported the same nine errors, all of them
-  narrowing failures rather than genuine unsoundness: a runtime-built
-  `isinstance` tuple (`_TRY_TYPES`, kept for an `ast.TryStar` that has existed
-  since 3.11 and so is unconditional at this package's 3.12 floor), two libcst
-  unions whose members are siblings rather than subtypes, and one signature
-  written wider than its only call sites. All nine are fixed without a
-  `cast` or an `Any` -- which is what made the error budget below removable.
-
-- **Lint and type checking now have one definition.**
-  `.pre-commit-config.yaml` is it. mypy and pyright used to run through
-  `tests/test_typecheck_baseline.py`, a pytest wrapper that counted their
-  errors and compared the total against a pinned budget; that only existed
-  because the raw tools always exited non-zero. With the budget at zero the
-  wrapper bought nothing, so it is deleted and both run as plain local hooks
-  next to `zuban`. CI's lint job is now `uv run prek run --all-files` rather
-  than its own spelling of the same commands, so it cannot drift from the git
-  hooks. Scope moved into `pyproject.toml` for all three checkers
-  (`[tool.mypy] files`, `[tool.pyright] include`), so no invocation needs a
-  path argument. `pyright` now also covers `tests/` (excluding
-  `tests/fixtures/`, which is input data rather than project code), which
-  turned up two narrowing failures in `tests/test_analyze.py`; `mypy --strict`
-  still checks `src/cleanporter` only.
-
-- **The two ruff pins are now asserted to agree.** Ruff is installed twice and
-  unavoidably: `uv run ruff check` uses `uv.lock`'s copy, while the git hook --
-  and so CI, which runs the hooks -- uses the one built from `rev:` in
-  `.pre-commit-config.yaml`. Nothing made them match, so a `uv lock --upgrade`
-  could silently leave the documented local command and the check that gates a
-  pull request running different linters. `tests/test_toolchain_pins.py` fails
-  when they diverge.
-
-- **Commits on `main` no longer carry a spurious failed check.** The zuban job
-  carried `continue-on-error: true`, which does not do what it looks like: the
-  *workflow run* concludes `success`, but the job keeps a check run of its own
-  and that still concludes `failure`. Commit lists and commit pages render
-  check runs, not workflow runs, so every commit wore a red X beside a green
-  CI. Worth knowing before reaching for that setting again: the only thing
-  that decides a job's check run is whether its steps exit non-zero. The job
-  was first rewritten to exit 0 on every path, and has since been folded into
-  the lint job, where zuban gates for real (above).
-
-- **The string-mention guard now distinguishes a reference from prose.** It used
-  to block a file whenever a rewritten name appeared as a whole word in any
-  non-docstring string literal. That is the single largest source of declined
-  files by a wide margin — across a 974-file third-party corpus it accounted
-  for 3,140 of 3,195 `CP003` findings — and the overwhelming majority of those
-  matches were prose no rename could reach (`"expected Type, got int"`,
-  `"--include=PATTERN"`, `"@pytest.yield_fixture is deprecated"`).
-
-    A word match is now only reported when the string could *be* a reference:
-    its content is parsed, and the name has to turn up as a `Name`, an
-    attribute leaf, a keyword-argument name, an `import` alias, or inside a
-    nested forward reference — or the content has to read as a dotted/colon
-    path (`"mypkg.cli:main"`). Prose neither parses nor reads as a path, so it
-    is cleared. A doctest (`>>>` anywhere) and a bytes literal still block, as
-    does anything the parse cannot classify.
-
-    Nothing that was provably unsafe becomes fixable: `getattr` arguments,
-    `monkeypatch.setattr` dotted paths and eagerly evaluated string
-    annotations (`"list[Widget]"`, `"Widget | None"`) all still block, and so
-    does a written-out `exec` payload — content is parsed both as written and
-    `textwrap.dedent`-ed, so an indented block is still recognised as code.
-    `__all__` is stronger than that: it is a name list *by declaration*, so
-    every string in one blocks however it is spelled, including
-    `__all__ = "Widget helper".split()`, which no content inspection can read
-    as code. One level of indirection is followed, so `__all__ = _EXPORTS`
-    covers whatever built `_EXPORTS`. cleanporter's own `__init__.py` still declines on its `__all__`,
-    so the dogfooding story in the README is unchanged. The boundary is
-    pinned by a table of 43 named cases in `tests/test_guards.py`; add
-    counterexamples there rather than relaxing the rule.
-
-    Two shapes are given up deliberately, and are listed under *Known
-    limitations* in the fixer-safety docs: a regex literal that matches the
-    name at runtime, and an `eval`/`exec` payload assembled rather than
-    written out.
-
-- **Strings in an annotation slot or an `__all__` list are treated as code
-  even when they do not parse.** `find_string_mentions` takes a new
-  `strict_ids` argument for string nodes the caller has already proven to be
-  code by context. This is what separates prose (cleared) from a *malformed
-  type* such as `"Widget["`, or a name list such as `"Widget helper"`, which
-  block — a distinction nothing about the content alone can draw.
 
 ## [0.3.0] - 2026-08-27
 
