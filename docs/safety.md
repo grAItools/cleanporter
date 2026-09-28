@@ -41,6 +41,11 @@ Comments are never *altered*, and they are **never silently dropped**: in the
 cases where a rewrite could not carry a comment across, the file is declined
 instead. Those cases are listed below.
 
+The same holds for bytes: a file is read and written in its own encoding, BOM
+and line endings (see [Encodings and line endings](usage.md#encodings-and-line-endings)),
+and `--fix` replaces it atomically, so an interrupted run never leaves a
+truncated source file behind.
+
 ## When a file is skipped
 
 Any one of these blocks the entire file. Each emits a `CP003` finding naming
@@ -211,6 +216,18 @@ kept, the import line disappears entirely, leaving nowhere to put a leading or
 trailing comment attached to it. Discarding an author's comment silently is
 worse than declining the fix, so the file is left alone. A *blank* line before
 the import is not a comment and does not block.
+
+### The file's encoding cannot hold the rewrite unchanged
+
+The rewrite is written back in the encoding the file was read in. If the file
+uses a legacy codec whose decoding does not round-trip — `cp932`, for one,
+reads two different byte sequences as the same character — writing it back
+would change lines the fix never touched, so the file is declined instead. The
+same applies to a rewrite that would need a character the file's encoding
+cannot represent — the absolute spelling of a relative import names the
+package after its directory, which can be `анализ` in a file declared
+`latin-1` — and to a file libCST itself does not reproduce byte for byte, such
+as one whose last line ends in a lone `\r`, which libCST drops.
 
 ### The rewrite did not re-parse
 

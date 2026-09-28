@@ -52,7 +52,7 @@ from libcst import metadata
 
 from cleanporter import analyze, config, model, resolver, skip
 
-from . import _imports, guards
+from . import _imports, _source, guards
 
 
 @dataclasses.dataclass
@@ -1428,7 +1428,48 @@ def fix_record(
     if stale is not None:
         return FixOutcome("skipped", rec.source, [stale], unread=frozenset(fixer.unread))
 
+    unwritable = _unwritable(rec, new_source)
+    if unwritable is not None:
+        return FixOutcome("skipped", rec.source, [unwritable], unread=frozenset(fixer.unread))
+
     return FixOutcome("fixed", new_source, [], fixer.plan.fixed, frozenset(fixer.unread))
+
+
+def _unwritable(rec: analyze.FileRecord, new_source: str) -> model.Finding | None:
+    r"""Why *new_source* cannot be written back in *rec*'s encoding, if it cannot.
+
+    The CLI writes the rewrite with the codec the file was read with, and the
+    promise is that every line the fix did not touch stays byte-identical.
+    Three things break it, and each declines the whole file rather than
+    writing it lossily:
+
+    * libCST itself not reproducing the file -- it drops a lone ``\r`` that
+      ends the file, so the rewrite would silently lose it;
+    * a codec that does not round-trip -- a few legacy multi-byte ones map
+      several byte sequences to one character, so decoding and re-encoding
+      would change lines nobody edited;
+    * text the codec cannot represent at all: the absolute spelling of a
+      relative import names the package from its *directory*, which can be
+      ``анализ`` in a file declared ``latin-1``.
+    """
+    if rec.tree.code != rec.source:
+        reason = "libCST does not reproduce this file byte for byte"
+    elif rec.raw is not None and not _source.round_trips(rec.source, rec.encoding, rec.raw):
+        reason = (
+            f"the file's encoding ({rec.encoding}) does not round-trip its bytes, so no "
+            "rewrite could leave the untouched lines byte-identical"
+        )
+    else:
+        try:
+            new_source.encode(rec.encoding)
+        except UnicodeEncodeError as exc:
+            reason = (
+                f"the rewrite needs {exc.object[exc.start : exc.end]!r}, which the file's "
+                f"encoding ({rec.encoding}) cannot represent"
+            )
+        else:
+            return None
+    return model.Finding(rec.path, 1, 0, "?", "?", model.Status.SKIPPED, reason)
 
 
 def _source_lines(source: str) -> list[str]:

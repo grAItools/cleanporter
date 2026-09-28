@@ -96,14 +96,14 @@ reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
 |-----:|---------|
 | 0 | no violations remain |
 | 1 | violations found (or left after `--fix`) |
-| 2 | operational error (syntax error/undecodable input, bad config) |
+| 2 | operational error: a file that could not be read, decoded, parsed or written (reported with its path; every other file is still processed), or bad config |
 
 ## Finding codes
 
 | Code | Status | Meaning |
 | --- | --- | --- |
 | `CP001` | `VIOLATION` | object imported by name — blocks CI |
-| `CP002` | `UNRESOLVED` | could not determine whether the symbol is a module; never rewritten |
+| `CP002` | `UNRESOLVED` | could not determine whether the symbol is a module; never rewritten. Also marks a file that was not processed (could not be read, decoded, parsed or written), which always exits `2`, with or without `--strict` |
 | `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely; like `CP001`, it fails the run. A wildcard import is reported in every mode; most of the rest are the fixer explaining a decision, so they appear under `--fix`/`--diff` |
 | `CP004` | `SKIPPED_BY_CONFIG` | matched a [`skip` rule](https://graitools.github.io/cleanporter/configuration/#skip-rules) — never analysed, never rewritten, counted in the summary, printed only under `--show-skipped`, and never part of the exit code |
 

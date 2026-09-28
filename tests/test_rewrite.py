@@ -1708,3 +1708,49 @@ def test_only_the_unread_name_is_kept_on_a_mixed_line():
     assert "import Thing" in result.source
     assert "mod.go()" in result.source
     assert result.unread == frozenset({"Thing"})
+
+
+# -- the file's encoding ------------------------------------------------------
+
+
+def _encoded_outcome(source: str, encoding: str, raw: bytes | None) -> rewrite.FixOutcome:
+    path = FIXTURES / "pkg" / "a.py"
+    mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
+    resolver = resolver_lib.Resolver(mm)
+    rec = analyze.FileRecord(
+        path,
+        source,
+        cst.parse_module(source),
+        analyze.package_of(path, mm),
+        encoding=encoding,
+        raw=raw,
+    )
+    resolver.warm(analyze.collect_pairs([rec]))
+    return rewrite.fix_record(rec, resolver, config_lib.Config())
+
+
+def test_a_file_libcst_does_not_reproduce_is_declined():
+    """libCST drops a lone ``\\r`` that ends a file; the rewrite would lose it."""
+    src = "from pkg.sub.mod import Thing\rx = Thing()\rY = 1\r"
+    assert cst.parse_module(src).code != src, "if libCST now round-trips this, drop the check"
+    result = _encoded_outcome(src, "utf-8", src.encode())
+    assert result.status == "skipped"
+    assert result.source == src
+    [blocker] = result.blockers
+    assert blocker.code == "CP003"
+    assert blocker.detail == "libCST does not reproduce this file byte for byte"
+
+
+def test_a_file_whose_bytes_do_not_round_trip_is_declined():
+    src = "from pkg.sub.mod import Thing\nx = Thing()\n"
+    result = _encoded_outcome(src, "utf-8", b"not what was decoded")
+    assert result.status == "skipped"
+    [blocker] = result.blockers
+    assert "does not round-trip" in blocker.detail
+
+
+def test_a_file_in_its_own_encoding_is_fixed():
+    src = 'from pkg.sub.mod import Thing\nx = Thing("\xe9")\n'
+    result = _encoded_outcome(src, "latin-1", src.encode("latin-1"))
+    assert result.status == "fixed"
+    assert result.source == 'from pkg.sub import mod\nx = mod.Thing("\xe9")\n'
