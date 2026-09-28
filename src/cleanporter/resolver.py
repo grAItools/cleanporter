@@ -27,8 +27,11 @@ resolver is built (`_interpreter.choose`, from `project.build`); the resolver
 takes an interpreter, not the ``python`` setting's ``"auto"``/``"self"``.
 
 Probing imports third-party packages, and some print on import. In-process,
-``sys.stdout`` is pointed at ``sys.stderr`` for the duration, so a banner
-cannot land in a ``--diff`` patch on stdout (the stream contract in `cli`);
+stdout is pointed at stderr for the duration (`_stdout_to_stderr`) -- both
+``sys.stdout`` and file descriptor 1, since an ``os.write(1, ...)`` or
+unbuffered C output bypasses the Python object -- so a banner cannot land in
+a ``--diff`` patch or a ``--format`` document on stdout (the stream contract
+in `cli`), short of C stdio output an extension buffers until exit;
 out of process, the reply is framed so a banner cannot corrupt it (`_probe`).
 When an out-of-process batch fails anyway -- a crash, a timeout, no reply --
 the batch is still undetermined, and *why* is kept in `take_warnings` for the
@@ -54,9 +57,12 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
+import os
 import pathlib
 import subprocess
 import sys
+from collections.abc import Generator
+from typing import TextIO
 
 from cleanporter import firstparty, model
 
@@ -389,7 +395,7 @@ class Resolver:
         if self._in_process:
             # Importing a parent runs its code; a package that prints on
             # import must not write into a patch on cleanporter's stdout.
-            with contextlib.redirect_stdout(sys.stderr):
+            with _stdout_to_stderr():
                 flat: dict[str, object] = dict(_probe.classify_many(pairs))
         else:
             reply = self._probe_out_of_process(pairs)
@@ -447,3 +453,67 @@ class Resolver:
             why = status + _stderr_tail(proc.stderr)
         self._failures[why] = self._failures.get(why, 0) + len(pairs)
         return None
+
+
+@contextlib.contextmanager
+def _stdout_to_stderr() -> Generator[None]:
+    """Send what is written to stdout to stderr meanwhile, down to the descriptor.
+
+    ``contextlib.redirect_stdout`` catches ``print`` and ``sys.stdout.write``;
+    an ``os.write(1, ...)``, unbuffered C output or a child process goes
+    straight to file descriptor 1, so that is pointed at descriptor 2 as well
+    (`os.dup2`) and put back afterwards. Both are process-wide: another
+    thread's stdout output is diverted too while this is in effect.
+    Python-level buffers are flushed on the way in and out, so what was
+    written before lands on stdout and what was written during on stderr.
+
+    What this cannot reach is C stdio's own buffer inside an extension: a
+    ``printf`` to a pipe is buffered in the C library, and flushed at process
+    exit, after the descriptor is restored. Only an out-of-process probe
+    (``--python``) contains that.
+
+    It never makes a run fail that the plain redirection would not have: with
+    no ``sys.stdout`` or ``sys.stderr`` (closed with ``>&-``, ``pythonw``), or
+    a descriptor that cannot be duplicated, it falls back to the Python-level
+    redirection alone, and descriptor 1 is restored however the block exits.
+    """
+    original = sys.stdout
+    _flush(original)
+    saved = _divert_descriptor_1()
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        try:
+            # Anything written through a reference to the original
+            # `sys.stdout` object is still buffered: out with it while
+            # descriptor 1 is still stderr.
+            _flush(original)
+            _flush(sys.stderr)
+        finally:
+            if saved is not None:
+                try:
+                    os.dup2(saved, 1)
+                finally:
+                    os.close(saved)
+
+
+def _divert_descriptor_1() -> int | None:
+    """Point descriptor 1 at descriptor 2; a duplicate of the old 1, or ``None`` if not done."""
+    try:
+        saved = os.dup(1)
+    except OSError:  # descriptor 1 closed, or not a real descriptor
+        return None
+    try:
+        os.dup2(2, 1)
+    except OSError:  # descriptor 2 closed (`2>&-`): leave 1 alone
+        os.close(saved)
+        return None
+    return saved
+
+
+def _flush(stream: TextIO | None) -> None:
+    """Flush *stream* if there is one; a closed or broken one is not this run's failure."""
+    if stream is not None:
+        with contextlib.suppress(OSError, ValueError):
+            stream.flush()

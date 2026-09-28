@@ -237,10 +237,13 @@ of its stderr, so a batch of `CP002` findings comes with its actual cause.
 
 Importing a parent runs its code, and some packages print on import (a
 "Welcome to ..." banner). None of that can reach a patch or corrupt the
-probe's reply:
+probe's reply, with one in-process exception below:
 
-- **In process**, `sys.stdout` points at stderr while the probe runs, so a
-  banner is printed on stderr and `--diff`'s stdout stays a clean patch.
+- **In process**, stdout points at stderr while the probe runs — both
+  `sys.stdout` and file descriptor 1, so an `os.write(1, ...)`, unbuffered C
+  output or a subprocess's output is caught too — so a banner is printed on
+  stderr and `--diff`'s stdout stays a clean patch, and `--format`'s a clean
+  document.
 - **Out of process**, the probe also points its `sys.stdout` at stderr, and
   its reply is *framed* by markers that are extracted wherever they sit in
   the output. The framing is what copes with output written below Python —
@@ -248,11 +251,20 @@ probe's reply:
   pipe's C-level buffer can flush it after the reply — without the probe
   needing anything beyond the handful of stdlib modules it is allowed.
 
-The in-process swap is of `sys.stdout` only: output an extension module
-writes directly to file descriptor 1 during an in-process probe still lands
-on cleanporter's stdout; it is a known limit rather than something the
-in-process path can close without rewiring the process's own descriptors
-under the code it is importing.
+The in-process swap rewires the process's own descriptor 1 for the
+duration, and restores it afterwards; it is process-wide, and so not
+thread-safe for a library caller (see
+[Side effects](library.md#side-effects)).
+
+It cannot reach C stdio's own buffer. An extension module that `printf`s on
+import, when stdout is a pipe or a file, has its output held in the C
+library's buffer rather than written to descriptor 1; that buffer is flushed
+at process exit, long after the descriptor is restored, so the banner still
+lands on cleanporter's stdout — after the patch or the `--format` document.
+That is a known limit of the in-process path. If a dependency prints from C
+on import, name an interpreter other than cleanporter's own with `--python`
+(or `python =`): the probe then runs in a subprocess, whose output is framed
+as described above.
 
 ### 3. Undetermined
 
