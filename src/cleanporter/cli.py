@@ -1,8 +1,10 @@
 """Command-line interface: check, and optionally fix, from-imports.
 
 Layers the configuration in one direction -- ``[tool.cleanporter]`` first, then
-the flags that override it -- runs the check/fix loop, and picks the exit code:
-0 clean, 1 anything left to fix, 2 operational error. A file the fixer declined
+the flags that override it -- hands the run to `engine.run`, prints what it
+reports, and picks the exit code: 0 clean, 1 anything left to fix, 2
+operational error. The run itself -- fixing, writing, re-analysing, counting --
+is the engine's; this module is only its shell. A file the fixer declined
 (`CP003`) counts toward the 1 -- it is a declined violation, not a note --
 while `CP002` counts only under ``--strict``.
 
@@ -20,27 +22,20 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import difflib
-import os
 import pathlib
 import sys
-from collections.abc import Iterable
 from typing import TextIO
 
-import libcst as cst
-
 import cleanporter
-from cleanporter import _source, analyze, model, rewrite
 from cleanporter import config as config_lib
+from cleanporter import engine, model
 
 #: Printed to stderr after `--fix` writes anything (see `run`).
 _CROSS_FILE_NOTE = (
     "cleanporter: note: --fix cannot see dotted references from other files; re-run your tests"
 )
 
-_EXIT_OK = 0
-_EXIT_VIOLATIONS = 1
-_EXIT_ERROR = 2
+_EXIT_ERROR = 2  # the rest of the exit-code rule is `engine.RunResult.exit_code`
 
 
 def _non_empty(value: str) -> str:
@@ -113,21 +108,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _diff_path(path: pathlib.Path) -> str:
-    """*path* as a diff header should spell it: relative to the cwd, POSIX.
-
-    Headers used to be built as ``f"a/{path}"`` straight from the record,
-    so an absolute path argument produced ``a//home/you/pkg/file.py`` -- a
-    doubled slash neither ``patch`` nor ``git apply`` can strip -- and the
-    patch could not be applied from anywhere.
-    """
-    try:
-        relative = os.path.relpath(path, pathlib.Path.cwd())
-    except ValueError:  # pragma: no cover - different drive on Windows
-        return pathlib.Path(path).as_posix().lstrip("/")
-    return pathlib.Path(relative).as_posix()
-
-
 def _apply_overrides(config: config_lib.Config, args: argparse.Namespace) -> config_lib.Config:
     return dataclasses.replace(
         config,
@@ -138,6 +118,30 @@ def _apply_overrides(config: config_lib.Config, args: argparse.Namespace) -> con
     )
 
 
+def _mode(args: argparse.Namespace) -> engine.Mode:
+    if args.fix:
+        return engine.Mode.FIX
+    return engine.Mode.DIFF if args.diff else engine.Mode.CHECK
+
+
+class _Printer(engine.Listener):
+    """Prints what the engine reports as it happens: the patch to stdout, the rest to *report*."""
+
+    def __init__(self, report: TextIO) -> None:
+        self._report = report
+
+    def warning(self, message: str) -> None:
+        print(f"cleanporter: warning: {message}", file=self._report)
+
+    def error(self, finding: model.Finding) -> None:
+        print(finding.format(), file=self._report)
+
+    def patch(self, patch: engine.FilePatch) -> None:
+        _write_patch(patch.diff)
+        if patch.written:
+            print(f"fixed: {patch.path}", file=self._report)
+
+
 def run(args: argparse.Namespace) -> int:
     anchor = pathlib.Path(args.paths[0]).resolve()
     try:
@@ -146,45 +150,14 @@ def run(args: argparse.Namespace) -> int:
         print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
         return _EXIT_ERROR
 
+    mode = _mode(args)
     # Everything that is not the patch -- warnings, parse errors, findings, the
     # summary -- goes here; see the stream contract in the module docstring.
-    report = sys.stderr if (args.fix or args.diff) else sys.stdout
-
+    report = sys.stdout if mode is engine.Mode.CHECK else sys.stderr
     paths = [pathlib.Path(p) for p in args.paths]
-    mismatch = config_lib.mismatch_warning(paths)
-    if mismatch is not None:
-        print(f"cleanporter: warning: {mismatch}", file=report)
-    records, resolver, parse_errors, warnings = analyze.build(paths, config)
-    for warning in warnings:
-        print(f"cleanporter: warning: {warning}", file=report)
+    result = engine.run(paths, config, mode, listener=_Printer(report))
 
-    for error in sorted(parse_errors, key=lambda f: (str(f.path), f.line)):
-        print(error.format(), file=report)
-
-    findings: list[model.Finding] = []
-    changed = 0
-    for rec in records:
-        current = rec
-        unread: frozenset[str] = frozenset()
-        if args.fix or args.diff:
-            outcome = rewrite.fix_record(current, resolver, config)
-            if outcome.status == "fixed":
-                current, write_error = _apply(
-                    current, outcome.source, write=args.fix, report=report
-                )
-                if write_error is None:
-                    changed += 1
-                else:
-                    parse_errors.append(write_error)
-            findings.extend(outcome.blockers)
-            unread = outcome.unread
-        findings.extend(analyze.analyze_record(current, resolver, config, unread))
-    # A probe batch outside `analyze.build`'s warm-up (a lookup it did not
-    # foresee) can fail too; say why as well.
-    for warning in resolver.take_warnings():
-        print(f"cleanporter: warning: {warning}", file=report)
-
-    if args.fix and changed:
+    if result.wrote:
         # The one place the tool changes something it cannot fully check: a
         # dotted reference living in *another* file (`monkeypatch.setattr(
         # "pkg.mod.name", ...)`, an entry point, an importlib lookup) is
@@ -193,8 +166,7 @@ def run(args: argparse.Namespace) -> int:
         # patch on stdout stays a patch.
         print(_CROSS_FILE_NOTE, file=sys.stderr)
 
-    findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
-    for finding in findings:
+    for finding in result.findings:
         # CP004 is the author's own configuration reporting back, so it is
         # counted but not printed: a project that skips a thousand imports
         # deliberately should not have to read about it on every run.
@@ -202,92 +174,25 @@ def run(args: argparse.Namespace) -> int:
             continue
         print(finding.format(), file=report)
 
-    violations = sum(f.status is model.Status.VIOLATION for f in findings)
-    skipped = sum(f.status is model.Status.SKIPPED for f in findings)
-    unresolved = sum(f.status is model.Status.UNRESOLVED for f in findings)
-    by_config = sum(f.status is model.Status.SKIPPED_BY_CONFIG for f in findings)
     print(file=report)
     print(
-        f"checked {len(records)} file(s)"
-        + (f", fixed {changed}" if args.fix else "")
-        + f": {violations} violation(s), {skipped} not rewritten, "
-        f"{unresolved} unresolved, {by_config} skipped by config",
+        f"checked {result.files_checked} file(s)"
+        + (f", fixed {result.changed}" if mode is engine.Mode.FIX else "")
+        + f": {result.violations} violation(s), {result.skipped} not rewritten, "
+        f"{result.unresolved} unresolved, {result.skipped_by_config} skipped by config",
         file=report,
     )
 
-    if parse_errors:
-        return _EXIT_ERROR
-    hard = violations + skipped + (unresolved if config.treat_unresolved_as_error else 0)
-    return _EXIT_VIOLATIONS if hard else _EXIT_OK
+    return result.exit_code(strict=config.treat_unresolved_as_error)
 
 
-def _apply(
-    rec: analyze.FileRecord, source: str, *, write: bool, report: TextIO
-) -> tuple[analyze.FileRecord, model.Finding | None]:
-    """Print *rec*'s rewrite as a patch and, if *write*, put it on disk.
-
-    Returns the record for what is now on disk, and an error finding if the
-    write failed -- in which case the file is untouched (the write is atomic),
-    no patch is printed for it, and the run goes on to the next file.
-
-    The patch and the file are both bytes in the file's own encoding and
-    newline convention, so a CRLF, Latin-1 or BOM-carrying file gets a patch
-    that applies to it and a rewrite that changes only the lines it had to.
-    """
-    before = rec.raw if rec.raw is not None else rec.source.encode(rec.encoding)
-    after = source.encode(rec.encoding)
-    if write:
-        try:
-            _source.write_atomic(rec.path, after)
-        except OSError as exc:
-            try:
-                notes = exc.__notes__  # e.g. a temporary file that could not be removed
-            except AttributeError:
-                notes = []
-            error = model.Finding(
-                rec.path,
-                1,
-                0,
-                "?",
-                "?",
-                model.Status.UNRESOLVED,
-                "; ".join([f"cannot write file: {exc.strerror or exc}", *notes]),
-            )
-            print(error.format(), file=report)
-            return rec, error
-    name = os.fsencode(_diff_path(rec.path))
-    _write_patch(
-        difflib.diff_bytes(
-            difflib.unified_diff,
-            _source.patch_lines(before),
-            _source.patch_lines(after),
-            fromfile=b"a/" + name,
-            tofile=b"b/" + name,
-        )
-    )
-    if not write:
-        return rec, None
-    print(f"fixed: {rec.path}", file=report)
-    # Report against what is now on disk.
-    return _reparse(rec, source, after), None
-
-
-def _write_patch(lines: Iterable[bytes]) -> None:
-    r"""Write patch *lines* to stdout as the bytes they are.
+def _write_patch(data: bytes) -> None:
+    r"""Write a patch to stdout as the bytes it is.
 
     Bytes, not text: a Latin-1 file's patch has to carry Latin-1 bytes to
     apply to it, and a CRLF line's ``\r`` has to survive -- a text-mode stdout
-    would re-encode the first and, on Windows, double the second. A last line
-    with no newline gets the ``\ No newline at end of file`` marker that
-    ``patch`` and ``git apply`` expect, instead of running into the next
-    file's header.
+    would re-encode the first and, on Windows, double the second.
     """
-    chunks: list[bytes] = []
-    for line in lines:
-        chunks.append(line)
-        if not line.endswith(b"\n"):
-            chunks.append(b"\n\\ No newline at end of file\n")
-    data = b"".join(chunks)
     sys.stdout.flush()
     try:
         buffer = sys.stdout.buffer
@@ -296,29 +201,6 @@ def _write_patch(lines: Iterable[bytes]) -> None:
         return
     buffer.write(data)
     buffer.flush()
-
-
-def _reparse(rec: analyze.FileRecord, source: str, raw: bytes | None = None) -> analyze.FileRecord:
-    """The same file, re-read from what was just written to it.
-
-    Everything the record was built with is carried over, and that includes
-    ``qualname`` -- without it the post-fix pass would forget which module
-    this file *is*, and report a re-export it had correctly declined to touch
-    as an ordinary violation -- and the encoding the file is written in. The
-    skip regions are deliberately *not* carried over: they are line spans,
-    and the lines have just moved.
-    """
-    return analyze.FileRecord(
-        rec.path,
-        source,
-        cst.parse_module(source),
-        rec.base_pkg,
-        rec.qualname,
-        root=rec.root,
-        skip_rules=rec.skip_rules,
-        encoding=rec.encoding,
-        raw=raw,
-    )
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -15,7 +15,7 @@ FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 def _prepare(source: str):
     path = FIXTURES / "pkg" / "a.py"
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])
-    resolver = resolver_lib.Resolver(mm)
+    resolver = resolver_lib.Resolver(mm, evidence=resolver_lib.NO_EVIDENCE)
     rec = analyze.FileRecord(path, source, cst.parse_module(source), analyze.package_of(path, mm))
     from cleanporter import analyze as analyze_lib
 

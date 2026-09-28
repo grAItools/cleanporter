@@ -12,6 +12,7 @@ edit_uri = "edit/main/docs/"
 nav = [
   { "Home" = "index.md" },
   { "Usage" = "usage.md" },
+  { "Library API" = "library.md" },
   { "Configuration" = "configuration.md" },
   { "How it works" = "how-it-works.md" },
   { "Safety and limitations" = "safety.md" },

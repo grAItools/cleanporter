@@ -77,7 +77,7 @@ def test_the_ambiguous_answer_survives_the_json_bridge(tmp_path, monkeypatch):
 def test_the_resolver_reports_a_probe_ambiguity_as_such(tmp_path, monkeypatch):
     """Both layers give the same verdict *and* the same reason for this shape."""
     _package_on_path(tmp_path, monkeypatch, "probe_reason_pkg", "from .leaf import leaf\n")
-    r = resolver_module.Resolver(firstparty.ModuleMap([]))
+    r = resolver_module.Resolver(firstparty.ModuleMap([]), evidence=resolver_module.NO_EVIDENCE)
     assert r.is_module("probe_reason_pkg", "leaf") is None
     assert "both a submodule" in r.reason("probe_reason_pkg", "leaf")
 
@@ -155,7 +155,9 @@ def _fake_interpreter(tmp_path: pathlib.Path, body: str) -> pathlib.Path:
 
 
 def _resolver(python: pathlib.Path) -> resolver_module.Resolver:
-    return resolver_module.Resolver(firstparty.ModuleMap([]), python=str(python))
+    return resolver_module.Resolver(
+        firstparty.ModuleMap([]), python=str(python), evidence=resolver_module.NO_EVIDENCE
+    )
 
 
 def test_keys_are_nul_separated_so_the_map_is_json_safe():
@@ -308,7 +310,9 @@ def test_a_package_that_prints_on_import_writes_nothing_on_stdout_in_process(
     tmp_path, monkeypatch, capsys
 ):
     _package_on_path(tmp_path, monkeypatch, "probe_noisy_inproc_pkg", "print('Welcome!')\n")
-    resolver = resolver_module.Resolver(firstparty.ModuleMap([]))
+    resolver = resolver_module.Resolver(
+        firstparty.ModuleMap([]), evidence=resolver_module.NO_EVIDENCE
+    )
     resolver.warm([("probe_noisy_inproc_pkg", "leaf")])
     assert resolver.is_module("probe_noisy_inproc_pkg", "leaf") is True
     captured = capsys.readouterr()
