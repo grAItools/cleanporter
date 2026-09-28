@@ -299,6 +299,35 @@ def test_a_project_that_declares_a_workspace_is_its_own_root(tmp_path):
 
 
 @posix_only
+def test_a_nested_workspace_root_is_its_own_root(tmp_path):
+    """uv: "Found workspace root: .../pkgs/inner", even though ``pkgs/*`` matches it."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "outer"\n[tool.uv.workspace]\nmembers = ["pkgs/*"]\n',
+        encoding="utf-8",
+    )
+    inner = tmp_path / "pkgs" / "inner"
+    inner.mkdir(parents=True)
+    (inner / "pyproject.toml").write_text(
+        '[project]\nname = "inner"\n[tool.uv.workspace]\nmembers = []\n', encoding="utf-8"
+    )
+    _fake_venv(tmp_path / ".venv")
+    python = _fake_venv(inner / ".venv")
+    choice = _interpreter.choose(None, inner)
+    assert choice.python == str(python)
+    assert choice.note is not None
+    assert "the .venv in the project root" in choice.note
+
+
+@posix_only
+@pytest.mark.parametrize("members", ['["./packages/*"]', '["packages/*/"]', '["packages//app"]'])
+def test_workspace_globs_are_matched_literally(tmp_path, members):
+    """uv reports these "not included"; a lenient normalisation would pick the workspace."""
+    member = _workspace(tmp_path, f"members = {members}")
+    _fake_venv(tmp_path / ".venv")
+    assert _interpreter.choose(None, member) == _interpreter.Choice(None)
+
+
+@posix_only
 def test_a_relative_root_is_made_absolute(tmp_path, monkeypatch):
     member = _workspace(tmp_path, 'members = ["packages/*"]')
     python = _fake_venv(tmp_path / ".venv")

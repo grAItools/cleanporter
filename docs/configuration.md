@@ -115,7 +115,10 @@ whose `exclude` globs do not, it is the workspace root; if it is a plain
 project (an `examples/demo` project inside a package), a workspace the project
 is not a member of, or a file that cannot be read, there is no workspace, and
 nothing further up is looked at. A project root that itself declares
-`[tool.uv.workspace]` is its own workspace root.
+`[tool.uv.workspace]` is its own workspace root, even when an outer
+workspace's `members` would match it. Globs are matched as uv matches them,
+component by component and literally: `"./pkgs/*"` and `"pkgs/*/"` include
+nothing.
 
 The *project root* is the directory of the `pyproject.toml` in use. **With no
 `pyproject.toml` above the first path argument, it is that path's directory**

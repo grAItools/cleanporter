@@ -36,7 +36,8 @@ command line's ``--python``) into the interpreter the resolver is given:
   workspace root; anything else -- a plain project above (``examples/demo``
   inside a package), a non-matching workspace, a file that cannot be read --
   means there is none, and the walk goes no further. A project root that
-  itself declares a workspace is its own workspace root.
+  itself declares a workspace is its own workspace root, whatever any outer
+  workspace's ``members`` say.
 
   The first candidate whose interpreter (``bin/python``, or
   ``Scripts\python.exe`` on Windows) is an executable file wins. A candidate
@@ -222,7 +223,13 @@ def _workspace_root(root: pathlib.Path) -> pathlib.Path | None:
     globs match *root* and whose ``exclude`` globs do not; a plain project, a
     workspace *root* is not a member of, or a file that cannot be read or
     parsed all mean there is none, and the walk goes no further.
+
+    A *root* whose own ``pyproject.toml`` declares ``[tool.uv.workspace]`` is
+    a workspace root itself, and uv looks no further up -- even when an outer
+    workspace's ``members`` would match it.
     """
+    if _uv_workspace_table(root / "pyproject.toml") is not None:
+        return None
     for ancestor in root.parents:
         pyproject = ancestor / "pyproject.toml"
         if not pyproject.is_file():
@@ -265,9 +272,12 @@ def _glob_matches(pattern: str, parts: tuple[str, ...]) -> bool:
     """Whether the relative path *parts* matches the workspace glob *pattern*.
 
     Component by component, so ``*`` never crosses a ``/``; a ``**``
-    component matches any number of components, as in uv's globs.
+    component matches any number of components, as in uv's globs. Components
+    are taken literally, as uv takes them: ``"./pkgs/*"`` and ``"pkgs/*/"``
+    carry a ``.`` or an empty component no directory name matches, so they
+    include nothing.
     """
-    return _match_parts(tuple(p for p in pattern.split("/") if p not in {"", "."}), parts)
+    return _match_parts(tuple(pattern.split("/")), parts)
 
 
 def _match_parts(pattern: tuple[str, ...], parts: tuple[str, ...]) -> bool:
