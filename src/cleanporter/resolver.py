@@ -14,6 +14,16 @@ The interpreter probe runs in-process when ``python`` is the current
 interpreter, otherwise in a subprocess so tool deps stay out of the target env
 and native-library crashes are contained.
 
+Probing imports third-party packages, and some print on import. In-process,
+``sys.stdout`` is pointed at ``sys.stderr`` for the duration, so a banner
+cannot land in a ``--diff`` patch on stdout (the stream contract in `cli`);
+out of process, the reply is framed so a banner cannot corrupt it (`_probe`).
+When an out-of-process batch fails anyway -- a crash, a timeout, no reply --
+the batch is still undetermined, and *why* is kept in `take_warnings` for the
+CLI to print, with the tail of the probe's stderr: the per-import reason ("not
+importable in the target interpreter") is the only thing the user would
+otherwise see, and it blames the packages rather than the probe.
+
 Answers are cached per ``(parent, name)``, and `warm` classifies a whole batch
 of pairs up front -- one subprocess round-trip for a run rather than one per
 import.
@@ -21,6 +31,7 @@ import.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import subprocess
@@ -36,6 +47,21 @@ _PROBE_TIMEOUT = 120
 
 _AMBIGUOUS = "'{name}' is both a submodule of '{parent}' and bound in its __init__"
 _NOT_IMPORTABLE = "'{parent}' is not importable in the target interpreter"
+
+#: How much of a failed probe's stderr a warning quotes, from the end.
+_STDERR_TAIL_LINES = 5
+_STDERR_TAIL_CHARS = 600
+
+
+def _stderr_tail(stderr: str | bytes | None) -> str:
+    """The last few lines of a probe's stderr, one line, for a warning."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    lines = [line for line in (stderr or "").splitlines() if line.strip()]
+    tail = " | ".join(lines[-_STDERR_TAIL_LINES:])
+    if len(tail) > _STDERR_TAIL_CHARS:
+        tail = "..." + tail[-_STDERR_TAIL_CHARS:]
+    return f"; stderr: {tail}" if tail else ""
 
 
 class Resolver:
@@ -54,6 +80,9 @@ class Resolver:
         self._star_imported: frozenset[str] = frozenset()
         self._notes: dict[tuple[str, str], str] = {}
         self._probe_path = str(pathlib.Path(_probe.__file__).resolve())
+        #: Why each failed probe batch failed (kind + stderr tail; the
+        #: interpreter is fixed per resolver) -> imports it left unresolved.
+        self._failures: dict[str, int] = {}
 
     def _from_kind(self, key: tuple[str, str], kind: model.Kind) -> bool | None:
         if kind is model.Kind.MODULE:
@@ -232,39 +261,37 @@ class Resolver:
         if pending:
             self._cache.update(self._probe(pending))
 
+    def take_warnings(self) -> list[str]:
+        """Warnings raised by probing since the last call, then forget them.
+
+        One per *distinct* failure of the out-of-process probe, saying why it
+        failed, with the imports it left unresolved summed across batches.
+        After `warm`, each lookup it did not foresee probes on its own, so a
+        broken interpreter fails once per lookup -- the same failure, which
+        is worth saying once. The pairs are already reported undetermined;
+        this is the explanation.
+        """
+        taken = [
+            f"interpreter probe '{self._python}' {why}; {count} import(s) left unresolved"
+            for why, count in self._failures.items()
+        ]
+        self._failures = {}
+        return taken
+
     # -- interpreter probe -------------------------------------------------
     def _probe(self, pairs: list[tuple[str, str]]) -> dict[tuple[str, str], bool | None]:
         if not pairs:
             return {}
         if self._in_process:
-            flat = _probe.classify_many(pairs)
+            # Importing a parent runs its code; a package that prints on
+            # import must not write into a patch on cleanporter's stdout.
+            with contextlib.redirect_stdout(sys.stderr):
+                flat: dict[str, object] = dict(_probe.classify_many(pairs))
         else:
-            # Every failure mode of the bridge -- a non-zero exit, an
-            # interpreter that cannot be run at all, one that hangs past the
-            # timeout, or one that writes something that is not the expected
-            # JSON map -- reports the *whole batch* as undetermined. "Never
-            # guess" applies to the transport exactly as it does to the
-            # classification: reporting nothing is recoverable, guessing
-            # wrong in --fix mode is not.
-            try:
-                proc = subprocess.run(
-                    [self._python, self._probe_path],
-                    input=json.dumps(pairs),
-                    capture_output=True,
-                    text=True,
-                    timeout=_PROBE_TIMEOUT,
-                    check=False,
-                )
-            except (subprocess.SubprocessError, OSError):
+            reply = self._probe_out_of_process(pairs)
+            if reply is None:
                 return dict.fromkeys(pairs)
-            if proc.returncode != 0:
-                return dict.fromkeys(pairs)
-            try:
-                flat = json.loads(proc.stdout or "{}")
-            except ValueError:
-                return dict.fromkeys(pairs)
-            if not isinstance(flat, dict):
-                return dict.fromkeys(pairs)
+            flat = reply
         out: dict[tuple[str, str], bool | None] = {}
         for parent, name in pairs:
             answer = flat.get(f"{parent}\x00{name}")
@@ -280,3 +307,39 @@ class Resolver:
                 # response might contain.
                 out[(parent, name)] = answer if isinstance(answer, bool) else None
         return out
+
+    def _probe_out_of_process(self, pairs: list[tuple[str, str]]) -> dict[str, object] | None:
+        """Run the probe under ``self._python``; ``None`` (and a warning) on failure.
+
+        Every failure mode of the bridge -- a non-zero exit, an interpreter
+        that cannot be run at all, one that hangs past the timeout, or one
+        that writes no framed JSON map -- reports the *whole batch* as
+        undetermined. "Never guess" applies to the transport exactly as it
+        does to the classification: reporting nothing is recoverable,
+        guessing wrong in --fix mode is not.
+        """
+        try:
+            proc = subprocess.run(
+                [self._python, self._probe_path],
+                input=json.dumps(pairs),
+                capture_output=True,
+                text=True,
+                timeout=_PROBE_TIMEOUT,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            why = f"timed out after {_PROBE_TIMEOUT}s{_stderr_tail(exc.stderr)}"
+        except (subprocess.SubprocessError, OSError) as exc:
+            why = f"could not be run: {exc}"
+        else:
+            reply = _probe.read_reply(proc.stdout or "")
+            if proc.returncode == 0 and reply is not None:
+                return reply
+            status = (
+                f"exited with status {proc.returncode}"
+                if proc.returncode != 0
+                else "sent no readable reply"
+            )
+            why = status + _stderr_tail(proc.stderr)
+        self._failures[why] = self._failures.get(why, 0) + len(pairs)
+        return None

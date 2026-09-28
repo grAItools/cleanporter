@@ -31,6 +31,36 @@ The leaf ``NAME`` is *never* imported: only its parent package is, and only to
 inspect ``__path__`` / discover submodule specs, and to read its ``__dict__``
 without running a module-level ``__getattr__``. Objects are never imported at
 all.
+
+**Importing a parent runs its code, and that code may print.** A package whose
+``__init__`` announces itself (``print("Welcome to noisy 1.0!")``) writes into
+whatever stream is standard output at the time. The subprocess bridge used to
+send its JSON reply on that same stream, so one banner made the reply
+unparseable and the *whole batch* -- every third-party pair in the run --
+came back undetermined, blamed on packages that imported fine. Two measures
+keep the reply intact, and they cover different layers:
+
+* `_main` saves the real ``sys.stdout``, points ``sys.stdout`` at
+  ``sys.stderr`` while it classifies, and writes the reply to the saved
+  stream. Python-level output (``print``, ``sys.stdout.write``) lands on
+  stderr, where the caller can quote it if the batch fails.
+* The reply is *framed*: `REPLY_BEGIN` + JSON + `REPLY_END`, which
+  `read_reply` extracts wherever it sits. Output written below Python --
+  an extension module's ``printf``, or a ``write(1, ...)`` -- goes to file
+  descriptor 1 whatever ``sys.stdout`` is, and C stdio to a pipe is block
+  buffered, so it can arrive before the reply *or after it*, at exit.
+  Redirecting the descriptor itself would need ``os.dup2``, which is outside
+  this module's import budget; it would also not help with that buffered
+  tail, which is flushed by the C runtime after any restore. Framing does not
+  care where the noise is, so it is the one measure that closes the fd-level
+  case rather than narrowing it. "Take the last line" would not: the
+  buffered tail can itself be the last line.
+
+The frame markers use ASCII record/group separators, which no printable banner
+contains, and `read_reply` takes the *last* opening marker, so noise before
+the reply cannot be mistaken for it. Anything that does not yield a JSON
+object between the markers is no reply at all, and the caller reports the
+batch undetermined -- the transport never guesses either.
 """
 
 from __future__ import annotations
@@ -48,6 +78,11 @@ _MISSING = object()
 #: and distinct from every other answer so ``is True`` / ``is False`` /
 #: ``is None`` tests keep meaning exactly what they meant.
 AMBIGUOUS = "ambiguous"
+
+#: Frame around the subprocess reply on stdout; see the module docstring.
+#: ``\x1d`` / ``\x1e`` are the ASCII group and record separators.
+REPLY_BEGIN = "\x1d\x1eimport-probe-reply\x1e"
+REPLY_END = "\x1e\x1d"
 
 
 def classify(parent: str, name: str) -> bool | str | None:
@@ -157,11 +192,40 @@ def classify_many(pairs: list[tuple[str, str]]) -> dict[str, bool | str | None]:
     return out
 
 
+def read_reply(stdout: str) -> dict[str, object] | None:
+    """The JSON map framed in *stdout* by `_main`, or ``None`` if there is none.
+
+    Whatever else the probed packages wrote around the frame is ignored; see
+    the module docstring for why the reply is framed rather than bare.
+    """
+    start = stdout.rfind(REPLY_BEGIN)
+    if start < 0:
+        return None
+    start += len(REPLY_BEGIN)
+    end = stdout.find(REPLY_END, start)
+    if end < 0:
+        return None
+    try:
+        reply = json.loads(stdout[start:end])
+    except ValueError:
+        return None
+    return reply if isinstance(reply, dict) else None
+
+
 def _main() -> int:
-    """Entry point for the subprocess bridge: read JSON pairs, write JSON map."""
+    """Entry point for the subprocess bridge: read JSON pairs, write a framed JSON map."""
     raw = sys.stdin.read()
     pairs = [(p, n) for p, n in json.loads(raw)] if raw.strip() else []
-    json.dump(classify_many(pairs), sys.stdout)
+    # Imports run arbitrary package code; anything it prints goes to stderr,
+    # never into the reply (module docstring).
+    reply_stream = sys.stdout
+    sys.stdout = sys.stderr
+    try:
+        flat = classify_many(pairs)
+    finally:
+        sys.stdout = reply_stream
+    reply_stream.write(REPLY_BEGIN + json.dumps(flat) + REPLY_END)
+    reply_stream.flush()
     return 0
 
 

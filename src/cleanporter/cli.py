@@ -167,6 +167,10 @@ def run(args: argparse.Namespace) -> int:
             findings.extend(outcome.blockers)
             unread = outcome.unread
         findings.extend(analyze.analyze_record(current, resolver, config, unread))
+    # A probe batch outside `analyze.build`'s warm-up (a lookup it did not
+    # foresee) can fail too; say why as well.
+    for warning in resolver.take_warnings():
+        print(f"cleanporter: warning: {warning}", file=report)
 
     if args.fix and changed:
         # The one place the tool changes something it cannot fully check: a

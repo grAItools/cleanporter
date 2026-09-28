@@ -118,9 +118,31 @@ Three properties of this layer matter:
 
 The subprocess bridge fails *closed*. A non-zero exit, an interpreter that
 cannot be executed, one that hangs past the probe's wall-clock budget, or
-output that is not the expected JSON map: every one of those reports the
+output that carries no framed JSON map (see below): every one of those reports the
 **entire batch** as undetermined. "Never guess" applies to the transport
-exactly as it does to the classification.
+exactly as it does to the classification. It does not fail *silently*,
+though: cleanporter prints a warning saying which interpreter failed and how
+(its exit status, a timeout, no readable reply), quoting the last few lines
+of its stderr, so a batch of `CP002` findings comes with its actual cause.
+
+Importing a parent runs its code, and some packages print on import (a
+"Welcome to ..." banner). None of that can reach a patch or corrupt the
+probe's reply:
+
+- **In process**, `sys.stdout` points at stderr while the probe runs, so a
+  banner is printed on stderr and `--diff`'s stdout stays a clean patch.
+- **Out of process**, the probe also points its `sys.stdout` at stderr, and
+  its reply is *framed* by markers that are extracted wherever they sit in
+  the output. The framing is what copes with output written below Python —
+  an extension module's `printf` goes straight to file descriptor 1, and a
+  pipe's C-level buffer can flush it after the reply — without the probe
+  needing anything beyond the handful of stdlib modules it is allowed.
+
+The in-process swap is of `sys.stdout` only: output an extension module
+writes directly to file descriptor 1 during an in-process probe still lands
+on cleanporter's stdout; it is a known limit rather than something the
+in-process path can close without rewiring the process's own descriptors
+under the code it is importing.
 
 ### 3. Undetermined
 
