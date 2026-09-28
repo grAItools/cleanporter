@@ -201,9 +201,22 @@ Three properties of this layer matter:
   interpreter, the classifier is executed there as a subprocess, exchanging
   JSON over stdin/stdout. That keeps cleanporter's own dependency (libCST) out
   of the target project's virtualenv, and contains a native-library crash in a
-  subprocess rather than taking the whole run down. When `--python` resolves to
-  the interpreter cleanporter is already running on — the default case — the
-  same stdlib-only code runs in process, since there is nothing to isolate.
+  subprocess rather than taking the whole run down. When there is no
+  `--python` (or `python` key) — the default case — or it names the very
+  executable cleanporter is running as, the same stdlib-only code runs in
+  process, since there is nothing to isolate.
+
+  "The very executable" means the same path, made absolute but with no symlink
+  resolved: equal to cleanporter's own `sys.executable`, and containing no `..`
+  component. A bare command name (`--python python3`, no path separator) is
+  never probed in process: the subprocess finds it on `PATH`, which need not
+  lead back to cleanporter's own interpreter even when the current directory
+  does. Resolving symlinks would be wrong, because a virtual
+  environment's `bin/python` is a symlink to its base Python, and so are every
+  other venv's — they would all look like cleanporter's own, and be probed
+  against cleanporter's `sys.path` instead of their own. Any other spelling of
+  the same interpreter just runs in a subprocess, which costs a process start
+  and never changes an answer.
 
 The subprocess bridge fails *closed*. A non-zero exit, an interpreter that
 cannot be executed, one that hangs past the probe's wall-clock budget, or

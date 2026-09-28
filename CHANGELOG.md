@@ -89,6 +89,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Paths from different projects in one run now draw a warning.** A run loads
+  the configuration found from its *first* path, and a later path whose nearest
+  `pyproject.toml` is a different file — another project, or a nested one — was
+  analysed under it without a word. cleanporter now warns, naming the
+  configuration in use and each path whose own it is ignoring. Which
+  configuration wins is unchanged; run once per project to apply each one's.
+
+- **`python = ""` and `--python ""` are errors** (exit `2`). Both used to be
+  accepted and silently ignored; omit the key or the flag to use the current
+  interpreter.
+
+- **`python` in `[tool.cleanporter]` expands a leading `~` or `~user`**, as the
+  shell already did for `--python`; an unknown user is an error. Environment
+  variables are still not expanded. A Windows drive-relative value such as
+  `C:python.exe` — relative to that drive's current directory, which no project
+  root can stand in for — is now an error, and a drive-qualified absolute path
+  (`C:\venv\Scripts\python.exe`, `\\server\share\python.exe`) is used as
+  written on every platform.
+
 - **Some first-party `CP001` findings are now `CP002`, and some are no longer
   findings at all.** Consequences of the fix below, and intended ones. A
   first-party `from P import NAME` whose `P.NAME` is not on disk used to be a
@@ -166,6 +185,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-export, which strict checking over `tests/` reports.
 
 ### Fixed
+
+- **`--python` naming another virtual environment now probes *that*
+  environment.** The probe ran in process whenever the target interpreter,
+  symlinks resolved, was the same file as cleanporter's own — and every venv
+  built from one base Python is a symlink to the same file. So
+  `--python other/.venv/bin/python` was answered from cleanporter's `sys.path`,
+  not the target's: a package installed only in the target came back `CP002`
+  "not importable in the target interpreter", and one installed only beside
+  cleanporter was classified as if the target had it — a guess, which is what
+  the resolver exists not to make. The probe now runs in process only when no
+  interpreter is named or the one named is, by its unresolved absolute path,
+  cleanporter's own `sys.executable`; anything else, a bare command name
+  such as `python3` included, runs in a subprocess,
+  which can cost a process start and never an answer.
+
+- **A relative `python` in `[tool.cleanporter]` is read against the
+  `pyproject.toml` directory, not the current directory.** It was the one path
+  in the configuration that was not: `python = ".venv/bin/python"` worked from
+  the project root and named a file that does not exist from every
+  subdirectory, so a run started from `src/` lost its target interpreter and
+  every third-party import came back `CP002`. `exclude` and `source_roots`
+  already worked this way. A value with no path separator (`"python3"`) is
+  still a command looked up on `PATH`, and the `--python` flag, like any path on
+  the command line, is still read against the current directory.
 
 - **A third-party package that prints on import no longer breaks the probe.**
   Classifying `from P import S` imports `P`, and a `P/__init__.py` that prints

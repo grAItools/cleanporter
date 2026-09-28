@@ -12,9 +12,11 @@ rather than carrying on with a half-understood configuration.
 from __future__ import annotations
 
 import dataclasses
+import os
 import pathlib
 import re
 import tomllib
+from collections.abc import Sequence
 
 from cleanporter import skip as skip_lib
 
@@ -50,7 +52,8 @@ class Config:
     exempt_modules: frozenset[str] = DEFAULT_EXEMPT_MODULES
     #: Individual bound names that are always allowed.
     exempt_names: frozenset[str] = frozenset()
-    #: Interpreter used for the stdlib/third-party probe (None -> current).
+    #: Interpreter used for the stdlib/third-party probe (None -> current). A
+    #: relative path read from pyproject.toml arrives already joined to ``root``.
     python: str | None = None
     #: Regions the author declared off-limits; see `cleanporter.skip`.
     skip: tuple[skip_lib.Rule, ...] = ()
@@ -77,10 +80,61 @@ def _scope(table: dict[str, object]) -> str:
     return value
 
 
-def _python(table: dict[str, object]) -> str:
+def _python(table: dict[str, object], root: pathlib.Path) -> str:
+    r"""The ``python`` key, with a relative *path* anchored at *root*.
+
+    A value is a path when it contains a path separator, and a relative one is
+    read against the directory of the ``pyproject.toml`` that declared it --
+    as ``exclude`` and ``source_roots`` are -- so ``".venv/bin/python"`` names
+    the same interpreter whichever directory cleanporter is started from. Read
+    against the cwd, as it used to be, it named a different file (or none)
+    from every subdirectory.
+
+    A value with no separator (``"python3"``) is a command, not a path, and is
+    left for the operating system to look up on ``PATH``: anchoring it would
+    turn "whatever ``python3`` is" into "a file called ``python3`` next to
+    pyproject.toml", which is a different request.
+
+    A leading ``~`` or ``~user`` is expanded before that test, as a shell
+    would have expanded it on a command line; one naming no known user is an
+    error rather than a directory literally called ``~user``. Environment
+    variables are *not* expanded, and no symlink is resolved, because a
+    virtual environment's interpreter *is* a symlink whose location matters.
+
+    A Windows drive (``C:\...``, ``\\server\share\...``) also makes the
+    value a path, and one with its own root is left as written. A drive with
+    *no* root (``C:python.exe``) is relative to that drive's current
+    directory -- per-process state the project root cannot stand in for -- so
+    it is rejected. Drives are recognised on every platform, so one
+    configuration means the same thing wherever it is read.
+    """
     value = table["python"]
     if not isinstance(value, str):
         raise ConfigError("tool.cleanporter.python must be a string")
+    if not value:
+        raise ConfigError("tool.cleanporter.python must not be empty; omit the key instead")
+    if value.startswith("~"):
+        try:
+            value = str(pathlib.Path(value).expanduser())
+        except RuntimeError as exc:  # no such user, or no home directory to be found
+            raise ConfigError(f"tool.cleanporter.python: cannot expand {value!r}: {exc}") from exc
+    return _anchor_python(value, root)
+
+
+def _anchor_python(value: str, root: pathlib.Path) -> str:
+    """*value*, a user-expanded ``python``, made independent of the cwd (see `_python`)."""
+    windows = pathlib.PureWindowsPath(value)
+    if windows.drive:
+        if not windows.root:
+            raise ConfigError(
+                f"tool.cleanporter.python: {value!r} is relative to its drive's current "
+                "directory; give a full path (C:\\venv\\python.exe) or one relative to "
+                "pyproject.toml"
+            )
+        return value
+    is_path = any(sep in value for sep in (os.sep, os.altsep) if sep)
+    if is_path and not pathlib.Path(value).is_absolute():
+        return str(root / value)
     return value
 
 
@@ -196,7 +250,7 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
         else defaults.exempt_names
     )
     scope = _scope(table) if "scope" in table else defaults.scope
-    python = _python(table) if "python" in table else defaults.python
+    python = _python(table, root) if "python" in table else defaults.python
     skip = _skip_rules(table) if "skip" in table else defaults.skip
     # Validating the boolean keys stays driven by _BOOL_KEYS, but every one of
     # them has to be applied by name below; `test_every_known_key_reaches_the
@@ -243,3 +297,38 @@ def load_config(start: pathlib.Path) -> Config:
     if not isinstance(table, dict):
         raise ConfigError("[tool.cleanporter] must be a TOML table")
     return _parse_table(table, pyproject.parent)
+
+
+def mismatch_warning(paths: Sequence[pathlib.Path]) -> str | None:
+    """Warning text when *paths* do not all share the first one's pyproject.toml.
+
+    A run loads one configuration, found from its first path (see
+    `load_config`). A later path whose nearest ``pyproject.toml`` is a
+    different file -- another project, or one nested inside this one -- is
+    still analysed, but under the first project's rules, and nothing used to
+    say so. This names the configuration in use and every path whose own is
+    being ignored. It does not change which configuration wins. ``None`` when
+    every path agrees.
+    """
+    if not paths:
+        return None
+    used = find_pyproject(paths[0])
+    ignored: dict[pathlib.Path | None, list[str]] = {}
+    for path in paths[1:]:
+        own = find_pyproject(path)
+        # Two spellings of one file (a case-insensitive filesystem) agree.
+        same = own == used or (own is not None and used is not None and own.samefile(used))
+        if not same:
+            ignored.setdefault(own, []).append(str(path))
+    if not ignored:
+        return None
+    using = str(used) if used is not None else "the built-in defaults (no pyproject.toml above it)"
+    others = "; ".join(
+        f"{', '.join(names)} (nearest: {own if own is not None else 'no pyproject.toml'})"
+        for own, names in ignored.items()
+    )
+    return (
+        f"the paths belong to different pyproject.toml files; only the first path's "
+        f"({paths[0]}) configuration is used: {using}. Analysed under it anyway, their own "
+        f"configuration ignored: {others}. Run cleanporter once per project to apply each one's"
+    )
