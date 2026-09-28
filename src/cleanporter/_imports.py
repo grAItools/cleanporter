@@ -42,6 +42,77 @@ def resolve_parent(node: cst.ImportFrom, base_pkg: str) -> str | None:
     return ".".join(parts) or None
 
 
+def module_import_spelling(node: cst.ImportFrom, parent: str) -> tuple[str, str] | None:
+    """How to spell an import of *parent*, the module *node* imports from.
+
+    Returns ``(package, token)``: the statement is ``from <package> import
+    <token>``, or ``import <token>`` when *package* is empty (see
+    `render_import`). ``None`` means no relative spelling exists -- see below.
+
+    An absolute import is spelled from *parent*, which is its own text.
+
+    A relative import stays relative. Its absolute *parent* is only as good
+    as the import root inferred for the file, and a PEP 420 namespace
+    directory can make that root wrong: ``from .readers import read`` in
+    ``analytics/io/__init__.py``, anchored against an inferred ``analytics/``
+    root, is ``io.readers`` -- and ``from io import readers`` is the standard
+    library. A relative spelling keeps the author's own dots and names:
+
+    * ``from .readers import read`` -> ``from . import readers``;
+    * ``from ..pkg.mod import X`` -> ``from ..pkg import mod``.
+
+    Neither depends on the root at all: the dots climb from wherever the file
+    really is, exactly as the original import did.
+
+    ``from . import X`` / ``from .. import X`` has no module part to split:
+    *parent* is the package the dots reach. The only relative spelling of a
+    package is one more dot and its own name -- ``from .. import pkg`` --
+    and that one *does* lean on the root, which must give ``pkg`` a parent
+    package. The name itself is the leaf of *parent*, a directory name, so
+    the risk is only in the extra dot, and it fails loudly: if ``pkg`` is in
+    fact top-level, the import raises ``ImportError`` ("attempted relative
+    import beyond top-level package") the first time the module is imported.
+    It cannot silently bind a different module, the way ``import io`` did.
+
+    When *parent* has no parent package under this run's roots, there is no
+    relative spelling at all; an absolute ``import pkg`` would depend on the
+    root in exactly the silent way the relative form does not, so this
+    returns ``None`` and the import is kept (`unspellable_reason`).
+    """
+    level = relative_level(node)
+    if level == 0:
+        package, _, token = parent.rpartition(".")
+        return package, token
+    module = dotted(node.module)
+    if module:
+        head, _, token = module.rpartition(".")
+        return "." * level + head, token
+    package, _, token = parent.rpartition(".")
+    if not package:
+        return None
+    return "." * (level + 1), token
+
+
+def render_import(spelling: tuple[str, str], bind: str | None = None) -> str:
+    """The statement text for a `module_import_spelling` result, bound as *bind*."""
+    package, token = spelling
+    code = f"from {package} import {token}" if package else f"import {token}"
+    if bind is not None and bind != token:
+        code += f" as {bind}"
+    return code
+
+
+def unspellable_reason(node: cst.ImportFrom, parent: str) -> str:
+    """Why *node*, for which `module_import_spelling` is ``None``, is kept."""
+    dots = "." * relative_level(node)
+    return (
+        f"`from {dots} import` names the package '{parent}' itself, and a relative import "
+        f"can reach a package only from its parent, which '{parent}' does not have under "
+        "this run's import roots; an absolute spelling would depend on the import root, "
+        "which the original relative import did not"
+    )
+
+
 def imported_names(node: cst.ImportFrom) -> list[tuple[str, str | None, cst.ImportAlias]]:
     """List of ``(name, asname, alias_node)`` for a non-star import.
 

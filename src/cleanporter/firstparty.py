@@ -309,8 +309,11 @@ class ModuleMap:
         ``analytics`` can settle it. A file outside it saying ``from
         analytics.io import x`` can: ``analytics`` is then a package under
         some higher root, so it is not a root itself. Without this, ``from
-        .readers import read`` in that ``__init__.py`` is rewritten to ``from
-        io import readers`` -- the standard library.
+        .readers import read`` in that ``__init__.py`` is classified as an
+        import from ``io.readers``. The fixer no longer writes that name --
+        a relative import's replacement stays relative
+        (`_imports.module_import_spelling`) -- but it once rewrote the line to
+        ``from io import readers``, the standard library.
 
         Only inferred roots that sit inside another root are affected;
         a declared root is never demoted.
@@ -814,9 +817,11 @@ class ModuleMap:
         Roots routinely nest -- a ``src/`` layout plus a ``tests/__init__.py``
         infers both ``src`` and the repo root -- and only one of them is
         actually on ``sys.path`` for this file. Picking the wrong one produces
-        a dotted name that does not exist at runtime, which ``--fix`` then
-        writes into the file: code that compiles and raises
-        ``ModuleNotFoundError``. Candidates are ranked by three rules, in
+        a dotted name that does not exist at runtime, and every relative
+        import in the file is classified under it. (``--fix`` once wrote that
+        name into the file, too: code that compiles and raises
+        ``ModuleNotFoundError``. A relative import's replacement is now
+        relative, so it no longer does.) Candidates are ranked by three rules, in
         order:
 
         1. **The file's own relative-import depth is a floor.** A file whose

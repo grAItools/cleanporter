@@ -371,8 +371,9 @@ class Decider:
         that would report nothing at all -- `CP004` for a compliant ``from pkg
         import module``, or for an exempt ``typing`` import, would pad the one
         count the docs offer as the way to see how much a rule swallowed. The
-        two line-wide reasons (a skip covering the line, an unreachable
-        replacement) precede the per-name ones, and never-read comes *last*,
+        line-wide reasons (a skip covering the line, a replacement with no
+        relative spelling, an unreachable replacement) precede the per-name
+        ones, and never-read comes *last*,
         because reaching it means every other reason to keep the name was
         already false.
         """
@@ -401,8 +402,20 @@ class Decider:
     def _declined(
         self, unit: ImportUnit, parent: str, never_read: frozenset[str]
     ) -> Decision | None:
-        """The `CP003` for a proven object the fixer must still leave alone."""
-        unreachable = self._resolver.replacement_unreachable(parent)
+        """The `CP003` for a proven object the fixer must still leave alone.
+
+        The first two reasons are line-wide: they are about the module import
+        that would replace the line, which every name on it shares. Either
+        there is no spelling for it that does not lean on the inferred import
+        root (`_imports.module_import_spelling`), or the one there is cannot
+        be shown to bind the module.
+        """
+        spelling = _imports.module_import_spelling(unit.node, parent)
+        if spelling is None:
+            return Decision(model.Status.SKIPPED, _imports.unspellable_reason(unit.node, parent))
+        unreachable = self._resolver.replacement_unreachable(
+            parent, _imports.render_import(spelling)
+        )
         if unreachable is not None:
             return Decision(model.Status.SKIPPED, unreachable)
         if _imports.is_explicit_reexport(unit.name, unit.asname):
