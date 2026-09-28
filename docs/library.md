@@ -43,7 +43,8 @@ reads `[tool.cleanporter]`; apply any overrides of your own with
 only the files under `paths` are fixed, reported and counted — `findings`,
 `patches`, `errors` and `files_checked` cover those alone, and a file
 elsewhere that cannot be parsed is a warning. `run` itself enforces that
-every path lies inside `Config.root`, both as written and resolved: one that
+every path, and every file a listed directory expands to, lies inside
+`Config.root`, both as written and resolved: one that
 does not is an `errors` entry, so `exit_code()` is `2`, and the whole run is
 refused — nothing is analysed or written, and `files_checked` is `0`. It does
 not check that `Config.root` came from a `pyproject.toml`, or that the paths

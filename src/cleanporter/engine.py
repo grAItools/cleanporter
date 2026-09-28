@@ -55,8 +55,9 @@ the listed paths: every rewrite is judged on that run's evidence. Evidence
 still stops at the root, so a consumer in another project (a sibling uv
 workspace member, say) is as invisible as it is to any run.
 
-Every listed path must therefore lie inside the root, both as written
-(absolute, symlinks kept) and resolved. One that does not -- a stray script
+Every listed path, and every file a listed directory expands to, must
+therefore lie inside the root, both as written (absolute, symlinks kept) and
+resolved. One that does not -- a stray script
 under no ``pyproject.toml``, a symlink into another project -- would be
 judged on evidence that is not its own tree's: its neighbours, or its real
 project's consumers, are never read, so a fix could delete what they import.
@@ -200,9 +201,10 @@ class Listener:
     """Told about each warning, file-level error and patch as the run makes it.
 
     Every method does nothing; override the ones you want. The calls come in
-    this order: the warning that the paths belong to different projects, then
-    (in a whole-project run) the listed paths outside the root -- after which
-    a refused run stops -- and the listed paths that do not exist, then the
+    this order: in a whole-project run, first the listed paths (or files of a
+    listed directory) outside the root, after which a refused run stops; then
+    the warning that the paths belong to different projects, then (in a
+    whole-project run) the listed paths that do not exist, then the
     notes (the interpreter detected for the probe), then the warnings from
     building the project (a missing path, nesting roots, a failed warm-up
     probe), then the files that could not be loaded (sorted by path; in a
@@ -275,23 +277,36 @@ def run(
 
     With *whole_project*, the whole tree under ``config.root`` is read for
     evidence and only the files under *paths* are fixed, reported and counted;
-    a path outside the root, as written or resolved, refuses the whole run with
-    a `RunResult.errors` entry per such path (see the module docstring).
+    a path outside the root, as written or resolved -- listed, or found in a
+    listed directory -- refuses the whole run with a `RunResult.errors` entry
+    per such path (see the module docstring).
     """
     tally = _Tally(listener or _SILENT)
+    listed: list[pathlib.Path] = []
+    missing: list[str] = []
+    if whole_project:
+        listed, missing = discover.iter_python_files(paths, config)
+        # The listed paths and every file a listed directory expands to: a
+        # symlink inside a listed directory can lead out of the root too.
+        escaped = [p for p in dict.fromkeys([*paths, *listed]) if _escapes(p, config.root)]
+        for path in escaped:
+            tally.fail(_escape_error(path, config.root))
+        if escaped:
+            # Refuse the run, not just the file: see the module docstring.
+            return RunResult(mode, 0, (), (), tuple(tally.errors), ())
     # A whole-project run places a listed path by where it was listed, not by
     # a symlink's target (see `config.find_pyproject`).
     mismatch = config_lib.mismatch_warning(paths, resolve=not whole_project)
     if mismatch is not None:
         tally.warn(mismatch)
+    for warning in missing:
+        tally.warn(warning)
     if whole_project:
-        escaped = [p for p in paths if _escapes(p, config.root)]
-        for path in escaped:
-            tally.fail(_escape_error(path, config.root))
-        if escaped:
-            # Refuse the run, not just the file: see the module docstring.
-            return RunResult(mode, 0, (), (), tuple(tally.errors), tuple(tally.warnings))
-    analysed, reported = _scope(paths, config, tally) if whole_project else (paths, None)
+        # Findings name files as a run over ``.`` would, not by absolute path.
+        analysed = [_relative(config.root)]
+        reported: frozenset[pathlib.Path] | None = frozenset(f.resolve() for f in listed)
+    else:
+        analysed, reported = paths, None
     # Warmed with the whole tree's pairs, not just the reported files': probe
     # verdicts can depend on the batch they are asked in (`Resolver.warm`).
     project = project_lib.build(analysed, config)
@@ -326,24 +341,6 @@ def run(
         tuple(tally.warnings),
         tuple(tally.notes),
     )
-
-
-def _scope(
-    paths: list[pathlib.Path], config: config_lib.Config, tally: _Tally
-) -> tuple[list[pathlib.Path], frozenset[pathlib.Path]]:
-    """A whole-project run's paths to analyse, and the resolved files to report.
-
-    The listed *paths*, all inside the root (`_escapes`), are expanded as any
-    run expands them -- a missing one is the usual warning -- and every file
-    found is to be reported. What is analysed is ``config.root``, spelled
-    relative to the cwd when it can be, so findings name files as a run over
-    ``.`` would rather than by absolute path.
-    """
-    files, warnings = discover.iter_python_files(paths, config)
-    for warning in warnings:
-        tally.warn(warning)
-    reported = frozenset(f.resolve() for f in files)
-    return [_relative(config.root)], reported
 
 
 def _relative(path: pathlib.Path) -> pathlib.Path:

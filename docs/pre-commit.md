@@ -62,9 +62,10 @@ directory of the `pyproject.toml` the listed files sit under, walked as
 imports are evidence and every package is on the map, and then fixes,
 reports and counts only the files it was given. A rewrite is judged on the
 evidence of a full run over the `pyproject.toml` root. The exit code is
-decided by the given files alone: a violation in a file you did not touch does not block
-your commit, and a file elsewhere that cannot be parsed is a warning (its
-imports are then missing from the evidence, which the warning says).
+decided by the given files alone: a violation in a file you did not touch
+does not block your commit, and a file elsewhere that cannot be parsed is a
+warning (its imports are then missing from the evidence, which the warning
+says).
 
 Consequences worth knowing:
 
@@ -73,8 +74,9 @@ Consequences worth knowing:
   there is no telling where the project starts, and when they sit under
   *different* ones there is no single project to judge them on: either way
   the run exits `2` rather than pick one, whatever order pre-commit lists
-  files in. Every listed file must also lie inside the project's directory,
-  both as written and with symlinks resolved. A file under no
+  files in. Every listed file (and every file of a listed directory) must
+  also lie inside the project's directory, both as written and with
+  symlinks resolved. A file under no
   `pyproject.toml` (a `scripts/` directory beside the project), or a symlink
   into another project, would be judged on evidence that is not its own
   tree's — its neighbours never read, so a fix could delete what they

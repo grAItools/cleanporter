@@ -131,6 +131,8 @@ def test_the_library_refuses_a_listed_file_outside_the_root(
     assert "outside the project root" in error.detail
     assert "files:" in error.detail
     assert (result.findings, result.patches, result.files_checked) == ((), (), 0)
+    # Not also the pyproject.toml mismatch warning the two paths would earn.
+    assert result.warnings == ()
     assert result.exit_code() == 2
     # The whole run is refused: not even the file inside the root is fixed.
     assert outside.read_text(encoding="utf-8") == before
@@ -229,6 +231,34 @@ def test_a_symlink_into_another_project_is_refused(
     assert "outside the project root" in err
     assert "through a symlink" in err
     assert target.read_text(encoding="utf-8") == "from os.path import join\n\njoin\n"
+
+
+def test_a_symlink_out_of_the_root_inside_a_listed_directory_is_refused(
+    tmp_path: pathlib.Path, monkeypatch, capsys
+) -> None:
+    """The check covers what a listed directory expands to, not just what is listed."""
+    project = tmp_path / "proj"
+    (project / "pkg").mkdir(parents=True)
+    (project / "pyproject.toml").write_text('[project]\nname = "proj"\n', encoding="utf-8")
+    (project / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    own = "from os.path import join\n\njoin\n"
+    (project / "pkg" / "own.py").write_text(own, encoding="utf-8")
+    (tmp_path / "ext").mkdir()
+    ext = "from os.path import join\n\njoin\n"
+    (tmp_path / "ext" / "util.py").write_text(ext, encoding="utf-8")
+    try:
+        (project / "pkg" / "util.py").symlink_to(pathlib.Path("..") / ".." / "ext" / "util.py")
+    except OSError:  # pragma: no cover - e.g. Windows without the privilege
+        pytest.skip("cannot create a symlink here")
+    monkeypatch.chdir(project)
+    rc = cli.main(["--whole-project", "--fix", "--python", "self", "pkg"])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "pkg/util.py:1:0: CP002 file not processed: outside the project root" in err
+    assert "through a symlink" in err
+    assert "warning" not in err  # a refused run says nothing else
+    assert (tmp_path / "ext" / "util.py").read_text(encoding="utf-8") == ext
+    assert (project / "pkg" / "own.py").read_text(encoding="utf-8") == own
 
 
 def test_a_symlink_within_the_root_is_accepted(tree: pathlib.Path, capsys) -> None:
