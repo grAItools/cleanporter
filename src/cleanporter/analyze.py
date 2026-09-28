@@ -27,7 +27,7 @@ from cleanporter import config, discover, firstparty, model
 from cleanporter import resolver as resolver_lib
 from cleanporter import skip as skip_lib
 
-from . import _imports
+from . import _imports, _source
 
 
 @dataclasses.dataclass
@@ -54,6 +54,13 @@ class FileRecord:
     root: pathlib.Path = dataclasses.field(default_factory=pathlib.Path.cwd)
     #: Configured skip rules. Empty is the common case and costs nothing.
     skip_rules: tuple[skip_lib.Rule, ...] = ()
+    #: The codec the file was decoded with (``utf-8-sig`` keeps a BOM), so
+    #: `--fix` writes it back the way it was. See `cleanporter._source`.
+    encoding: str = "utf-8"
+    #: The file's bytes as read, or ``None`` for a record not built from disk.
+    #: Diffs are computed against these, and the fixer declines a file whose
+    #: decoded text would not encode back to them.
+    raw: bytes | None = dataclasses.field(default=None, repr=False, compare=False)
     _units: list[ImportUnit] | None = dataclasses.field(default=None, repr=False, compare=False)
     _positions: Mapping[cst.CSTNode, metadata.CodeRange] | None = dataclasses.field(
         default=None, repr=False, compare=False
@@ -450,7 +457,8 @@ def build(
 ) -> tuple[list[FileRecord], resolver_lib.Resolver, list[model.Finding], list[str]]:
     """Expand paths, parse files, build the resolver and warm its cache.
 
-    Returns the parsed records, the resolver, any parse-error findings, and
+    Returns the parsed records, the resolver, a finding for each file that
+    could not be read, decoded or parsed (every other file is still built), and
     any warnings produced while expanding ``paths`` (e.g. missing paths) or
     while probing the target interpreter (a probe batch that failed, and why).
     """
@@ -460,13 +468,21 @@ def build(
     warnings.extend(module_map.warnings)
     resolver = resolver_lib.Resolver(module_map, python=config.python)
 
-    parsed: list[tuple[pathlib.Path, str, cst.Module]] = []
+    parsed: list[tuple[pathlib.Path, _source.Decoded, cst.Module]] = []
     errors: list[model.Finding] = []
     evidence: dict[str, list[pathlib.Path]] = {}
     for f in files:
-        source = f.read_text(encoding="utf-8")
         try:
-            tree = cst.parse_module(source)
+            decoded = _source.read(f)
+        except _source.SourceError as exc:
+            # Reported like a parse error -- a file that was not checked, so
+            # exit 2 -- and the run carries on with every other file.
+            errors.append(
+                model.Finding(f, exc.line, 0, "?", "?", model.Status.UNRESOLVED, str(exc))
+            )
+            continue
+        try:
+            tree = cst.parse_module(decoded.text)
         except cst.ParserSyntaxError as exc:  # pragma: no cover - defensive
             errors.append(
                 model.Finding(
@@ -480,7 +496,7 @@ def build(
                 )
             )
             continue
-        parsed.append((f, source, tree))
+        parsed.append((f, decoded, tree))
         for head in absolute_import_heads(tree):
             evidence.setdefault(head, []).append(f)
 
@@ -490,14 +506,16 @@ def build(
     records = [
         FileRecord(
             f,
-            source,
+            decoded.text,
             tree,
             package_of(f, module_map, max_relative_level(tree)),
             module_map.qualname_for(f, max_relative_level(tree)) or "",
             root=config.root,
             skip_rules=config.skip,
+            encoding=decoded.encoding,
+            raw=decoded.raw,
         )
-        for f, source, tree in parsed
+        for f, decoded, tree in parsed
     ]
 
     pairs = collect_pairs(records)

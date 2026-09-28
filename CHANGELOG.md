@@ -120,6 +120,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the modules that exist. The scan itself is unchanged in cost; the
   first-party test is now a set lookup instead of a union rebuilt per call.
 
+- **A file that was not processed now says so.** A parse error was reported
+  as `CP002 could not determine whether '?.?' is a module: parse error: ...`;
+  it, and the new read, decode and write errors, now read
+  `CP002 file not processed: <reason>`. Anything matching the old wording
+  needs updating. The exit code is unchanged: always `2`.
+
 - **zuban is now a gate, not a note.** It was an optional third opinion in its
   own dependency group, with a `manual`-stage hook and a CI job engineered to
   never fail. It is now in `dev`, its hook runs on every commit, and it gates
@@ -247,6 +253,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read or parsed now proves nothing rather than "binds nothing": a submodule
   it might shadow and a name it might bind are `CP002`, and the re-export
   guard assumes the name is re-exported.
+
+- **`--fix` keeps a file's line endings, encoding and BOM.** Files were read
+  with universal-newline translation and written back as UTF-8, so a one-line
+  fix to a CRLF file rewrote every line ending in it, and the `--diff` patch,
+  computed on the translated text, did not apply to the file on disk. Files
+  are now read as bytes, decoded the way Python decodes them (a BOM or a
+  PEP 263 coding declaration, else UTF-8) without newline translation, and
+  written back in the same encoding, BOM and line endings, so every line the
+  fix did not change is byte-identical. The patch is emitted as those same
+  bytes, applies to CRLF, BOM-prefixed and Latin-1 files alike, and marks a
+  missing final newline. A file in a legacy codec that does not round-trip its
+  own bytes (`cp932`), a rewrite its declared encoding cannot hold, or a file
+  libCST does not reproduce byte for byte (a lone `\r` at the end) is declined
+  with `CP003` rather than written lossily.
+
+- **One undecodable file no longer aborts the run.** A valid Latin-1 source
+  file with a PEP 263 cookie, or any file that was not UTF-8, raised
+  `UnicodeDecodeError` out of the whole run: exit 2, a message naming no file,
+  and nothing else checked. Coding declarations are now honoured, and a file
+  that genuinely cannot be read or decoded is reported like a parse error —
+  `PATH:LINE:0: CP002 file not processed: <reason>`, pointing at the offending
+  line — while every other file is checked and fixed as usual. The exit code
+  is still `2`. A file `--fix` fails to write is reported the same way,
+  rather than aborting the rest of the run.
+
+- **`--fix` writes atomically.** A rewrite goes to a temporary file in the
+  same directory and is renamed over the original, keeping its permission
+  bits and, where permitted, its owner and group, and the directory is
+  fsynced, so a crash or a full disk mid-write can no longer truncate a source
+  file. A read-only file is still refused, and a symlink is written through
+  rather than replaced. Extended attributes, ACLs and hard links are not
+  preserved.
 
 - **The replacement import is now checked to bind the module it names.** The
   fix for `from P.S import obj` is `from P import S` plus `S.obj` at every use

@@ -71,6 +71,9 @@ class Finding:
                 f"imports object '{self.name}' from module '{self.parent}'; "
                 f"import the module and use '{token}.{self.name}'"
             )
+        elif self.status is Status.UNRESOLVED and self.name == "?":
+            # A whole file that could not be read, decoded, parsed or written.
+            msg = f"file not processed: {self.detail}"
         elif self.status is Status.UNRESOLVED:
             msg = (
                 f"could not determine whether '{self.parent}.{self.name}' "

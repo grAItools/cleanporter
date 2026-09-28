@@ -497,3 +497,26 @@ def test_a_skipped_unresolvable_import_is_cp004_not_cp002() -> None:
     cfg = _skip_config({"file": r".*a\.py"})
     (finding,) = _analyze_rules(source, FIXTURES / "pkg" / "a.py", cfg)
     assert finding.code == "CP004"
+
+
+def test_build_keeps_the_encoding_and_bytes_and_reports_an_undecodable_file(tmp_path):
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_bytes(b"")
+    crlf = b"from os.path import join\r\nprint(join('a'))\r\n"
+    (pkg / "crlf.py").write_bytes(crlf)
+    (pkg / "latin.py").write_bytes(b"# coding: latin-1\nx = '\xe9'\n")
+    (pkg / "bad.py").write_bytes(b"x = '\xe9'\n")
+
+    records, _resolver, errors, _warnings = analyze.build([pkg], config.Config(root=tmp_path))
+
+    by_name = {rec.path.name: rec for rec in records}
+    assert sorted(by_name) == ["__init__.py", "crlf.py", "latin.py"]
+    assert by_name["crlf.py"].source == crlf.decode()  # no newline translation
+    assert by_name["crlf.py"].raw == crlf
+    assert by_name["latin.py"].encoding == "iso-8859-1"
+    assert by_name["latin.py"].source == "# coding: latin-1\nx = '\xe9'\n"
+    [error] = errors
+    assert error.path == pkg / "bad.py"
+    assert error.line == 1
+    assert "cannot decode file" in error.detail

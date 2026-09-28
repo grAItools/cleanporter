@@ -1117,3 +1117,266 @@ def test_a_module_reexported_under_another_name_is_not_a_violation(project, caps
     )
     assert cli.main(["--strict", str(project / "src")]) == 0
     assert "0 violation(s)" in capsys.readouterr().out
+
+
+# -- file I/O: encodings, newlines, atomic writes ---------------------------
+
+#: A violation in a CRLF file, and what `--fix` must turn it into: only the
+#: two changed lines differ, and every line keeps its ``\r\n``.
+_CRLF = b'import os\r\nfrom os.path import join\r\n\r\nprint(join("a", "b"))\r\n'
+_CRLF_FIXED = b'import os\r\nfrom os import path\r\n\r\nprint(path.join("a", "b"))\r\n'
+
+
+def _apply_patch(patch: bytes, cwd: pathlib.Path) -> None:
+    """Apply *patch* in *cwd* with ``git apply``, else ``patch``, else skip."""
+    if shutil.which("git"):
+        command = ["git", "apply", "--whitespace=nowarn", "-"]
+    elif shutil.which("patch"):  # pragma: no cover - depends on the machine
+        command = ["patch", "-p1", "--binary"]
+    else:  # pragma: no cover - depends on the machine
+        pytest.skip("neither git nor patch is available")
+    proc = subprocess.run(command, input=patch, cwd=cwd, capture_output=True, check=False)
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
+
+
+def test_fix_keeps_crlf_line_endings(project, capsys):
+    target = project / "src" / "demo" / "crlf.py"
+    target.write_bytes(_CRLF)
+    assert cli.main(["--fix", str(project / "src")]) == 0
+    assert target.read_bytes() == _CRLF_FIXED
+
+
+def test_diff_of_a_crlf_file_applies_to_it(project, monkeypatch, capsysbinary):
+    target = project / "src" / "demo" / "crlf.py"
+    target.write_bytes(_CRLF)
+    monkeypatch.chdir(project)
+    assert cli.main(["--diff", "src"]) == 1
+    patch = capsysbinary.readouterr().out
+    assert b"-from os.path import join\r\n" in patch
+    _apply_patch(patch, project)
+    assert target.read_bytes() == _CRLF_FIXED
+
+
+def test_latin1_file_is_fixed_and_written_back_in_latin1(project, capsysbinary):
+    # capsysbinary: `--fix` prints the patch too, in Latin-1, which `capsys`
+    # would try to read back as UTF-8.
+    target = project / "src" / "demo" / "latin.py"
+    target.write_bytes(
+        b"# -*- coding: latin-1 -*-\nfrom os.path import join\n"
+        b'CAFE = "caf\xe9"\nprint(join(CAFE, "b"))\n'
+    )
+    assert cli.main(["--fix", str(project / "src")]) == 0
+    assert target.read_bytes() == (
+        b"# -*- coding: latin-1 -*-\nfrom os import path\n"
+        b'CAFE = "caf\xe9"\nprint(path.join(CAFE, "b"))\n'
+    )
+
+
+def test_diff_of_a_latin1_file_applies_to_it(project, monkeypatch, capsysbinary):
+    """The patch carries Latin-1 bytes, not the UTF-8 spelling of the text."""
+    target = project / "src" / "demo" / "latin.py"
+    target.write_bytes(b'# coding: latin-1\nfrom os.path import join\nprint(join("\xe9"))\n')
+    monkeypatch.chdir(project)
+    cli.main(["--diff", "src"])
+    patch = capsysbinary.readouterr().out
+    assert b'+print(path.join("\xe9"))\n' in patch
+    _apply_patch(patch, project)
+    assert target.read_bytes() == (
+        b'# coding: latin-1\nfrom os import path\nprint(path.join("\xe9"))\n'
+    )
+
+
+def test_utf8_bom_is_preserved(project, capsys):
+    target = project / "src" / "demo" / "bom.py"
+    target.write_bytes(b'\xef\xbb\xbffrom os.path import join\nprint(join("a"))\n')
+    assert cli.main(["--fix", str(project / "src")]) == 0
+    assert target.read_bytes() == b'\xef\xbb\xbffrom os import path\nprint(path.join("a"))\n'
+
+
+def test_diff_of_a_file_without_a_final_newline_applies(project, monkeypatch, capsysbinary):
+    """The ``\\ No newline at end of file`` marker, and a BOM, survive the patch."""
+    target = project / "src" / "demo" / "bom.py"
+    target.write_bytes(b'\xef\xbb\xbffrom os.path import join\nprint(join("a"))')
+    monkeypatch.chdir(project)
+    cli.main(["--diff", "src"])
+    patch = capsysbinary.readouterr().out
+    assert b"\\ No newline at end of file\n" in patch
+    _apply_patch(patch, project)
+    assert target.read_bytes() == b'\xef\xbb\xbffrom os import path\nprint(path.join("a"))'
+
+
+def test_undecodable_file_is_reported_and_the_rest_still_fixed(project, capsys):
+    """One bad file used to abort the run, naming no file at all."""
+    bad = project / "src" / "demo" / "bad.py"
+    bad.write_bytes(b"x = 1\ny = '\xff'\n")
+    assert cli.main(["--fix", str(project / "src")]) == 2
+    err = capsys.readouterr().err
+    assert f"{bad}:2:0: CP002 file not processed: cannot decode file as utf-8" in err
+    assert bad.read_bytes() == b"x = 1\ny = '\xff'\n"
+    consumer = (project / "src" / "demo" / "consumer.py").read_text(encoding="utf-8")
+    assert consumer == "from demo import helpers\ntotal = helpers.THING\n"
+
+
+def test_unknown_coding_cookie_is_reported_with_its_path(project, capsys):
+    bad = project / "src" / "demo" / "bad.py"
+    bad.write_bytes(b"# -*- coding: no-such-codec -*-\nx = 1\n")
+    assert cli.main([str(project / "src")]) == 2
+    out = capsys.readouterr().out
+    assert f"{bad}:1:0: CP002 file not processed: cannot decode file: unknown encoding" in out
+    assert "consumer.py:1:0: CP001" in out
+
+
+def test_encoding_that_does_not_round_trip_is_declined(project, capsys):
+    """cp932 reads ``\\x87\\x90`` and ``\\x81\\xe0`` as the same character.
+
+    Writing the decoded text back would turn the first into the second on a
+    line the fix never touched, so the file is declined and left alone.
+    """
+    target = project / "src" / "demo" / "sjis.py"
+    original = b"# coding: cp932\nfrom os.path import join\nprint(join('\x87\x90'))\n"
+    target.write_bytes(original)
+    assert cli.main(["--fix", str(project / "src")]) == 1
+    assert "does not round-trip" in capsys.readouterr().err
+    assert target.read_bytes() == original
+
+
+def test_a_file_ending_in_a_lone_cr_is_left_byte_identical(project, capsys):
+    """libCST would drop the final ``\\r``, on a line the fix never touched."""
+    target = project / "src" / "demo" / "mac.py"
+    original = b'from os.path import join\rprint(join("a"))\rX = 1\r'
+    target.write_bytes(original)
+    assert cli.main(["--fix", str(project / "src")]) == 1
+    assert "libCST does not reproduce this file byte for byte" in capsys.readouterr().err
+    assert target.read_bytes() == original
+
+
+def test_a_rewrite_the_files_encoding_cannot_hold_is_declined(tmp_path, monkeypatch, capsys):
+    """The absolute spelling names the package from its directory.
+
+    Inside a package's ``__init__``, ``from .readers import read`` becomes
+    ``from анализ.io import readers`` -- a name the file itself never spelled,
+    and one its declared Latin-1 cannot hold. Written as UTF-8 it would
+    contradict the cookie; the file is declined instead.
+    """
+    package = tmp_path / "анализ"
+    (package / "io").mkdir(parents=True)
+    (package / "__init__.py").write_bytes(b"")
+    (package / "io" / "readers.py").write_bytes(b"def read():\n    return []\n")
+    init = package / "io" / "__init__.py"
+    original = b"# coding: latin-1\nfrom .readers import read\n\nvalues = read()\n"
+    init.write_bytes(original)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["--fix", "."]) == 1
+    err = capsys.readouterr().err
+    assert "the rewrite needs 'анализ', which the file's encoding (iso-8859-1) cannot" in err
+    assert init.read_bytes() == original
+
+
+def test_first_line_not_utf8_points_at_the_byte(project, capsys):
+    bad = project / "src" / "demo" / "bad.py"
+    bad.write_bytes(b"y = '\xff'  # no coding declaration\nx = 1\n")
+    assert cli.main([str(project / "src")]) == 2
+    out = capsys.readouterr().out
+    assert (
+        f"{bad}:1:0: CP002 file not processed: cannot decode file: "
+        "not UTF-8 and no coding declaration: invalid start byte (b'\\xff')"
+    ) in out
+
+
+def test_unknown_codec_on_the_second_line_points_at_it(project, capsys):
+    bad = project / "src" / "demo" / "bad.py"
+    bad.write_bytes(b"#!/usr/bin/env python\n# coding: no-such-codec\nx = 1\n")
+    assert cli.main([str(project / "src")]) == 2
+    assert f"{bad}:2:0: CP002 file not processed: cannot decode file: unknown encoding" in (
+        capsys.readouterr().out
+    )
+
+
+def test_fix_refuses_a_read_only_file(project, monkeypatch, capsys):
+    """The rename needs only a writable directory; the file must be writable too.
+
+    `os.access` is patched because the suite may run as root, for whom every
+    file is writable.
+    """
+    target = project / "src" / "demo" / "consumer.py"
+    before = target.read_bytes()
+    real_access = os.access
+
+    def access(path, mode, **kwargs):
+        if pathlib.Path(path) == target and mode == os.W_OK:
+            return False
+        return real_access(path, mode, **kwargs)
+
+    monkeypatch.setattr(os, "access", access)
+    assert cli.main(["--fix", str(project / "src")]) == 2
+    err = capsys.readouterr().err
+    assert f"{target}:1:0: CP002 file not processed: cannot write file: Permission denied" in err
+    assert target.read_bytes() == before
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() != 0, reason="only root can give a file away"
+)
+def test_fix_preserves_the_owner(project, capsys):
+    target = project / "src" / "demo" / "consumer.py"
+    os.chown(target, 4242, 4343)
+    assert cli.main(["--fix", str(project / "src")]) == 0
+    assert (target.stat().st_uid, target.stat().st_gid) == (4242, 4343)
+
+
+def test_a_temporary_file_that_cannot_be_removed_is_named(project, monkeypatch, capsys):
+    """If cleanup fails too, the report says where the stray file is."""
+    target = project / "src" / "demo" / "consumer.py"
+
+    def disk_full(fd: int) -> None:
+        raise OSError(28, "No space left on device")
+
+    def stuck(self: pathlib.Path, *, missing_ok: bool = False) -> None:
+        raise PermissionError(13, "in use")
+
+    monkeypatch.setattr(os, "fsync", disk_full)
+    monkeypatch.setattr(pathlib.Path, "unlink", stuck)
+    assert cli.main(["--fix", str(project / "src")]) == 2
+    err = capsys.readouterr().err
+    assert "cleanporter: could not remove the temporary file" in err
+    assert f"{target.parent}{os.sep}.consumer.py." in err
+
+
+def test_fix_preserves_permission_bits(project, capsys):
+    target = project / "src" / "demo" / "consumer.py"
+    target.chmod(0o751)
+    assert cli.main(["--fix", str(project / "src")]) == 0
+    assert target.read_text(encoding="utf-8").startswith("from demo import helpers\n")
+    assert target.stat().st_mode & 0o7777 == 0o751
+
+
+def test_fix_writes_through_a_symlink(project, tmp_path, capsys):
+    """The link stays a link; the file it points at is what changes."""
+    real = tmp_path / "elsewhere.py"
+    real.write_text("from os.path import join\nprint(join('a'))\n", encoding="utf-8")
+    link = project / "src" / "demo" / "linked.py"
+    link.symlink_to(real)
+    assert cli.main(["--fix", str(project / "src")]) == 0
+    assert link.is_symlink()
+    assert real.read_text(encoding="utf-8") == "from os import path\nprint(path.join('a'))\n"
+
+
+def test_a_failed_write_leaves_the_file_whole(project, monkeypatch, capsys):
+    """A crash mid-write loses the temporary file, never the source."""
+    target = project / "src" / "demo" / "consumer.py"
+    before = target.read_bytes()
+
+    def disk_full(fd: int) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "fsync", disk_full)
+    assert cli.main(["--fix", str(project / "src")]) == 2
+    captured = capsys.readouterr()
+    assert f"{target}:1:0: CP002 file not processed: cannot write file: No space" in captured.err
+    assert captured.out == ""  # no patch for a change that did not happen
+    assert target.read_bytes() == before
+    assert sorted(p.name for p in target.parent.iterdir()) == [
+        "__init__.py",
+        "consumer.py",
+        "helpers.py",
+    ]

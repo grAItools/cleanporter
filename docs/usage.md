@@ -40,7 +40,7 @@ Each reported line has the shape
 | Code | Status | Meaning |
 | --- | --- | --- |
 | `CP001` | `VIOLATION` | An object is imported by name. This is the rule being enforced, and it is what blocks CI. |
-| `CP002` | `UNRESOLVED` | cleanporter could not determine whether the symbol is a module: a third-party parent it cannot import, a name that is both a submodule and a binding in its package's `__init__`, or a first-party name that is neither on disk nor bound in its parent to something cleanporter can follow (a generated `_version.py`, a `_pb2`, an out-of-tree extension, another portion of a namespace package). The message says which evidence was missing. Never rewritten. Only counts toward the failure exit code under `--strict` / `treat_unresolved_as_error`. |
+| `CP002` | `UNRESOLVED` | cleanporter could not determine whether the symbol is a module: a third-party parent it cannot import, a name that is both a submodule and a binding in its package's `__init__`, or a first-party name that is neither on disk nor bound in its parent to something cleanporter can follow (a generated `_version.py`, a `_pb2`, an out-of-tree extension, another portion of a namespace package). The message says which evidence was missing. Never rewritten. Only counts toward the failure exit code under `--strict` / `treat_unresolved_as_error`. The same code also marks a whole file that was not processed (`file not processed: …`, when it could not be read, decoded, parsed or written); those lines are not findings and always make the exit code `2`, with or without `--strict` — see [Exit codes](#exit-codes). |
 | `CP003` | `SKIPPED` | Structurally a violation, deliberately not rewritten. This is the "declined, because…" note that explains why `--fix` or `--diff` left a file alone. |
 | `CP004` | `SKIPPED_BY_CONFIG` | Matched a [`skip` rule](configuration.md#skip-rules), so it was never analysed. Counted in the summary, printed only under `--show-skipped`, and **never** part of the exit code — you asked for it. |
 
@@ -87,13 +87,66 @@ skipped before resolution is attempted.
 |-----:| --- |
 | `0` | Clean — nothing remains to report. |
 | `1` | Violations found (or left behind after `--fix`). |
-| `2` | Operational error: a file that could not be parsed or decoded, or a malformed `[tool.cleanporter]` table. |
+| `2` | Operational error: a file that could not be read, decoded, parsed or (under `--fix`) written, or a malformed `[tool.cleanporter]` table. |
 
 In short: 0 = clean, 1 = violations, 2 = operational error.
 
-Exit `2` takes precedence: if any input file failed to parse, the run reports
-`2` regardless of what else it found. A path on the command line that does not
-exist is a *warning*, not an error — it is reported and skipped.
+Exit `2` takes precedence: if any input file could not be processed, the run
+reports `2` regardless of what else it found. A path on the command line that
+does not exist is a *warning*, not an error — it is reported and skipped.
+
+A file that cannot be processed is reported on its own line, in the same
+`PATH:LINE:COLUMN: CODE message` shape as a finding, and **every other file is
+still checked and fixed**:
+
+```text
+src/mypkg/legacy.py:12:0: CP002 file not processed: cannot decode file as utf-8: invalid start byte (b'\xff')
+src/mypkg/odd.py:1:0: CP002 file not processed: cannot decode file: unknown encoding: latin-9x
+src/mypkg/locked.py:1:0: CP002 file not processed: cannot write file: Permission denied
+```
+
+These lines are not counted as `CP002` findings in the summary; they are what
+makes the exit code `2`.
+
+## Encodings and line endings
+
+Files are read as bytes and decoded the way Python itself decodes them: a
+UTF-8 BOM or a [PEP 263](https://peps.python.org/pep-0263/) coding declaration
+(`# -*- coding: latin-1 -*-`) is honoured, and anything else is UTF-8. There is
+no newline translation. `--fix` writes a file back in its own encoding, with
+its BOM if it had one, and keeps its line endings — CRLF stays CRLF — so every
+line the fix did not change is byte-identical.
+
+Precisely: every line the fix does not touch keeps its own line ending, and so
+does a line it edits in place. A line the fix *inserts* takes libCST's default
+newline, which is the file's first line ending. So a file that is uniformly
+CRLF (or uniformly LF) stays that way; in a file with mixed endings, an
+inserted line gets whatever the first line of the file ends with.
+
+If a rewrite could not be written back that way, the file is declined with a
+`CP003` instead of being written lossily. That covers:
+
+- a file in one of the few legacy multi-byte encodings (such as `cp932`) that
+  read two byte sequences as one character, where decoding and re-encoding
+  would change a line the fix never touched;
+- a rewrite that needs a character the declared encoding cannot hold — the
+  absolute spelling of a relative import names the package after its
+  directory, which may be non-ASCII in a file declared `latin-1`;
+- a file libCST does not reproduce byte for byte, such as one whose last line
+  ends in a lone `\r`.
+
+`--fix` writes each file atomically: to a temporary file in the same directory,
+fsynced, then renamed over the original with the original's permission bits
+(and its owner and group, where the process is allowed to set them), after
+which the directory is fsynced too. A crash or a full disk mid-write leaves
+the original intact. A file you cannot write is refused and reported
+(`cannot write file: Permission denied`), exactly as before, even though the
+directory would allow the rename. A symlink is written through — the file it
+points to changes, and the link stays a link.
+
+Not preserved: extended attributes and ACLs, which the new file does not
+inherit, and hard links — the rename gives the path a new inode, so any other
+name for the old file keeps the old contents.
 
 ## Where output goes
 
@@ -107,6 +160,11 @@ This matters if you intend to pipe anything.
   directory, so the stream is a valid patch that `git apply` accepts.
   Anything a third-party package prints while it is imported to classify an
   import goes to stderr too (see [How it works](how-it-works.md)).
+
+The patch is written as raw bytes, each file's lines in that file's own
+encoding and line endings, so it applies to a CRLF, BOM-prefixed or Latin-1
+file as it stands on disk. A file without a trailing newline gets the usual
+`\ No newline at end of file` marker.
 
 That is what makes this work:
 

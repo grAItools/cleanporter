@@ -9,7 +9,11 @@ while `CP002` counts only under ``--strict``.
 Stream contract: when a patch goes to stdout (``--diff``, ``--fix``) stdout
 carries *only* the patch, so ``cleanporter --diff src/ | git apply`` works, and
 findings, warnings and notes go to stderr. Plain check mode produces no patch,
-so its report stays on stdout.
+so its report stays on stdout. The patch is written as bytes, in each file's
+own encoding and line endings, so that it applies to the file on disk.
+
+A file that cannot be read, decoded, parsed or written is reported with its
+path and makes the exit code 2, and every other file is still processed.
 """
 
 from __future__ import annotations
@@ -20,11 +24,13 @@ import difflib
 import os
 import pathlib
 import sys
+from collections.abc import Iterable
+from typing import TextIO
 
 import libcst as cst
 
 import cleanporter
-from cleanporter import analyze, model, rewrite
+from cleanporter import _source, analyze, model, rewrite
 from cleanporter import config as config_lib
 
 #: Printed to stderr after `--fix` writes anything (see `run`).
@@ -149,21 +155,13 @@ def run(args: argparse.Namespace) -> int:
         if args.fix or args.diff:
             outcome = rewrite.fix_record(current, resolver, config)
             if outcome.status == "fixed":
-                changed += 1
-                # Diff first: current.source is still the original here.
-                sys.stdout.writelines(
-                    difflib.unified_diff(
-                        current.source.splitlines(keepends=True),
-                        outcome.source.splitlines(keepends=True),
-                        fromfile=f"a/{_diff_path(current.path)}",
-                        tofile=f"b/{_diff_path(current.path)}",
-                    )
+                current, write_error = _apply(
+                    current, outcome.source, write=args.fix, report=report
                 )
-                if args.fix:
-                    current.path.write_text(outcome.source, encoding="utf-8")
-                    print(f"fixed: {current.path}", file=report)
-                    # Report against what is now on disk.
-                    current = _reparse(current, outcome.source)
+                if write_error is None:
+                    changed += 1
+                else:
+                    parse_errors.append(write_error)
             findings.extend(outcome.blockers)
             unread = outcome.unread
         findings.extend(analyze.analyze_record(current, resolver, config, unread))
@@ -209,14 +207,92 @@ def run(args: argparse.Namespace) -> int:
     return _EXIT_VIOLATIONS if hard else _EXIT_OK
 
 
-def _reparse(rec: analyze.FileRecord, source: str) -> analyze.FileRecord:
+def _apply(
+    rec: analyze.FileRecord, source: str, *, write: bool, report: TextIO
+) -> tuple[analyze.FileRecord, model.Finding | None]:
+    """Print *rec*'s rewrite as a patch and, if *write*, put it on disk.
+
+    Returns the record for what is now on disk, and an error finding if the
+    write failed -- in which case the file is untouched (the write is atomic),
+    no patch is printed for it, and the run goes on to the next file.
+
+    The patch and the file are both bytes in the file's own encoding and
+    newline convention, so a CRLF, Latin-1 or BOM-carrying file gets a patch
+    that applies to it and a rewrite that changes only the lines it had to.
+    """
+    before = rec.raw if rec.raw is not None else rec.source.encode(rec.encoding)
+    after = source.encode(rec.encoding)
+    if write:
+        try:
+            _source.write_atomic(rec.path, after)
+        except OSError as exc:
+            try:
+                notes = exc.__notes__  # e.g. a temporary file that could not be removed
+            except AttributeError:
+                notes = []
+            error = model.Finding(
+                rec.path,
+                1,
+                0,
+                "?",
+                "?",
+                model.Status.UNRESOLVED,
+                "; ".join([f"cannot write file: {exc.strerror or exc}", *notes]),
+            )
+            print(error.format(), file=report)
+            return rec, error
+    name = os.fsencode(_diff_path(rec.path))
+    _write_patch(
+        difflib.diff_bytes(
+            difflib.unified_diff,
+            _source.patch_lines(before),
+            _source.patch_lines(after),
+            fromfile=b"a/" + name,
+            tofile=b"b/" + name,
+        )
+    )
+    if not write:
+        return rec, None
+    print(f"fixed: {rec.path}", file=report)
+    # Report against what is now on disk.
+    return _reparse(rec, source, after), None
+
+
+def _write_patch(lines: Iterable[bytes]) -> None:
+    r"""Write patch *lines* to stdout as the bytes they are.
+
+    Bytes, not text: a Latin-1 file's patch has to carry Latin-1 bytes to
+    apply to it, and a CRLF line's ``\r`` has to survive -- a text-mode stdout
+    would re-encode the first and, on Windows, double the second. A last line
+    with no newline gets the ``\ No newline at end of file`` marker that
+    ``patch`` and ``git apply`` expect, instead of running into the next
+    file's header.
+    """
+    chunks: list[bytes] = []
+    for line in lines:
+        chunks.append(line)
+        if not line.endswith(b"\n"):
+            chunks.append(b"\n\\ No newline at end of file\n")
+    data = b"".join(chunks)
+    sys.stdout.flush()
+    try:
+        buffer = sys.stdout.buffer
+    except AttributeError:  # stdout swapped for a text-only stream (io.StringIO)
+        sys.stdout.write(data.decode("utf-8", "surrogateescape"))
+        return
+    buffer.write(data)
+    buffer.flush()
+
+
+def _reparse(rec: analyze.FileRecord, source: str, raw: bytes | None = None) -> analyze.FileRecord:
     """The same file, re-read from what was just written to it.
 
     Everything the record was built with is carried over, and that includes
     ``qualname`` -- without it the post-fix pass would forget which module
     this file *is*, and report a re-export it had correctly declined to touch
-    as an ordinary violation. The skip regions are deliberately *not* carried
-    over: they are line spans, and the lines have just moved.
+    as an ordinary violation -- and the encoding the file is written in. The
+    skip regions are deliberately *not* carried over: they are line spans,
+    and the lines have just moved.
     """
     return analyze.FileRecord(
         rec.path,
@@ -226,6 +302,8 @@ def _reparse(rec: analyze.FileRecord, source: str) -> analyze.FileRecord:
         rec.qualname,
         root=rec.root,
         skip_rules=rec.skip_rules,
+        encoding=rec.encoding,
+        raw=raw,
     )
 
 
