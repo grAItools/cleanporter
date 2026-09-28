@@ -437,3 +437,16 @@ def test_text_is_the_default_and_unchanged(project, capsys):
     _, text, _ = _run(capsys, "--format", "text", "src")
     assert default == text
     assert default.splitlines()[0].startswith("src/demo/consumer.py:1:0: CP001 ")
+
+
+def test_whole_project_json_reports_only_the_listed_files(project, capsys):
+    (project / "src" / "demo" / "clean.py").write_text(
+        "from demo import helpers\n\nhelpers.THING\n", encoding="utf-8"
+    )
+    rc, document = _json_run(capsys, "--whole-project", "src/demo/clean.py")
+    assert rc == document["exit_code"] == 0
+    assert document["findings"] == []
+    assert document["counts"]["files_checked"] == 1
+    rc, document = _json_run(capsys, "--whole-project", "src/demo/consumer.py")
+    assert rc == document["exit_code"] == 1
+    assert {f["path"] for f in document["findings"]} == {"src/demo/consumer.py"}

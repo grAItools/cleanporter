@@ -26,6 +26,25 @@ Breaking under the pre-1.0 policy above:
 
 ### Added
 
+- **pre-commit hooks, and `--whole-project` to make them safe.** The
+  repository now publishes a `.pre-commit-hooks.yaml` with two hooks,
+  `cleanporter` (check) and `cleanporter-fix` (`--fix`), for pre-commit and
+  prek. pre-commit passes a hook only the changed files, and a run over those
+  alone judges them on a partial tree: a re-export that only an unlisted file
+  imports looks unused, so `--fix` would delete it, and a first-party package
+  no listed file lives in is not first-party at all, so the probe answers for
+  it from whatever is installed under that name. The new `--whole-project`
+  flag (`run(..., whole_project=True)` in the library) reads the whole
+  project — the directory of the `pyproject.toml` — for evidence and fixes,
+  reports and counts only the listed files; both hooks use it. Listed files
+  from two `pyproject.toml` projects (a nested `examples/` project, say) are
+  refused with exit `2` rather than judged on one project's evidence; split
+  the hook with `files:`/`exclude:` per project. So is a listed file outside
+  the project's directory, as written or through a symlink — a script under
+  no `pyproject.toml`, a symlink into another project — and then the whole
+  run is: nothing is analysed or written. The library call enforces the
+  same. Documented
+  under [pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
 - **Machine-readable output: `--format json|sarif|github`.** The default,
   `text`, is unchanged. `json` is one document with the tool version, exit
   code, counts, findings (code, level, path, line, column, parent, name,
@@ -54,14 +73,30 @@ Breaking under the pre-1.0 policy above:
   passed with `--python`, unless it is cleanporter's own environment (its
   `sys.executable`, or its `sys.prefix` venv), and a one-line
   `cleanporter: note:` on stderr names it and says why, including an active
-  `$VIRTUAL_ENV` it passed over (said even when the pick stays in process) (in `RunResult.notes`, and `Listener.note`,
-  for library callers). Detection only chooses which
-  environment answers: one lacking a package, or unable to run, leaves the
-  import `CP002`, never an optimistic verdict. `python`/`--python` accept
+  `$VIRTUAL_ENV` it passed over, even when the pick stays in process (for
+  library callers: `RunResult.notes` and `Listener.note`). Detection only
+  chooses which environment answers: one lacking a package, or unable to run,
+  leaves the import `CP002`, never an optimistic verdict. `python`/`--python` accept
   `auto` (detect; the default) and `self` (cleanporter's own, in process)
   besides a path or command, so `--python auto` restores detection over a
   configured interpreter. Documented under
   [The probe interpreter](https://graitools.github.io/cleanporter/configuration/#the-probe-interpreter).
+
+### Changed
+
+- **`--diff` and `--fix` skip the fixer's scope analysis for files with nothing
+  to fix.** libcst's scope metadata, which the fixer's guards need, used to be
+  built for every file in the run; it is now built only for a file in which
+  `check` would report a `CP001`, decided by the same per-import decision the
+  report uses. For a file without one the fixer can produce no rewrite, add no
+  `CP003` of its own and find no never-read name, so the output is
+  byte-identical; the `CP003`s `check` itself reports are reported as before.
+  One failure mode goes with it: an exception inside libcst's scope analysis on
+  a file with no `CP001` can no longer abort the run. The saving scales with the
+  share of files that are already clean: over libcst's source after one `--fix`
+  (34 of 297 files still with a `CP001`), `--diff` went from 200 s to 112 s,
+  against 33 s for a check; over libcst as released, where 261 of the 297 files
+  have one, it is unchanged at about 232 s.
 
 ## [0.4.0] - 2026-09-28
 

@@ -119,7 +119,8 @@ run's import roots, and 'pkg' binds '_version' by importing its own submodule
 of that name`, or `'pkg.helpers' is neither on disk under this run's import
 roots nor bound in 'pkg'`. A first-party name that ends up here is *not* handed to the
 interpreter probe: that would import first-party code, which is what this
-layer exists to avoid. Pointing cleanporter at the whole tree, or declaring
+layer exists to avoid. Pointing cleanporter at the whole tree (or, when checking a few files, passing
+[`--whole-project`](usage.md#flags)), or declaring
 `source_roots`, is what settles a sibling portion it cannot see.
 
 At an import root, the scan that builds this map skips the directories file
@@ -267,8 +268,11 @@ it is.
 `treat_unresolved_as_error = true`) when you want unresolvable imports to fail
 the run.
 
-Results are cached per `(PARENT, NAME)` pair for the duration of a run. Each
-file is parsed once by libcst, and a check walks its syntax tree once: that
+Results are cached per `(PARENT, NAME)` pair for the duration of a run. The
+cache is in memory only: a very large third-party surface re-pays the
+(batched) probe cost on every invocation.
+
+Each file is parsed once by libcst, and a check walks its syntax tree once: that
 single pass collects every import, every `module.attribute` read and every
 star import, and everything else the analysis needs is read off what it
 collected. Where each import starts is taken from a parse with Python's own
@@ -280,9 +284,9 @@ endings, one whose grammar the running Python does not accept, or one libcst
 does not reproduce exactly. libcst drops a form feed (`\f`) or a backslash
 continuation from a statement's leading whitespace, which moves the columns
 and lines it reports. Either way, the lines and columns printed are libcst's.
-`--fix` adds the scope analysis the guards need on top. The cache is in memory
-only: a very large third-party surface re-pays the (batched) probe cost on
-every invocation.
+`--fix` and `--diff` add the scope analysis the guards need on top, but only
+for a file with at least one `CP001`: a file with none has nothing the fixer
+could rewrite or explain, so it costs about what a check does.
 
 ## Relative imports
 

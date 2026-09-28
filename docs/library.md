@@ -43,10 +43,21 @@ report from a `RunResult`.
 `cleanporter.engine` (`from cleanporter import engine`, then
 `engine.FilePatch`, `engine.Listener`).
 
-`run(paths, config, mode=Mode.CHECK, *, listener=None)` takes the paths to
-process, a `Config` used exactly as given (`load_config` reads
-`[tool.cleanporter]`; apply any overrides of your own with
-`dataclasses.replace`), and a `Mode`:
+`run(paths, config, mode=Mode.CHECK, *, listener=None, whole_project=False)`
+takes the paths to process, a `Config` used exactly as given (`load_config`
+reads `[tool.cleanporter]`; apply any overrides of your own with
+`dataclasses.replace`), and a `Mode`. With `whole_project=True` it is
+`--whole-project`: the tree under `Config.root` is read for evidence, and
+only the files under `paths` are fixed, reported and counted — `findings`,
+`patches`, `errors` and `files_checked` cover those alone, and a file
+elsewhere that cannot be parsed is a warning. `run` itself enforces that
+every path, and every file a listed directory expands to, lies inside
+`Config.root`, both as written and resolved: one that
+does not is an `errors` entry, so `exit_code()` is `2`, and the whole run is
+refused — nothing is analysed or written, and `files_checked` is `0`. It does
+not check that `Config.root` came from a `pyproject.toml`, or that the paths
+share one (the command does both); a `Config` built by hand has the cwd as its
+root.
 
 | `Mode` | What happens |
 | --- | --- |

@@ -195,7 +195,7 @@ def test_two_spellings_of_one_pyproject_do_not_warn(tmp_path, monkeypatch):
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
     spellings = {"a": real / "pyproject.toml", "b": alias / "pyproject.toml"}
-    monkeypatch.setattr(config, "find_pyproject", lambda path: spellings[path.name])
+    monkeypatch.setattr(config, "find_pyproject", lambda path, **_: spellings[path.name])
     assert config.mismatch_warning([pathlib.Path("a"), pathlib.Path("b")]) is None
 
 
