@@ -984,3 +984,136 @@ def test_a_failed_probe_is_explained_in_a_warning(project, monkeypatch, capsys):
     assert "ImportError: no encodings" in out
     assert "CP002" in out
     assert rc == 0
+
+
+def test_a_submodule_missing_from_the_checkout_is_never_rewritten(project, capsys):
+    """A generated ``_version.py`` is absent from the tree, not an object.
+
+    Calling it an object rewrote ``from demo import _version`` into
+    ``demo._version`` -- an ``AttributeError`` whenever ``demo/__init__``
+    had not happened to import it.
+    """
+    init = "try:\n    from demo import _version\nexcept ImportError:\n    _version = None\n"
+    consumer = "from demo import _version\n\nprint(_version.version)\n"
+    (project / "src" / "demo" / "__init__.py").write_text(init, encoding="utf-8")
+    (project / "src" / "demo" / "consumer.py").write_text(consumer, encoding="utf-8")
+
+    assert cli.main(["--diff", str(project / "src")]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "CP002 could not determine whether 'demo._version' is a module" in captured.err
+    assert "'demo' binds '_version' by importing its own submodule of that name" in captured.err
+
+    assert cli.main(["--fix", str(project / "src")]) == 0
+    assert (project / "src" / "demo" / "consumer.py").read_text(encoding="utf-8") == consumer
+    assert (project / "src" / "demo" / "__init__.py").read_text(encoding="utf-8") == init
+    assert cli.main(["--strict", str(project / "src")]) == 1
+
+
+@pytest.mark.parametrize(
+    "init",
+    [
+        '# -*- coding: latin-1 -*-\nS = "caf\xe9"\n'.encode("latin-1"),
+        b"\xef\xbb\xbfS = 1\n",
+    ],
+    ids=["latin-1", "utf-8-bom"],
+)
+def test_a_shadowing_init_in_another_encoding_still_blocks_the_rewrite(tmp_path, capsys, init):
+    """``P/__init__.py`` rebinds ``S``, so ``from app.P import S`` is not the submodule.
+
+    The UTF-8 spelling of this has always been declined. Decoded as UTF-8, a
+    latin-1 or BOM-prefixed ``__init__`` parsed as binding nothing, the
+    replacement looked safe, and ``--fix`` wrote ``from app.P import S`` plus
+    ``S.obj()`` -- an ``AttributeError`` on a string. Only ``use.py`` is
+    analysed, so the ``__init__`` is read by the module map alone.
+    """
+    pkg = tmp_path / "src" / "app"
+    (pkg / "P").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "P" / "__init__.py").write_bytes(init)
+    (pkg / "P" / "S.py").write_text("def obj():\n    return 1\n", encoding="utf-8")
+    use = pkg / "use.py"
+    source = "from app.P.S import obj\n\nobj()\n"
+    use.write_text(source, encoding="utf-8")
+
+    assert cli.main(["--fix", str(use)]) == 1
+    err = capsys.readouterr().err
+    assert "CP003" in err
+    assert "cannot be shown to bind the module 'app.P.S'" in err
+    assert use.read_text(encoding="utf-8") == source
+
+
+def test_a_submodule_a_star_import_shadows_is_not_the_replacement(tmp_path, monkeypatch, capsys):
+    """``from pkg.helpers import f`` must not become ``from pkg import helpers``.
+
+    ``pkg/__init__.py`` star-imports ``_impl``, which defines a *function*
+    ``helpers``, so ``from pkg import helpers`` binds that function -- and
+    ``helpers.f()`` raised ``AttributeError``. Found by running the rewrite,
+    not by reading it: the result imports and parses.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from ._impl import *\n", encoding="utf-8")
+    (pkg / "_impl.py").write_text("def helpers():\n    return 0\n", encoding="utf-8")
+    (pkg / "helpers.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    source = "from pkg.helpers import f\n\nprint(f())\n"
+    (tmp_path / "app.py").write_text(source, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["--fix", "app.py"]) == 1
+    err = capsys.readouterr().err
+    assert "CP003" in err
+    assert "the replacement 'from pkg import helpers' cannot be shown" in err
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == source
+    run = subprocess.run([sys.executable, "app.py"], cwd=tmp_path, capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+
+
+def test_a_circular_reexport_gets_the_same_verdict_however_the_run_is_scoped(
+    tmp_path, monkeypatch, capsys
+):
+    """``pkg`` star-imports ``pkg.m``, which imports ``ver`` back from ``pkg``.
+
+    Checking ``app.py`` alone once gave ``CP001`` for ``pkg.m.ver`` -- an
+    object, it said -- while checking it next to ``app2.py`` gave ``CP002``:
+    the answer depended on which question the run happened to ask first.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from .m import *\n\nver = None\n", encoding="utf-8")
+    (pkg / "m.py").write_text("from pkg import ver\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text("from pkg.m import ver\n\nprint(ver)\n", encoding="utf-8")
+    (tmp_path / "app2.py").write_text("from pkg import ver\n\nprint(ver)\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    for paths in (["app.py"], ["app2.py", "app.py"], ["app.py", "app2.py"]):
+        assert cli.main(["--strict", *paths]) == 1
+        out = capsys.readouterr().out
+        assert "CP001" not in out
+        assert out.count("CP002") == len(paths)
+        assert "part of a circular import" in out
+
+
+def test_a_module_reexported_under_another_name_is_not_a_violation(project, capsys):
+    """Each binding is followed to where it comes from, so a module stays a module.
+
+    Once, any binding at all meant "object", so the first three of these were
+    reported ``CP001`` -- ``from os import path`` included, while the
+    equivalent ``import json as codec`` was not.
+    """
+    demo = project / "src" / "demo"
+    (demo / "_version.py").write_text('__version__ = "1"\n', encoding="utf-8")
+    (demo / "sub").mkdir()
+    (demo / "sub" / "__init__.py").write_text("", encoding="utf-8")
+    (demo / "sub" / "tools.py").write_text("X = 1\n", encoding="utf-8")
+    (demo / "__init__.py").write_text(
+        "from . import _version as version\nfrom .sub import tools\nfrom os import path\n"
+        "import json as codec\n",
+        encoding="utf-8",
+    )
+    (demo / "consumer.py").write_text(
+        "from demo import version, tools, path, codec\n\n"
+        "print(version.__version__, tools.X, path.sep, codec.dumps(1))\n",
+        encoding="utf-8",
+    )
+    assert cli.main(["--strict", str(project / "src")]) == 0
+    assert "0 violation(s)" in capsys.readouterr().out

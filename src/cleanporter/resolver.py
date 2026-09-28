@@ -4,7 +4,15 @@ Order of resolution for a ``from PARENT import NAME``:
 
 1. **First-party, filesystem** (``firstparty.ModuleMap``): if ``PARENT`` is one
    of the packages under analysis, decide purely from the source tree -- no
-   imports, no side effects, correct for namespace packages.
+   imports, no side effects, correct for namespace packages. A module on disk
+   is a module; otherwise the answer is what the parent's own source binds
+   the name to, followed to its origin. A first-party name with no such
+   evidence is undetermined here and is **not** passed on to the probe: the
+   probe would import first-party code, which this layer exists to avoid.
+   The one hand-off is a first-party re-export of a *third-party* name
+   (``from os import path`` in a package ``__init__``): the map defers, the
+   origin ``(os, path)`` joins the probe batch, and `Resolver._settle`
+   combines the answers.
 2. **Stdlib / third-party, interpreter probe** (``_probe``): ask the target
    interpreter via ``importlib`` whether ``PARENT.NAME`` is a submodule. Only
    the parent package is imported (cached); never the leaf, never objects.
@@ -89,9 +97,50 @@ class Resolver:
             self._cache[key] = True
         elif kind is model.Kind.OBJECT:
             self._cache[key] = False
-        else:
+        elif kind is model.Kind.AMBIGUOUS:
             self._cache[key] = None
             self._notes[key] = _AMBIGUOUS.format(parent=key[0], name=key[1])
+        elif kind is model.Kind.DEFERRED:
+            return self._settle(key)
+        else:
+            # UNDETERMINED: first-party, but neither a submodule on disk nor
+            # provably bound in the parent. The map knows which evidence was
+            # missing, so its words are the note.
+            self._cache[key] = None
+            self._notes[key] = self._map.unresolved_reason(*key)
+        return self._cache[key]
+
+    def _settle(self, key: tuple[str, str]) -> bool | None:
+        """Decide a `model.Kind.DEFERRED` pair from the probe's third-party answers.
+
+        The parent binds the name from a module outside the analysed tree --
+        ``from os import path`` in a first-party ``__init__`` -- so whatever
+        the probe says about that origin is what the parent's attribute is.
+        Combined with the first-party bindings by the map's own rule: one
+        answer only when every binding gives the same one. The probe is asked
+        only for origins `warm` has not already batched.
+        """
+        deferral = self._map.deferral(*key)
+        pairs = deferral.pairs if deferral is not None else ()
+        missing = [pair for pair in pairs if pair not in self._cache]
+        if missing:
+            self._cache.update(self._probe(missing))
+        verdicts: set[bool] = set(deferral.local) if deferral is not None else set()
+        for origin, original in pairs:
+            answer = self._cache.get((origin, original))
+            if answer is None:
+                self._cache[key] = None
+                self._notes[key] = (
+                    f"'{key[0]}' binds '{key[1]}' by importing '{original}' from "
+                    f"'{origin}', and {self.reason(origin, original)}"
+                )
+                return None
+            verdicts.add(answer)
+        if len(verdicts) == 1:
+            self._cache[key] = verdicts.pop()
+        else:
+            self._cache[key] = None
+            self._notes[key] = firstparty.disagreement(*key)
         return self._cache[key]
 
     def is_module(self, parent: str, name: str) -> bool | None:
@@ -163,14 +212,14 @@ class Resolver:
         rather than inventing a second rule keeps the two from drifting.
         Anything short of a firm "yes, a module" means the replacement cannot
         be trusted, and the import is kept exactly as written -- including
-        the case where this run cannot see ``P.S`` at all. That is a claim
-        about the module map's reach rather than about ``P``: the map answers
-        for a first-party *top-level* name whether or not it scanned the
-        subtree, so a run pointed at one distribution of a namespace package
-        can call a sibling's module an object. Declining costs a fix that
-        would have been correct; the message says which run would not, and
-        pointing cleanporter at the whole tree (or declaring ``source_roots``)
-        settles it.
+        the case where this run cannot see ``P.S`` at all. The map answers for
+        a first-party *top-level* name whether or not it scanned the subtree,
+        so a run pointed at one distribution of a namespace package cannot see
+        a sibling's modules; it says so (`model.Kind.UNDETERMINED`, with the
+        map's reason) rather than calling them objects. Declining costs a fix
+        that would have been correct; the message says which evidence was
+        missing, and pointing cleanporter at the whole tree (or declaring
+        ``source_roots``) settles it.
 
         Reading the ``__init__`` is a parse of what is *on disk*, so this sees
         bindings the author wrote, not ones this run is about to introduce.
@@ -188,7 +237,7 @@ class Resolver:
         if verdict is True:
             return None
         cause = (
-            f"'{package}' has no submodule '{token}' under this run's import roots"
+            f"'{package}' binds '{token}' to something that is not a module"
             if verdict is False
             else self.reason(package, token)
         )
@@ -250,16 +299,27 @@ class Resolver:
         `analyze.build`, so that path is the one that matters.
         """
         pending: list[tuple[str, str]] = []
+        deferred: list[tuple[str, str]] = []
         for key in pairs:
             if key in self._cache:
                 continue
             kind = self._map.classify(*key)
-            if kind is not None:
-                self._from_kind(key, kind)
-            else:
+            if kind is None:
                 pending.append(key)
+            elif kind is model.Kind.DEFERRED:
+                # A first-party re-export of a third-party name: its origin
+                # joins this batch, so settling it costs no second round trip.
+                deferred.append(key)
+                deferral = self._map.deferral(*key)
+                pending.extend(
+                    p for p in (deferral.pairs if deferral else ()) if p not in self._cache
+                )
+            else:
+                self._from_kind(key, kind)
         if pending:
-            self._cache.update(self._probe(pending))
+            self._cache.update(self._probe(list(dict.fromkeys(pending))))
+        for key in deferred:
+            self._settle(key)
 
     def take_warnings(self) -> list[str]:
         """Warnings raised by probing since the last call, then forget them.

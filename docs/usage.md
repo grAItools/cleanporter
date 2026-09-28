@@ -40,7 +40,7 @@ Each reported line has the shape
 | Code | Status | Meaning |
 | --- | --- | --- |
 | `CP001` | `VIOLATION` | An object is imported by name. This is the rule being enforced, and it is what blocks CI. |
-| `CP002` | `UNRESOLVED` | cleanporter could not determine whether the symbol is a module. Never rewritten. Only counts toward the failure exit code under `--strict` / `treat_unresolved_as_error`. |
+| `CP002` | `UNRESOLVED` | cleanporter could not determine whether the symbol is a module: a third-party parent it cannot import, a name that is both a submodule and a binding in its package's `__init__`, or a first-party name that is neither on disk nor bound in its parent to something cleanporter can follow (a generated `_version.py`, a `_pb2`, an out-of-tree extension, another portion of a namespace package). The message says which evidence was missing. Never rewritten. Only counts toward the failure exit code under `--strict` / `treat_unresolved_as_error`. |
 | `CP003` | `SKIPPED` | Structurally a violation, deliberately not rewritten. This is the "declined, because…" note that explains why `--fix` or `--diff` left a file alone. |
 | `CP004` | `SKIPPED_BY_CONFIG` | Matched a [`skip` rule](configuration.md#skip-rules), so it was never analysed. Counted in the summary, printed only under `--show-skipped`, and **never** part of the exit code — you asked for it. |
 

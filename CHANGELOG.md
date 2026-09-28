@@ -89,6 +89,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Some first-party `CP001` findings are now `CP002`, and some are no longer
+  findings at all.** Consequences of the fix below, and intended ones. A
+  first-party `from P import NAME` whose `P.NAME` is not on disk used to be a
+  violation whenever it was anything but a directory or `.py`; it is now
+  decided by what `P`'s source binds `NAME` to, followed to its origin.
+  Imports that were reported, and under `--fix` rewritten, on the strength of
+  absence alone — a generated `_version`, a `_pb2`, an out-of-tree extension,
+  another portion of a namespace package, a name only a PEP 562 `__getattr__`
+  could supply — are now `CP002`, never rewritten, and count toward the exit
+  code only under `--strict`. So is a name the parent could also get from a
+  third-party star import, even one it defines itself: statement order is
+  deliberately not read. The other way round, a module re-exported under a
+  name that is not on disk — `from . import _version as version`, `from .sub
+  import helpers`, `from os import path` in a package `__init__` — is now
+  recognised as a module, where it used to be a `CP001` whose rewrite still
+  ran but whose report was wrong. A run that was exiting `1` on these may now
+  exit `0`; one under `--strict` may now fail on the new `CP002`s.
+
+- **The first-party scan skips artifact directories at an import root.**
+  Building the module map walked every directory under a root except
+  `__pycache__` and dot-directories. At a root it now also skips `build`,
+  `dist`, `node_modules` and `site-packages`, the list discovery uses, so a
+  `build/lib/` copy of the package is no longer a second first-party tree and
+  a `build/` or `dist/` no longer makes `build` a first-party name (`from
+  build import ProjectBuilder` goes to the interpreter probe, as it should).
+  Below a root those names are scanned as before: pip's
+  `pip/_internal/operations/build/` is a real package. `exclude` is
+  deliberately not applied to the scan — it picks the files to analyse, not
+  the modules that exist. The scan itself is unchanged in cost; the
+  first-party test is now a set lookup instead of a union rebuilt per call.
+
 - **zuban is now a gate, not a note.** It was an optional third opinion in its
   own dependency group, with a `manual`-stage hook and a CI job engineered to
   never fail. It is now in `dev`, its hook runs on every commit, and it gates
@@ -146,6 +177,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   missing reply still reports the whole batch undetermined — the transport
   never guesses — but a warning now names the interpreter, how it failed, and
   the tail of its stderr, instead of discarding all of it.
+
+- **A first-party submodule missing from the checkout is no longer called an
+  object.** The filesystem layer said "object" for anything that was neither a
+  directory nor a `.py` under the tree — a guess by absence, against the
+  resolver's own contract. With `pkg/__init__.py` doing `try: from pkg import
+  _version` / `except ImportError: _version = None` and no `_version.py`
+  checked in (setuptools_scm writes it at build time), `from pkg import
+  _version` elsewhere was reported `CP001` and rewritten to `import pkg` plus
+  `pkg._version.version`, which raises `AttributeError` whenever the package
+  had not happened to import it first. Protobuf `_pb2` modules, Cython modules
+  whose `.pyx` is all the tree holds, and sibling portions of a PEP 420
+  namespace package took the same path.
+
+  The verdict now comes from evidence, never from absence. With `P.NAME` not
+  on disk, every binding of `NAME` in every file claiming `P` is followed to
+  where it comes from: a `def`, `class` or assignment is an object; `import X
+  as NAME` is a module; `from M import X as NAME` is whatever `M.X` is — a
+  submodule on disk, a first-party `M` read the same way, recursively, or,
+  for a third-party `M`, the interpreter probe's
+  answer for `M.X`, batched into the same single probe round trip as the rest
+  of the run. First-party star imports are followed too, through a literal
+  `__all__` or the public names, and a name `__all__` lists without binding
+  is treated as the submodule the star import would try to import. `NAME` is
+  an object only if every binding is, and a module only if every binding is;
+  anything else — bindings that disagree, an origin with no source, a
+  third-party star import, a runtime-built `__all__`, a module-level
+  `__getattr__` with nothing binding the name, a parent with no source — is
+  `CP002`, and the message names the missing evidence, e.g. `'pkg._version'
+  is not on disk under this run's import roots, and 'pkg' binds '_version' by
+  importing its own submodule of that name`. The replacement-import check
+  reads the same verdict, so a sibling portion it cannot see is described as
+  unseen rather than as "no submodule".
+
+  Cycles are where this could have guessed, so they get their own rule. Star
+  imports that loop back add nothing new and are followed; any other step
+  that would read "nothing there" off a lookup still in progress — a `from`
+  import, an `__all__` name, a `__getattr__` fallback, several files that
+  must agree — answers "a circular import, so what it binds depends on import
+  order" instead. That keeps the verdict independent of the order questions
+  are asked in: a draft of this change called `pkg.m.ver` an object when
+  `app.py` was checked alone and undetermined when `app2.py` was checked
+  beside it. Lookups are memoised per `(module, name)` once complete, so a
+  diamond of star imports twenty layers deep is walked once per module rather
+  than once per path; a chain more than 64 links deep, or a cyclic knot that
+  would take more than 20,000 steps, ends in `CP002` rather than a
+  `RecursionError` or a hang.
+
+- **A submodule shadowed through a star import is no longer called reachable.**
+  `pkg/__init__.py` doing `from ._impl import *`, with `_impl` defining a
+  function `helpers` and `pkg/helpers.py` beside it, makes `from pkg import
+  helpers` bind the function. The ambiguity check read only the `__init__`'s
+  own statements, so it called `pkg.helpers` a plain module, and `--fix`
+  turned `from pkg.helpers import f` into `from pkg import helpers` plus
+  `helpers.f()` — code that imports and parses, then raises `AttributeError`.
+  This predates this release's other resolver changes; a fuzz that *runs*
+  every import it classifies found it. Star imports are now followed for this
+  check as they are everywhere else: one that brings the name in makes the
+  submodule ambiguous (`CP002`, and the replacement import is declined with
+  `CP003`), and one from a module this run cannot read leaves it undetermined.
+
+- **A package `__init__.py` in a declared non-UTF-8 encoding is read, not
+  skipped.** The parses behind all of the above, and behind the ambiguity check
+  and the re-export guard, decoded source as UTF-8, so a PEP 263 `# -*- coding:
+  latin-1 -*-` file looked like it bound nothing: a submodule it shadowed was
+  called plainly reachable, and the re-export guard stood down for names it
+  re-exported. Sources are now parsed from bytes, which honours coding cookies
+  and a UTF-8 BOM as the interpreter does, and a file that genuinely cannot be
+  read or parsed now proves nothing rather than "binds nothing": a submodule
+  it might shadow and a name it might bind are `CP002`, and the re-export
+  guard assumes the name is re-exported.
 
 - **The replacement import is now checked to bind the module it names.** The
   fix for `from P.S import obj` is `from P import S` plus `S.obj` at every use

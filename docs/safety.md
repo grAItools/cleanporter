@@ -276,6 +276,28 @@ configuration would have forbidden. Prefer the bare last-component spelling
     Because answering this needs scope metadata that only the fix path
     resolves, a plain `check` run reports these as the `CP001` they are; it is
     `--fix` and `--diff` that name them `CP003`.
+- **A first-party object is one its parent binds, read by parsing.** When
+  `P.NAME` is not on disk, it is called an object only if every binding of
+  `NAME` in `P`'s source resolves to one, each `from M import X` followed to
+  its origin (see [How it works](how-it-works.md#1-first-party-from-the-filesystem));
+  anything short of that is `CP002`. That turns some imports a looser rule
+  would have called `CP001` into `CP002` — a generated `_version`, a `_pb2`, a
+  name a PEP 562 `__getattr__` could supply — which is the intended trade.
+  What the parse does not see:
+
+    - bindings made by running code rather than by a statement — a write
+      through `globals()` or `sys.modules`, a `__path__` extended at import
+      time;
+    - a `del NAME` at module level, or a `global NAME` rebinding inside a
+      function: the name still counts as bound by the statements that bind
+      it;
+    - statement order. **A star import from a module this run cannot read**
+      (third-party, or with an `__all__` built at run time) leaves every name
+      the parent could get from it undetermined, *even one the parent also
+      defines itself* — the definition usually comes later and wins, but
+      "usually" is not proof, and following order through conditional and
+      `try` bodies is a heuristic this layer deliberately does without. This
+      is a known, accepted source of `CP002`.
 - **Relative imports become absolute.** `from .sub.mod import C` is rewritten
   to `from pkg.sub import mod` plus `mod.C`. The import that is *kept* (any
   compliant names in a mixed statement) keeps its original relative form; the
@@ -418,13 +440,14 @@ configuration would have forbidden. Prefer the bare last-component spelling
     written and reports `CP003`, while the rest of the file is still fixed.
     That includes a `P.S` this run cannot see at all. The module map answers
     for any name whose *top-level* component is first-party, scanned subtree
-    or not, so a run pointed at one distribution of a namespace package can
-    call a sibling's module an object — and the import it appears in only
-    makes sense if it is a module. The evidence is missing rather than
-    contradictory, and the cost is a declined fix that would have been
-    correct; the finding says as much ("has no submodule … under this run's
-    import roots"), and pointing cleanporter at the whole tree, or declaring
-    `source_roots`, resolves it.
+    or not, so a run pointed at one distribution of a namespace package
+    cannot see a sibling's modules. It does not call them objects — an
+    object needs a binding in the parent's source, and absence is not one —
+    so both the import it read and the one it would write come out
+    undetermined. The cost is a declined fix that would have been correct;
+    the finding says which evidence was missing ("neither on disk under this
+    run's import roots nor bound in …"), and pointing cleanporter at the
+    whole tree, or declaring `source_roots`, resolves it.
 
     Written inside `pkg/__init__.py` this is the same check: there the
     package's attributes are the file's own module-level names, so the
