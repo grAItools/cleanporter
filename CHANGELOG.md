@@ -123,6 +123,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`C:\venv\Scripts\python.exe`, `\\server\share\python.exe`) is used as
   written on every platform.
 
+- **A check is about 3.5–4× faster.** Over libcst's own source (297 files) a
+  plain check took 110–137 s and now takes 33–37 s, with byte-identical
+  output; `--diff` over the same tree went from 329–360 s to 262–283 s, the
+  rest being the scope analysis the fixer's guards need. The analysis used to
+  walk every file's libcst tree seven times — once per question it asked of
+  it, and one of them twice — and resolve libcst's position metadata, another
+  full pass, to learn where a handful of imports start. It now walks each
+  tree once, collecting every fact it needs in that pass, and reads import
+  positions off a parse with Python's own `ast`. A file that parse cannot
+  vouch for still gets libcst's metadata, so lines and columns are exactly the
+  same. That covers `\r` line endings, a grammar the running Python rejects,
+  and code libcst does not reproduce exactly, such as a form feed (`\f`) or a
+  backslash continuation in a statement's leading whitespace. Parsing is now
+  most of what remains.
+
+- **Under `scope = "first-party"`, other imports are no longer classified at
+  all.** They were already neither reported nor rewritten, but every one was
+  still sent to the interpreter probe — an import of each third-party package
+  — for an answer nothing read. They are now left out of the batch. The one
+  third-party name still resolved is one a first-party module re-exports
+  (`from os import path` in your package's `__init__.py`): an import of it
+  from your package is first-party, and whether it names a module depends on
+  what `os.path` is.
+
 - **Some first-party `CP001` findings are now `CP002`, and some are no longer
   findings at all.** Consequences of the fix below, and intended ones. A
   first-party `from P import NAME` whose `P.NAME` is not on disk used to be a

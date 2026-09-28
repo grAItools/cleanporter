@@ -161,6 +161,67 @@ def test_scope_first_party_still_reports_unanchorable_relative_imports():
     assert [f.status for f in findings] == [model.Status.UNRESOLVED]
 
 
+def test_scope_first_party_never_classifies_other_imports(tmp_path: pathlib.Path, monkeypatch):
+    """Under first-party scope nothing outside the roots reaches the probe.
+
+    Neither `build`'s warm-up nor a ``--fix`` of the file asks about
+    ``functools`` or ``os``: out-of-scope imports are passed over without
+    being classified, as the configuration docs say.
+    """
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "mod.py").write_text("THING = 1\n")
+    (pkg / "a.py").write_text(
+        "import os\nfrom functools import partial\nfrom os import path\n"
+        "from pkg.mod import THING\n\nx = partial(THING, path, os)\n"
+    )
+    asked: list[tuple[str, str]] = []
+    real = resolver_lib.Resolver._probe
+
+    def recording(self: resolver_lib.Resolver, pairs: list[tuple[str, str]]):
+        asked.extend(pairs)
+        return real(self, pairs)
+
+    monkeypatch.setattr(resolver_lib.Resolver, "_probe", recording)
+    cfg = config.Config(root=tmp_path, scope="first-party")
+    records, resolver, errors, _warnings = analyze.build([pkg], cfg)
+    assert not errors
+    for rec in records:
+        rewrite.fix_record(rec, resolver, cfg)
+        analyze.analyze_record(rec, resolver, cfg)
+    assert asked == []
+
+    cfg_all = config.Config(root=tmp_path, scope="all")
+    analyze.build([pkg], cfg_all)
+    assert ("functools", "partial") in asked, "the recorder must see an unscoped run's probe"
+
+
+def test_scope_first_party_still_classifies_a_reexported_third_party_name(
+    tmp_path: pathlib.Path, monkeypatch
+):
+    """``from pkg import path`` is first-party, but only ``os.path`` can say what it is."""
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("from os import path\n")
+    (pkg / "a.py").write_text("from pkg import path\n\nx = path.sep\n")
+    asked: list[tuple[str, str]] = []
+    real = resolver_lib.Resolver._probe
+
+    def recording(self: resolver_lib.Resolver, pairs: list[tuple[str, str]]):
+        asked.extend(pairs)
+        return real(self, pairs)
+
+    monkeypatch.setattr(resolver_lib.Resolver, "_probe", recording)
+    cfg = config.Config(root=tmp_path, scope="first-party")
+    records, resolver, errors, _warnings = analyze.build([pkg], cfg)
+    assert not errors
+    assert asked == [("os", "path")], "only the re-export's origin, batched by warm"
+    assert resolver.is_module("pkg", "path") is True
+    findings = [f for rec in records for f in analyze.analyze_record(rec, resolver, cfg)]
+    assert findings == []
+
+
 def _analyze_with(source: str, config: config.Config):
     path = FIXTURES / "pkg" / "a.py"
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", path])

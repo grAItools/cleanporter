@@ -1,10 +1,18 @@
 """Analysis driver: turn source files into :class:`Finding` objects.
 
 `FileRecord` carries a parsed file and lazily caches what is expensive to
-derive from it -- the import units, libcst's position metadata, and whatever
-`cleanporter.skip` takes out of the file -- so a record survives being walked
-more than once (the CLI re-parses into a fresh record after a fix and analyses
-it again).
+derive from it -- its `FileFacts`, the import units, where each import
+starts, libcst's position metadata when something needs it, and whatever
+`cleanporter.skip` takes out of the file -- so a record survives being
+analysed more than once (the CLI re-parses into a fresh record after a fix and
+analyses it again).
+
+Visitor dispatch over a libcst tree is most of what a check costs, so a check
+walks each tree exactly once (`collect_facts`) and derives every other answer
+from what that walk kept. The module-level helpers (`iter_units`,
+`module_bindings`, `attribute_pairs`, ...) answer one question each for a
+caller holding only a tree; each is a fresh walk, so nothing on the run's path
+calls them.
 
 A file a `skip` rule takes whole is still discovered, read and parsed here. It
 contributes its imports as *evidence* -- who re-exports what, which directories
@@ -16,8 +24,10 @@ which can unblock an unsafe rewrite somewhere else entirely.
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import pathlib
+import warnings
 from collections.abc import Iterator, Mapping
 
 import libcst as cst
@@ -61,18 +71,64 @@ class FileRecord:
     #: Diffs are computed against these, and the fixer declines a file whose
     #: decoded text would not encode back to them.
     raw: bytes | None = dataclasses.field(default=None, repr=False, compare=False)
+    #: The tree's `FileFacts`, when the caller already walked it for them
+    #: (`build` must, before it can know ``base_pkg``); otherwise collected on
+    #: first use.
+    _facts: FileFacts | None = dataclasses.field(default=None, repr=False, compare=False)
     _units: list[ImportUnit] | None = dataclasses.field(default=None, repr=False, compare=False)
     _positions: Mapping[cst.CSTNode, metadata.CodeRange] | None = dataclasses.field(
+        default=None, repr=False, compare=False
+    )
+    _import_starts: Mapping[cst.ImportFrom, tuple[int, int]] | None = dataclasses.field(
         default=None, repr=False, compare=False
     )
     _skipped: skip_lib.Skipped | None = dataclasses.field(default=None, repr=False, compare=False)
 
     @property
+    def facts(self) -> FileFacts:
+        """Everything the analysis reads off the tree, from one walk. Computed once."""
+        if self._facts is None:
+            self._facts = collect_facts(self.tree)
+        return self._facts
+
+    @property
     def units(self) -> list[ImportUnit]:
         """Every ``from`` import in the file. Computed once."""
         if self._units is None:
-            self._units = list(iter_units(self.tree, self.base_pkg))
+            self._units = list(self.facts.units(self.base_pkg))
         return self._units
+
+    @property
+    def import_starts(self) -> Mapping[cst.ImportFrom, tuple[int, int]]:
+        r"""``(line, column)`` where each ``from`` import starts, as libcst counts them.
+
+        Exactly ``positions[node].start`` for every node in `facts`, and
+        taken from there whenever `positions` is resolved anyway -- already,
+        or because `skipped` will need it (a record with `skip_rules`).
+        Otherwise read off an ``ast`` parse (`_import_from_starts`), because
+        resolving ``PositionProvider`` is a code generation pass over the whole
+        tree with position tracking -- as costly as the walk itself
+        -- to learn the position of a handful of statements. A file that
+        path cannot vouch for -- ``\r`` line endings, a ``\f`` or a backslash
+        continuation that libcst does not reproduce, a grammar the running
+        Python rejects -- falls back to the metadata, so the answer is
+        libcst's either way.
+        """
+        if self._import_starts is None:
+            nodes = self.facts.import_froms
+            starts = (
+                _import_from_starts(self.source, self.tree, nodes)
+                if self._positions is None and not self.skip_rules
+                else None
+            )
+            if starts is None:
+                positions = self.positions
+                starts = {
+                    node: (positions[node].start.line, positions[node].start.column)
+                    for node in nodes
+                }
+            self._import_starts = starts
+        return self._import_starts
 
     @property
     def skipped(self) -> skip_lib.Skipped:
@@ -106,6 +162,72 @@ class FileRecord:
         return self._positions
 
 
+def _import_from_starts(
+    source: str, tree: cst.Module, nodes: tuple[cst.ImportFrom, ...]
+) -> dict[cst.ImportFrom, tuple[int, int]] | None:
+    r"""Where each of *nodes* starts, read off an ``ast`` parse; ``None`` if unsure.
+
+    *nodes* are every ``ImportFrom`` of *tree*, the libcst tree parsed from
+    *source*, in source order. libcst's ``PositionProvider`` puts such a
+    node's start at its ``from`` keyword *in the code the tree generates*,
+    counting a line per newline and a column in characters. ``ast`` puts its
+    ``ImportFrom`` at the same keyword *in source*, with a line per newline
+    the tokenizer sees and a column in UTF-8 bytes. So the two agree whenever:
+
+    * the generated code is *source*. libcst means to round-trip exactly, but
+      1.9 does not always: a form feed (``\f``) or a backslash continuation
+      in a statement's leading whitespace is dropped, so every position after
+      it on that line -- or the line itself -- moves. The tree's own
+      ``code`` is compared with *source* rather than trusting a list of
+      known shapes; it is a code generation pass without position tracking,
+      a fraction of what resolving the metadata costs;
+    * the newlines are the same ones. Both count ``\n``, ``\r\n`` and a lone
+      ``\r``, but libcst counts per generated token, and whether a ``\r\n``
+      can straddle two tokens is not something to prove here: any ``\r`` in
+      the file and this declines, leaving a plain ``\n`` count on both sides;
+    * the column is converted from bytes to characters, on the line split
+      the same way (on ``\n``); and
+    * the statements are the same ones. Both are source order and must be as
+      many, and each converted position must land on the text ``from``.
+
+    Anything else -- a file ``ast`` cannot parse (a newer grammar libcst
+    accepts, a NUL byte), a count or keyword mismatch, text that will not
+    encode -- is ``None``, and the caller resolves the metadata instead. The
+    fast path either gives libcst's answer or no answer.
+    """
+    if not nodes:
+        return {}
+    if "\r" in source or tree.code != source:
+        return None
+    try:
+        with warnings.catch_warnings():
+            # An invalid escape sequence is a SyntaxWarning at parse time; it
+            # is the file's business, not this report's.
+            warnings.simplefilter("ignore")
+            parsed = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+    found = sorted(
+        (node.lineno, node.col_offset)
+        for node in ast.walk(parsed)
+        if isinstance(node, ast.ImportFrom)
+    )
+    if len(found) != len(nodes):
+        return None
+    lines = source.split("\n")
+    starts: dict[cst.ImportFrom, tuple[int, int]] = {}
+    for node, (lineno, offset) in zip(nodes, found, strict=True):
+        text = lines[lineno - 1]
+        try:
+            column = len(text.encode("utf-8")[:offset].decode("utf-8"))
+        except UnicodeError:
+            return None
+        if not text.startswith("from", column):
+            return None
+        starts[node] = (lineno, column)
+    return starts
+
+
 def package_of(
     path: pathlib.Path, module_map: firstparty.ModuleMap, relative_level: int = 0
 ) -> str:
@@ -124,15 +246,144 @@ def package_of(
     return qn.rsplit(".", 1)[0] if "." in qn else ""
 
 
+@dataclasses.dataclass(frozen=True)
+class FileFacts:
+    """Everything the analysis reads off a file's tree, collected in one walk.
+
+    Walking a libCST tree is most of what a check costs -- visitor dispatch
+    runs per node -- and the analysis used to walk each tree once per
+    question: imports, import heads, relative depth, module bindings,
+    attribute reads, star imports. `collect_facts` answers all of them in a
+    single pass and keeps only what they are computed from.
+
+    Nothing here depends on the file's package, which is not known yet when
+    the tree is first walked: it takes every file's absolute imports to
+    settle the import roots (`firstparty.ModuleMap.demote_roots`) before any
+    relative import can be anchored. So the facts are *raw* -- the import
+    statements themselves, and each attribute read as the dotted text it
+    reads through -- and the methods taking ``base_pkg`` resolve them
+    against the package afterwards without touching the tree again.
+    """
+
+    #: Every ``import`` and ``from ... import`` statement, in source order.
+    #: Order matters: a later binding of a name replaces an earlier one.
+    imports: tuple[cst.Import | cst.ImportFrom, ...]
+    #: ``(prefix, attribute)`` for every ``prefix.attribute`` whose prefix is
+    #: a plain dotted name (``a.b.c`` gives ``("a.b", "c")`` and ``("a",
+    #: "b")``). Reads through a call or a subscript are not dotted names and
+    #: are not recorded.
+    attribute_reads: frozenset[tuple[str, str]]
+
+    @property
+    def import_froms(self) -> tuple[cst.ImportFrom, ...]:
+        """Every ``from ... import`` statement, in source order."""
+        return tuple(node for node in self.imports if isinstance(node, cst.ImportFrom))
+
+    def absolute_import_heads(self) -> set[str]:
+        """See the module-level `absolute_import_heads`."""
+        heads: set[str] = set()
+        for node in self.imports:
+            if isinstance(node, cst.ImportFrom):
+                if _imports.relative_level(node) == 0:
+                    heads.add(_imports.dotted(node.module).split(".")[0])
+            else:
+                heads.update(_imports.dotted(alias.name).split(".")[0] for alias in node.names)
+        heads.discard("")
+        return heads
+
+    def max_relative_level(self) -> int:
+        """See the module-level `max_relative_level`."""
+        return max((_imports.relative_level(node) for node in self.import_froms), default=0)
+
+    def units(self, base_pkg: str) -> Iterator[ImportUnit]:
+        """See `iter_units`."""
+        for node in self.import_froms:
+            parent = _imports.resolve_parent(node, base_pkg)
+            if _imports.is_star(node):
+                yield ImportUnit(node, parent, "*", None, None, star=True)
+                continue
+            for name, asname, alias in _imports.imported_names(node):
+                yield ImportUnit(node, parent, name, asname, alias, star=False)
+
+    def module_bindings(self, base_pkg: str) -> dict[str, str]:
+        """See the module-level `module_bindings`."""
+        bound: dict[str, str] = {}
+        for node in self.imports:
+            if isinstance(node, cst.Import):
+                for alias in node.names:
+                    dotted = _imports.dotted(alias.name)
+                    if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
+                        bound[alias.asname.name.value] = dotted
+                    else:
+                        # ``import a.b`` binds only ``a``, which names ``a``.
+                        head = dotted.split(".")[0]
+                        bound[head] = head
+                continue
+            parent = _imports.resolve_parent(node, base_pkg)
+            if parent is None:
+                continue
+            for name, asname, _alias in _imports.imported_names(node):
+                bound[asname or name] = f"{parent}.{name}"
+        return bound
+
+    def attribute_pairs(self, base_pkg: str) -> set[tuple[str, str]]:
+        """See the module-level `attribute_pairs`."""
+        bound = self.module_bindings(base_pkg)
+        found: set[tuple[str, str]] = set()
+        for prefix, attr in self.attribute_reads:
+            head, _dot, rest = prefix.partition(".")
+            target = bound.get(head)
+            if target is None:
+                continue
+            module = f"{target}.{rest}" if rest else target
+            found.add((module, attr))
+        return found
+
+    def star_imported_modules(self, base_pkg: str) -> set[str]:
+        """See the module-level `star_imported_modules`."""
+        found: set[str] = set()
+        for node in self.import_froms:
+            if _imports.is_star(node):
+                parent = _imports.resolve_parent(node, base_pkg)
+                if parent is not None:
+                    found.add(parent)
+        return found
+
+
+class _FactCollector(cst.CSTVisitor):
+    """The one walk `collect_facts` makes. Every hook returns ``None``: descend."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.imports: list[cst.Import | cst.ImportFrom] = []
+        self.attribute_reads: set[tuple[str, str]] = set()
+
+    def visit_Import(self, node: cst.Import) -> None:
+        self.imports.append(node)
+
+    def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
+        self.imports.append(node)
+
+    def visit_Attribute(self, node: cst.Attribute) -> None:
+        # Descends into import statements too, exactly as the separate walk
+        # this replaces did: ``import a.b`` is itself an ``a.b`` read.
+        try:
+            prefix = _imports.dotted(node.value)
+        except TypeError:
+            return  # a call, a subscript, ... -- not a dotted module path
+        self.attribute_reads.add((prefix, node.attr.value))
+
+
+def collect_facts(tree: cst.Module) -> FileFacts:
+    """Walk *tree* once and return every `FileFacts` the analysis needs."""
+    collector = _FactCollector()
+    tree.visit(collector)
+    return FileFacts(tuple(collector.imports), frozenset(collector.attribute_reads))
+
+
 def iter_units(tree: cst.Module, base_pkg: str) -> Iterator[ImportUnit]:
     """Yield an :class:`ImportUnit` per name in every ``from`` import."""
-    for node in _walk_import_froms(tree):
-        parent = _imports.resolve_parent(node, base_pkg)
-        if _imports.is_star(node):
-            yield ImportUnit(node, parent, "*", None, None, star=True)
-            continue
-        for name, asname, alias in _imports.imported_names(node):
-            yield ImportUnit(node, parent, name, asname, alias, star=False)
+    return collect_facts(tree).units(base_pkg)
 
 
 def absolute_import_heads(tree: cst.Module) -> set[str]:
@@ -141,36 +392,12 @@ def absolute_import_heads(tree: cst.Module) -> set[str]:
     Evidence for `ModuleMap.demote_roots`: whatever a file imports by an
     absolute name lives under an import root, so it is not a root itself.
     """
-    heads: set[str] = set()
-
-    class V(cst.CSTVisitor):
-        def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
-            if _imports.relative_level(node) == 0:
-                heads.add(_imports.dotted(node.module).split(".")[0])
-
-        def visit_Import(self, node: cst.Import) -> None:
-            for alias in node.names:
-                heads.add(_imports.dotted(alias.name).split(".")[0])
-
-    tree.visit(V())
-    heads.discard("")
-    return heads
+    return collect_facts(tree).absolute_import_heads()
 
 
 def max_relative_level(tree: cst.Module) -> int:
     """Deepest ``from ... import`` dot count in *tree* (0 if none are relative)."""
-    return max((_imports.relative_level(node) for node in _walk_import_froms(tree)), default=0)
-
-
-def _walk_import_froms(tree: cst.Module) -> list[cst.ImportFrom]:
-    found: list[cst.ImportFrom] = []
-
-    class V(cst.CSTVisitor):
-        def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
-            found.append(node)
-
-    tree.visit(V())
-    return found
+    return collect_facts(tree).max_relative_level()
 
 
 def collect_pairs(records: list[FileRecord]) -> list[tuple[str, str]]:
@@ -212,28 +439,7 @@ def module_bindings(tree: cst.Module, base_pkg: str) -> dict[str, str]:
     `attribute_pairs` see *more* uses, and this evidence is used to decline
     rewrites, so over-collecting is the safe direction.
     """
-    bound: dict[str, str] = {}
-
-    class V(cst.CSTVisitor):
-        def visit_Import(self, node: cst.Import) -> None:
-            for alias in node.names:
-                dotted = _imports.dotted(alias.name)
-                if alias.asname is not None and isinstance(alias.asname.name, cst.Name):
-                    bound[alias.asname.name.value] = dotted
-                else:
-                    # ``import a.b`` binds only ``a``, which names ``a``.
-                    head = dotted.split(".")[0]
-                    bound[head] = head
-
-        def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
-            parent = _imports.resolve_parent(node, base_pkg)
-            if parent is None:
-                return
-            for name, asname, _alias in _imports.imported_names(node):
-                bound[asname or name] = f"{parent}.{name}"
-
-    tree.visit(V())
-    return bound
+    return collect_facts(tree).module_bindings(base_pkg)
 
 
 def attribute_pairs(tree: cst.Module, base_pkg: str) -> set[tuple[str, str]]:
@@ -245,25 +451,11 @@ def attribute_pairs(tree: cst.Module, base_pkg: str) -> set[tuple[str, str]]:
     that only looked at ``from`` imports for evidence was blind to its own
     output, and a second ``--fix`` run would happily delete the attribute the
     first run had just protected.
+
+    Bindings are the whole file's, wherever they sit relative to the read
+    (`module_bindings`).
     """
-    bound = module_bindings(tree, base_pkg)
-    found: set[tuple[str, str]] = set()
-
-    class V(cst.CSTVisitor):
-        def visit_Attribute(self, node: cst.Attribute) -> None:
-            try:
-                prefix = _imports.dotted(node.value)
-            except TypeError:
-                return  # a call, a subscript, ... -- not a dotted module path
-            head, _dot, rest = prefix.partition(".")
-            target = bound.get(head)
-            if target is None:
-                return
-            module = f"{target}.{rest}" if rest else target
-            found.add((module, node.attr.value))
-
-    tree.visit(V())
-    return found
+    return collect_facts(tree).attribute_pairs(base_pkg)
 
 
 def star_imported_modules(tree: cst.Module, base_pkg: str) -> set[str]:
@@ -272,13 +464,7 @@ def star_imported_modules(tree: cst.Module, base_pkg: str) -> set[str]:
     A star import takes every public name, so any of *M*'s re-exports could be
     the one it needs. There is no way to narrow it, so all of them count.
     """
-    found: set[str] = set()
-    for node in _walk_import_froms(tree):
-        if _imports.is_star(node):
-            parent = _imports.resolve_parent(node, base_pkg)
-            if parent is not None:
-                found.add(parent)
-    return found
+    return collect_facts(tree).star_imported_modules(base_pkg)
 
 
 #: Why a wildcard import is reported and never rewritten.
@@ -332,6 +518,19 @@ def _overridden(rule: skip_lib.Rule | None, decision: Decision) -> Decision:
     return Decision(model.Status.SKIPPED_BY_CONFIG, rule.describe())
 
 
+def in_scope(parent: str, resolver: resolver_lib.Resolver, config: config.Config) -> bool:
+    """Whether the configured ``scope`` covers imports from *parent*.
+
+    The one statement of the rule. Under ``scope = "first-party"`` an import
+    from outside the analysis roots is not reported, so not rewritten
+    (`Decider.decide`), and not classified either: `build` leaves it out of
+    the probe batch and the fixer does not look it up for a binding to reuse
+    (`rewrite._Fixer._build_existing`). Only the top-level component is
+    tested (`resolver.Resolver.is_first_party`).
+    """
+    return config.scope != "first-party" or resolver.is_first_party(parent)
+
+
 class Decider:
     """The one per-import decision ladder, shared by ``check`` and ``--fix``.
 
@@ -355,6 +554,10 @@ class Decider:
         self._rec = rec
         self._resolver = resolver
         self._config = config
+
+    def in_scope(self, parent: str) -> bool:
+        """Whether imports from *parent* are this run's business at all (`in_scope`)."""
+        return in_scope(parent, self._resolver, self._config)
 
     def decide(
         self, unit: ImportUnit, line: int, never_read: frozenset[str] = frozenset()
@@ -386,9 +589,7 @@ class Decider:
         parent = unit.parent
         if parent is None:
             return _overridden(rule, Decision(model.Status.UNRESOLVED, _UNANCHORED))
-        if self._config.is_exempt(parent, unit.name) or (
-            self._config.scope == "first-party" and not self._resolver.is_first_party(parent)
-        ):
+        if self._config.is_exempt(parent, unit.name) or not self.in_scope(parent):
             return COMPLIANT
         verdict = self._resolver.is_module(parent, unit.name)
         if verdict is True:
@@ -451,19 +652,19 @@ def analyze_record(
 
     Every decision is `Decider.decide`'s, the same call the fixer makes.
     """
-    positions = rec.positions
+    starts = rec.import_starts
     decider = Decider(rec, resolver, config)
     findings: list[model.Finding] = []
     for unit in rec.units:
-        pos = positions[unit.node].start
-        decision = decider.decide(unit, pos.line, unread)
+        line, column = starts[unit.node]
+        decision = decider.decide(unit, line, unread)
         if decision.status is None:
             continue
         findings.append(
             model.Finding(
                 rec.path,
-                pos.line,
-                pos.column,
+                line,
+                column,
                 unit.parent or "?",
                 unit.name,
                 decision.status,
@@ -489,7 +690,7 @@ def build(
     warnings.extend(module_map.warnings)
     resolver = resolver_lib.Resolver(module_map, python=config.python)
 
-    parsed: list[tuple[pathlib.Path, _source.Decoded, cst.Module]] = []
+    parsed: list[tuple[pathlib.Path, _source.Decoded, cst.Module, FileFacts]] = []
     errors: list[model.Finding] = []
     evidence: dict[str, list[pathlib.Path]] = {}
     for f in files:
@@ -517,27 +718,32 @@ def build(
                 )
             )
             continue
-        parsed.append((f, decoded, tree))
-        for head in absolute_import_heads(tree):
+        # The one walk of this tree: everything below reads these facts.
+        facts = collect_facts(tree)
+        parsed.append((f, decoded, tree, facts))
+        for head in facts.absolute_import_heads():
             evidence.setdefault(head, []).append(f)
 
     # Every file's absolute imports say which directories are packages, so
     # settle the root set before anchoring anyone's relative imports.
     module_map.demote_roots(evidence)
-    records = [
-        FileRecord(
-            f,
-            decoded.text,
-            tree,
-            package_of(f, module_map, max_relative_level(tree)),
-            module_map.qualname_for(f, max_relative_level(tree)) or "",
-            root=config.root,
-            skip_rules=config.skip,
-            encoding=decoded.encoding,
-            raw=decoded.raw,
+    records: list[FileRecord] = []
+    for f, decoded, tree, facts in parsed:
+        level = facts.max_relative_level()
+        records.append(
+            FileRecord(
+                f,
+                decoded.text,
+                tree,
+                package_of(f, module_map, level),
+                module_map.qualname_for(f, level) or "",
+                root=config.root,
+                skip_rules=config.skip,
+                encoding=decoded.encoding,
+                raw=decoded.raw,
+                _facts=facts,
+            )
         )
-        for f, decoded, tree in parsed
-    ]
 
     pairs = collect_pairs(records)
     # Every *use* of ``M.N`` in the run is evidence that M must keep binding
@@ -548,9 +754,17 @@ def build(
     uses: set[tuple[str, str]] = set(pairs)
     star: set[str] = set()
     for rec in records:
-        uses |= attribute_pairs(rec.tree, rec.base_pkg)
-        star |= star_imported_modules(rec.tree, rec.base_pkg)
+        uses |= rec.facts.attribute_pairs(rec.base_pkg)
+        star |= rec.facts.star_imported_modules(rec.base_pkg)
     resolver.note_uses(uses, star)
-    resolver.warm(pairs + replacement_pairs(pairs))
+    # Out-of-scope pairs are never asked about, so classifying them -- an
+    # import of a third-party package, in the probe -- would be wasted. A
+    # replacement pair shares its import's top-level package, so it is in
+    # scope exactly when that import is; a first-party re-export of a
+    # third-party name still reaches the probe, because `Resolver.warm` adds
+    # its origin to the batch itself. The *use* evidence above is left whole:
+    # it is only ever consulted about a first-party module.
+    batch = pairs + replacement_pairs(pairs)
+    resolver.warm([pair for pair in batch if in_scope(pair[0], resolver, config)])
     warnings.extend(resolver.take_warnings())
     return records, resolver, errors, warnings

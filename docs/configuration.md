@@ -149,9 +149,15 @@ With the default `scope = "all"`, `from collections import OrderedDict` in
 your code is a `CP001` just like `from mypkg.helpers import Widget` is.
 
 With `scope = "first-party"`, only imports whose top-level package is one of
-your analysis roots are considered; stdlib and third-party imports are passed
-over without being resolved at all. This is a useful staging step on a large
-legacy codebase: fix your own modules first, then widen to `"all"`.
+your analysis roots are considered. A stdlib or third-party import is passed
+over without being classified: it is not reported, and the interpreter probe
+never imports its package to ask about it. This is a useful staging step on a
+large legacy codebase: fix your own modules first, then widen to `"all"`.
+
+One third-party name is still classified: one a first-party module re-exports
+(`from os import path` in your package's `__init__.py`). An import of it *from
+your package* is first-party, and whether it names a module depends on what
+`os.path` is.
 
 The scope governs `--fix` and `--diff` exactly as it governs checking: both
 modes make one decision per import, so an import that is not reported is never

@@ -54,8 +54,10 @@ src/mypkg/stencils.py:4:0: CP004 'broadcast' from 'gt4py.next' skipped by config
 ```
 
 `CP002` findings are only produced for imports cleanporter actually looked at:
-exempt modules and (under `scope = "first-party"`) third-party modules are
-skipped before resolution is attempted.
+exempt modules and (under `scope = "first-party"`) stdlib and third-party
+modules are passed over before they are classified. Under that scope the probe
+still classifies a third-party name that one of your own modules re-exports,
+because an import of it from your package depends on what it is.
 
 !!! note "`CP003` findings count toward the failure exit code"
 
