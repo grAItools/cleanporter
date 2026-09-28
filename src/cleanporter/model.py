@@ -63,27 +63,38 @@ class Finding:
             Status.SKIPPED_BY_CONFIG: "CP004",
         }[self.status]
 
-    def format(self) -> str:
-        loc = f"{self.path}:{self.line}:{self.column}"
-        if self.status is Status.VIOLATION:
-            token = self.parent.rsplit(".", 1)[-1]
-            msg = (
+    @property
+    def replacement(self) -> str | None:
+        """The spelling a `CP001` use site takes after the fix (``helpers.Widget``).
+
+        ``None`` for every other status: nothing is rewritten for those.
+        """
+        if self.status is not Status.VIOLATION:
+            return None
+        return f"{self.parent.rsplit('.', 1)[-1]}.{self.name}"
+
+    @property
+    def message(self) -> str:
+        """What `format` says after ``PATH:LINE:COLUMN: CODE``."""
+        if self.replacement is not None:
+            return (
                 f"imports object '{self.name}' from module '{self.parent}'; "
-                f"import the module and use '{token}.{self.name}'"
+                f"import the module and use '{self.replacement}'"
             )
-        elif self.status is Status.UNRESOLVED and self.name == "?":
+        if self.status is Status.UNRESOLVED and self.name == "?":
             # A whole file that could not be read, decoded, parsed or written.
-            msg = f"file not processed: {self.detail}"
-        elif self.status is Status.UNRESOLVED:
-            msg = (
+            return f"file not processed: {self.detail}"
+        if self.status is Status.UNRESOLVED:
+            return (
                 f"could not determine whether '{self.parent}.{self.name}' "
                 f"is a module: {self.detail}"
             )
-        elif self.status is Status.SKIPPED_BY_CONFIG:
-            msg = f"{self._subject()} skipped by configuration: {self.detail}"
-        else:
-            msg = f"{self._subject()} not rewritten: {self.detail}"
-        return f"{loc}: {self.code} {msg}"
+        if self.status is Status.SKIPPED_BY_CONFIG:
+            return f"{self._subject()} skipped by configuration: {self.detail}"
+        return f"{self._subject()} not rewritten: {self.detail}"
+
+    def format(self) -> str:
+        return f"{self.path}:{self.line}:{self.column}: {self.code} {self.message}"
 
     def _subject(self) -> str:
         return "file" if self.name == "?" else f"'{self.name}' from '{self.parent}'"

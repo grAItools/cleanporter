@@ -30,6 +30,14 @@ for patch in result.patches:
 raise SystemExit(result.exit_code(strict=cfg.treat_unresolved_as_error))
 ```
 
+Each finding is a `cleanporter.model.Finding`: `format()` is the text
+report's line, `message` the part after the code, and `replacement` the
+spelling a `CP001` use site takes after the fix. The command's
+`--format json|sarif|github` renderers are deliberately private — the
+[formats](usage.md#machine-readable-output) are the interface, not the
+functions — so a program that wants them runs the command, or builds its own
+report from a `RunResult`.
+
 `run`, `Mode`, `RunResult`, `build` and `Project` are exported from
 `cleanporter` itself. `FilePatch` and `Listener` are not: import them from
 `cleanporter.engine` (`from cleanporter import engine`, then

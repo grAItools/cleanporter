@@ -16,6 +16,15 @@ interpreter detected for the probe, the ``--fix`` reminder) go to stderr in
 every mode. The patch is written as bytes, in each file's own encoding and
 line endings, so that it applies to the file on disk.
 
+``--format json|sarif|github`` swaps the report for one document on stdout,
+rendered by `_report` once the run is over, and stdout then carries *only*
+that document. Everything else the text report would print -- warnings,
+notes, ``fixed:`` lines, the summary -- goes to stderr, as it does while a
+patch is on stdout; findings and file-level errors are in the document
+instead. A patch has a place only in JSON (``patches``), so ``--diff`` with
+``sarif`` or ``github`` is a usage error, and ``--fix`` with them writes
+without printing the diff.
+
 A file that cannot be read, decoded, parsed or written is reported with its
 path and makes the exit code 2, and every other file is still processed.
 """
@@ -29,8 +38,8 @@ import sys
 from typing import TextIO
 
 import cleanporter
+from cleanporter import _report, engine, model
 from cleanporter import config as config_lib
-from cleanporter import engine, model
 
 #: Printed to stderr after `--fix` writes anything (see `run`).
 _CROSS_FILE_NOTE = (
@@ -38,6 +47,11 @@ _CROSS_FILE_NOTE = (
 )
 
 _EXIT_ERROR = 2  # the rest of the exit-code rule is `engine.RunResult.exit_code`
+
+#: ``--format`` values; the default, ``text``, is the human report.
+_FORMATS = ("text", "json", "sarif", "github")
+#: The formats with nowhere to put a patch, so ``--diff`` is refused with them.
+_PATCHLESS_FORMATS = frozenset({"sarif", "github"})
 
 
 def _non_empty(value: str) -> str:
@@ -109,6 +123,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="list the imports a [tool.cleanporter.skip] rule took out (CP004)",
     )
     parser.add_argument(
+        "--format",
+        choices=_FORMATS,
+        default="text",
+        help="report format: 'text' (default), 'json', 'sarif' (2.1.0) or 'github' "
+        "(workflow commands); a structured format puts only its document on stdout",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"cleanporter {cleanporter.__version__}"
     )
     return parser
@@ -153,6 +174,24 @@ class _Printer(engine.Listener):
             print(f"fixed: {patch.path}", file=self._report)
 
 
+class _StructuredPrinter(_Printer):
+    """`_Printer` for ``--format json|sarif|github``: stdout is kept for the document.
+
+    Warnings and notes still stream to stderr; a file-level error and a patch
+    are in the document instead, so only the ``fixed:`` line is printed.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(sys.stderr)
+
+    def error(self, finding: model.Finding) -> None:
+        pass
+
+    def patch(self, patch: engine.FilePatch) -> None:
+        if patch.written:
+            print(f"fixed: {patch.path}", file=self._report)
+
+
 def run(args: argparse.Namespace) -> int:
     anchor = pathlib.Path(args.paths[0]).resolve()
     try:
@@ -162,11 +201,15 @@ def run(args: argparse.Namespace) -> int:
         return _EXIT_ERROR
 
     mode = _mode(args)
-    # Everything that is not the patch -- warnings, parse errors, findings, the
-    # summary -- goes here; see the stream contract in the module docstring.
-    report = sys.stdout if mode is engine.Mode.CHECK else sys.stderr
+    structured = args.format != "text"
+    # Everything that is not the patch (or the document) -- warnings, parse
+    # errors, findings, the summary -- goes here; see the stream contract in
+    # the module docstring.
+    report = sys.stdout if mode is engine.Mode.CHECK and not structured else sys.stderr
     paths = [pathlib.Path(p) for p in args.paths]
-    result = engine.run(paths, config, mode, listener=_Printer(report))
+    listener = _StructuredPrinter() if structured else _Printer(report)
+    result = engine.run(paths, config, mode, listener=listener)
+    strict = config.treat_unresolved_as_error
 
     if result.wrote:
         # The one place the tool changes something it cannot fully check: a
@@ -177,6 +220,19 @@ def run(args: argparse.Namespace) -> int:
         # patch on stdout stays a patch.
         print(_CROSS_FILE_NOTE, file=sys.stderr)
 
+    if structured:
+        print(_summary(result), file=report)
+        sys.stdout.write(
+            _report.render(
+                args.format,
+                result,
+                strict=strict,
+                show_skipped=args.show_skipped,
+                cwd=pathlib.Path.cwd(),
+            )
+        )
+        return result.exit_code(strict=strict)
+
     for finding in result.findings:
         # CP004 is the author's own configuration reporting back, so it is
         # counted but not printed: a project that skips a thousand imports
@@ -186,15 +242,18 @@ def run(args: argparse.Namespace) -> int:
         print(finding.format(), file=report)
 
     print(file=report)
-    print(
-        f"checked {result.files_checked} file(s)"
-        + (f", fixed {result.changed}" if mode is engine.Mode.FIX else "")
-        + f": {result.violations} violation(s), {result.skipped} not rewritten, "
-        f"{result.unresolved} unresolved, {result.skipped_by_config} skipped by config",
-        file=report,
-    )
+    print(_summary(result), file=report)
+    return result.exit_code(strict=strict)
 
-    return result.exit_code(strict=config.treat_unresolved_as_error)
+
+def _summary(result: engine.RunResult) -> str:
+    """The closing ``checked N file(s): ...`` line."""
+    return (
+        f"checked {result.files_checked} file(s)"
+        + (f", fixed {result.changed}" if result.mode is engine.Mode.FIX else "")
+        + f": {result.violations} violation(s), {result.skipped} not rewritten, "
+        f"{result.unresolved} unresolved, {result.skipped_by_config} skipped by config"
+    )
 
 
 def _write_patch(data: bytes) -> None:
@@ -215,7 +274,14 @@ def _write_patch(data: bytes) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.format in _PATCHLESS_FORMATS and args.diff and not args.fix:
+        # Exits 2, as every other usage error does.
+        parser.error(
+            f"--diff cannot be combined with --format {args.format}, which has no place "
+            "for a patch; use --format json (its 'patches' list) or the text format"
+        )
     try:
         return run(args)
     except (OSError, UnicodeDecodeError) as exc:
