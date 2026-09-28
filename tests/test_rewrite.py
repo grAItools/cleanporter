@@ -764,9 +764,9 @@ def test_literal_string_argument_is_not_treated_as_a_type_reference():
     # `Literal['Thing']`'s argument is a value, not a type reference.
     # Treating it as one and renaming it would silently change the literal
     # a runtime `==` comparison depends on (fix-round-1 Critical 2). Once
-    # excluded from `_annotation_strings`, the string is untouched by the
-    # annotation-rewrite pass and falls back to the ordinary string-mention
-    # guard, which blocks conservatively instead of guessing.
+    # excluded from `_annotations.annotation_strings`, the string is
+    # untouched by the annotation-rewrite pass and falls back to the ordinary
+    # string-mention guard, which blocks conservatively instead of guessing.
     src = (
         "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "from typing import Literal\n"
@@ -823,8 +823,8 @@ def test_forward_ref_inside_list_and_dict_subscript_still_renamed():
 
 def test_star_args_lazy_string_annotation_is_renamed():
     # `*args`/`**kwargs` annotations were not absorbed by
-    # `_annotation_strings`, so a lazy string there fell through to the
-    # string-mention guard and blocked the file needlessly.
+    # `_annotations.annotation_strings`, so a lazy string there fell through
+    # to the string-mention guard and blocked the file needlessly.
     src = (
         "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(*args: 'Thing', **kwargs: 'Thing') -> None: ...\n"
@@ -838,8 +838,9 @@ def test_star_args_lazy_string_annotation_is_renamed():
 def test_fully_stringified_literal_annotation_blocks_payload_intact():
     # When the *entire* annotation is one string, there is no `Subscript`
     # node in the CST for the fix-round-1 narrowing to see -- the content
-    # only becomes a `Subscript` once parsed. `_rewrite_type_expr` reapplies
-    # the same Literal-is-opaque rule to the *parsed* content, so nothing
+    # only becomes a `Subscript` once parsed.
+    # `_annotations._rewrite_type_expr` reapplies the same
+    # Literal-is-opaque rule to the *parsed* content, so nothing
     # changes and the string is left for the ordinary guard to block
     # (fix-round-2 Critical 2, part A).
     src = (
@@ -871,8 +872,9 @@ def test_fully_stringified_dotted_name_is_not_corrupted():
     # `"other.Thing"` parses to `Attribute(value=Name('other'), attr=Name(
     # 'Thing'))`. `Thing` there is the `.attr` half of an `Attribute`, a
     # syntax slot rather than an independent reference, so
-    # `_rewrite_type_expr` never visits it -- nothing changes, and the
-    # string blocks instead of becoming a fabricated `other.mod.Thing`.
+    # `_annotations._rewrite_type_expr` never visits it -- nothing changes,
+    # and the string blocks instead of becoming a fabricated
+    # `other.mod.Thing`.
     src = (
         "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         'def g(a: "other.Thing") -> None: ...\n'
@@ -889,8 +891,9 @@ def test_fully_stringified_list_subscript_inner_ref_is_still_renamed():
     # `list[...]` slice is not `Literal`/`Annotated`, so its element is a
     # real type. The inner `'Thing'` is itself a nested forward-reference
     # string once the outer string is parsed, and is recursed into via
-    # `_rewrite_string_content` -- proving the parse-based approach handles
-    # a doubly-stringified annotation, not just a singly-stringified one.
+    # `_annotations.rewrite_string_content` -- proving the parse-based
+    # approach handles a doubly-stringified annotation, not just a
+    # singly-stringified one.
     src = (
         "from __future__ import annotations\n" + _TC_HEAD + "    from pkg.sub.mod import Thing\n"
         "def g(a: \"list['Thing']\") -> None: ...\n"
@@ -929,12 +932,13 @@ def test_double_quoted_lazy_annotation_keeps_its_quote_style():
 
 
 def test_escaped_quote_annotation_blocks_instead_of_corrupting():
-    # `_rewrite_string_content` decodes the string via `evaluated_value`
-    # (unescaping `\'` to `'`), renames, and re-wraps the render in the
-    # *original* quote character. If that character reappears inside the
-    # render -- as it does here, since the content is `list['Thing']` and
-    # the outer quote is also `'` -- naively re-wrapping would silently
-    # terminate the string early and corrupt the file (fix-round-3 New 1).
+    # `_annotations.rewrite_string_content` decodes the string via
+    # `evaluated_value` (unescaping `\'` to `'`), renames, and re-wraps the
+    # render in the *original* quote character. If that character reappears
+    # inside the render -- as it does here, since the content is
+    # `list['Thing']` and the outer quote is also `'` -- naively re-wrapping
+    # would silently terminate the string early and corrupt the file
+    # (fix-round-3 New 1).
     # Before this fix, `fix_record`'s own re-parse safety net caught the
     # resulting syntax error and reverted to "error" status; the correct
     # outcome is a real CP003 block, not an internal-error revert -- a

@@ -30,7 +30,8 @@ the author's own configuration reporting back, printed only under
 
 The code is `src/cleanporter/`; every module opens with a docstring giving its
 role and reasoning, at length in `guards.py`, `firstparty.py`, `resolver.py`,
-`rewrite.py` and `_probe.py`. Read it before changing the module.
+`rewrite.py` (with `_annotations.py` and `_type_checking.py`, which it plans
+from) and `_probe.py`. Read it before changing the module.
 
 ## Commands
 
