@@ -130,6 +130,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A third-party package that prints on import no longer breaks the probe.**
+  Classifying `from P import S` imports `P`, and a `P/__init__.py` that prints
+  a banner wrote it wherever stdout was. Out of process (`--python`) that was
+  the channel carrying the probe's JSON reply, so one banner made the reply
+  unparseable and the *whole batch* came back undetermined: every third-party
+  import in the run became `CP002`, blamed on packages that imported fine
+  ("not importable in the target interpreter"). In process it landed on
+  cleanporter's own stdout, ahead of a `--diff` patch. The probe now sends what
+  packages print to stderr, and frames its reply so that output written below
+  Python (an extension module's `printf`, straight on file descriptor 1) cannot
+  corrupt it either.
+
+- **A failed out-of-process probe now says why.** A crash, a timeout or a
+  missing reply still reports the whole batch undetermined — the transport
+  never guesses — but a warning now names the interpreter, how it failed, and
+  the tail of its stderr, instead of discarding all of it.
+
 - **The replacement import is now checked to bind the module it names.** The
   fix for `from P.S import obj` is `from P import S` plus `S.obj` at every use
   site, and that statement binds `getattr(P, "S")` — so a `P/__init__.py` that

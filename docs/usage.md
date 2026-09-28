@@ -105,6 +105,8 @@ This matters if you intend to pipe anything.
   errors, findings, the `fixed: <path>` lines and the summary are all
   redirected to **stderr**. Diff headers are relative to the current working
   directory, so the stream is a valid patch that `git apply` accepts.
+  Anything a third-party package prints while it is imported to classify an
+  import goes to stderr too (see [How it works](how-it-works.md)).
 
 That is what makes this work:
 

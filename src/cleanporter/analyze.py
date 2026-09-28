@@ -451,7 +451,8 @@ def build(
     """Expand paths, parse files, build the resolver and warm its cache.
 
     Returns the parsed records, the resolver, any parse-error findings, and
-    any warnings produced while expanding ``paths`` (e.g. missing paths).
+    any warnings produced while expanding ``paths`` (e.g. missing paths) or
+    while probing the target interpreter (a probe batch that failed, and why).
     """
     files, warnings = discover.iter_python_files(paths, config)
     roots = tuple(config.root / r for r in config.source_roots)
@@ -512,4 +513,5 @@ def build(
         star |= star_imported_modules(rec.tree, rec.base_pkg)
     resolver.note_uses(uses, star)
     resolver.warm(pairs + replacement_pairs(pairs))
+    warnings.extend(resolver.take_warnings())
     return records, resolver, errors, warnings

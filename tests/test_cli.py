@@ -936,3 +936,51 @@ def test_a_rule_matching_the_rewritten_spelling_can_fail_a_run(project, capsys):
     assert cli.main(["--fix", str(project / "src")]) == 1
     err = capsys.readouterr().err
     assert "then covers" in err
+
+
+# -- third-party packages that print on import (B5) --------------------------
+
+
+def _noisy_package(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A third-party ``cli_noisy_pkg`` whose ``__init__`` prints a banner."""
+    site = tmp_path / "site"
+    (site / "cli_noisy_pkg").mkdir(parents=True)
+    (site / "cli_noisy_pkg" / "__init__.py").write_text(
+        "print('Welcome to noisy 1.0!')\n", encoding="utf-8"
+    )
+    (site / "cli_noisy_pkg" / "leaf.py").write_text("X = 1\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(site))
+    for dotted in ("cli_noisy_pkg", "cli_noisy_pkg.leaf"):
+        monkeypatch.delitem(sys.modules, dotted, raising=False)
+
+
+def test_a_package_that_prints_on_import_stays_out_of_the_patch(project, monkeypatch, capsys):
+    _noisy_package(project, monkeypatch)
+    (project / "src" / "demo" / "noisy_user.py").write_text(
+        "from cli_noisy_pkg import leaf\nvalue = leaf.X\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project)
+    cli.main(["--diff", "src"])
+    captured = capsys.readouterr()
+    assert "Welcome to noisy" in captured.err  # the package really was probed
+    assert captured.out.startswith("--- a/src/demo/consumer.py\n")
+    for line in captured.out.splitlines():
+        assert line[:1] in {"-", "+", "@", " "}, line
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_a_failed_probe_is_explained_in_a_warning(project, monkeypatch, capsys):
+    stub = project / "broken-python"
+    stub.write_text("#!/bin/sh\necho 'ImportError: no encodings' >&2\nexit 1\n", encoding="utf-8")
+    stub.chmod(0o755)
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from functools import partial\nf = partial(print)\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project)
+    rc = cli.main(["--python", str(stub), "src"])
+    out = capsys.readouterr().out
+    assert "cleanporter: warning: interpreter probe" in out
+    assert "exited with status 1" in out
+    assert "ImportError: no encodings" in out
+    assert "CP002" in out
+    assert rc == 0

@@ -167,13 +167,13 @@ def test_keys_are_nul_separated_so_the_map_is_json_safe():
 def test_main_reads_json_pairs_from_stdin_and_writes_the_map_to_stdout(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([["os", "path"]])))
     assert _probe._main() == 0
-    assert json.loads(capsys.readouterr().out) == {"os\x00path": True}
+    assert _probe.read_reply(capsys.readouterr().out) == {"os\x00path": True}
 
 
 def test_main_accepts_empty_stdin(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("  \n"))
     assert _probe._main() == 0
-    assert json.loads(capsys.readouterr().out) == {}
+    assert _probe.read_reply(capsys.readouterr().out) == {}
 
 
 def test_the_real_subprocess_bridge_round_trips():
@@ -186,7 +186,7 @@ def test_the_real_subprocess_bridge_round_trips():
         text=True,
         check=True,
     )
-    assert json.loads(proc.stdout) == {
+    assert _probe.read_reply(proc.stdout) == {
         "os\x00path": True,
         "functools\x00partial": False,
         "no_such_module_xyz\x00z": None,
@@ -245,3 +245,129 @@ def test_a_probe_that_hangs_is_killed_and_makes_every_pair_unknown(tmp_path, mon
     monkeypatch.setattr(resolver_module, "_PROBE_TIMEOUT", 0.3)
     resolver = _resolver(_fake_interpreter(tmp_path, "sleep 30"))
     assert resolver.is_module("os", "path") is None
+
+
+# -- packages that print on import (B5) ---------------------------------------
+
+#: An ``__init__`` that announces itself both through Python's ``sys.stdout``
+#: and straight on file descriptor 1, the way an extension module's ``printf``
+#: would -- below anything a ``sys.stdout`` swap can reach.
+_NOISY_INIT = (
+    "import os\n"
+    "print('Welcome to noisy 1.0!')\n"
+    'os.write(1, b\'{"C-level": "banner"}\\n\')\n'
+    "def greet():\n"
+    "    return 1\n"
+)
+
+
+def test_read_reply_ignores_noise_on_either_side_of_the_frame():
+    framed = _probe.REPLY_BEGIN + json.dumps({"a\x00b": True}) + _probe.REPLY_END
+    assert _probe.read_reply(f"Welcome!\n{{}}\n{framed}late C banner\n") == {"a\x00b": True}
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        '{"os\\u0000path": true}',
+        _probe.REPLY_BEGIN + '{"unterminated": true}',
+        _probe.REPLY_BEGIN + "not json" + _probe.REPLY_END,
+        _probe.REPLY_BEGIN + "[1, 2]" + _probe.REPLY_END,
+    ],
+)
+def test_read_reply_is_none_for_anything_but_a_framed_json_object(stdout):
+    assert _probe.read_reply(stdout) is None
+
+
+def test_main_sends_what_a_package_prints_to_stderr(tmp_path, monkeypatch, capsys):
+    _package_on_path(tmp_path, monkeypatch, "probe_noisy_main_pkg", "print('Welcome!')\n")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps([["probe_noisy_main_pkg", "leaf"]])))
+    assert _probe._main() == 0
+    captured = capsys.readouterr()
+    assert captured.out.startswith(_probe.REPLY_BEGIN)
+    assert _probe.read_reply(captured.out) == {"probe_noisy_main_pkg\x00leaf": True}
+    assert "Welcome!" in captured.err
+    assert sys.stdout is not sys.stderr
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_a_package_that_prints_on_import_does_not_spoil_the_subprocess_batch(tmp_path, monkeypatch):
+    """One banner used to make every third-party pair in the run CP002."""
+    _package_on_path(tmp_path, monkeypatch, "probe_noisy_pkg", _NOISY_INIT)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    resolver = _resolver(_fake_interpreter(tmp_path, f'exec {sys.executable} "$@"'))
+    resolver.warm([("probe_noisy_pkg", "leaf"), ("probe_noisy_pkg", "greet"), ("os", "path")])
+    assert resolver.is_module("probe_noisy_pkg", "leaf") is True
+    assert resolver.is_module("probe_noisy_pkg", "greet") is False
+    assert resolver.is_module("os", "path") is True
+    assert resolver.take_warnings() == []
+
+
+def test_a_package_that_prints_on_import_writes_nothing_on_stdout_in_process(
+    tmp_path, monkeypatch, capsys
+):
+    _package_on_path(tmp_path, monkeypatch, "probe_noisy_inproc_pkg", "print('Welcome!')\n")
+    resolver = resolver_module.Resolver(firstparty.ModuleMap([]))
+    resolver.warm([("probe_noisy_inproc_pkg", "leaf")])
+    assert resolver.is_module("probe_noisy_inproc_pkg", "leaf") is True
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Welcome!" in captured.err
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_a_failed_probe_says_why_with_the_tail_of_its_stderr(tmp_path):
+    stub = _fake_interpreter(tmp_path, "echo 'Traceback: boom' >&2\nexit 3")
+    resolver = _resolver(stub)
+    resolver.warm([("os", "path"), ("functools", "partial")])
+    assert resolver.is_module("os", "path") is None
+    (warning,) = resolver.take_warnings()
+    assert str(stub) in warning
+    assert "exited with status 3" in warning
+    assert "Traceback: boom" in warning
+    assert "2 import(s) left unresolved" in warning
+    assert resolver.take_warnings() == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_a_probe_with_no_readable_reply_says_so(tmp_path):
+    resolver = _resolver(_fake_interpreter(tmp_path, "echo not-json"))
+    assert resolver.is_module("os", "path") is None
+    (warning,) = resolver.take_warnings()
+    assert "sent no readable reply" in warning
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_a_probe_that_hangs_says_it_timed_out(tmp_path, monkeypatch):
+    monkeypatch.setattr(resolver_module, "_PROBE_TIMEOUT", 0.3)
+    resolver = _resolver(_fake_interpreter(tmp_path, "sleep 30"))
+    assert resolver.is_module("os", "path") is None
+    (warning,) = resolver.take_warnings()
+    assert "timed out" in warning
+
+
+def test_an_interpreter_that_cannot_be_run_says_so(tmp_path):
+    resolver = _resolver(tmp_path / "no-such-python")
+    assert resolver.is_module("os", "path") is None
+    (warning,) = resolver.take_warnings()
+    assert "could not be run" in warning
+
+
+def test_a_long_stderr_is_trimmed_to_its_tail():
+    tail = resolver_module._stderr_tail("\n".join(f"line {i}" for i in range(1000)))
+    assert tail.endswith("line 999")
+    assert "line 994" not in tail
+    assert resolver_module._stderr_tail(b"x" * 5000).startswith("; stderr: ...")
+    assert resolver_module._stderr_tail(None) == ""
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_a_probe_that_fails_the_same_way_repeatedly_is_reported_once(tmp_path):
+    """Lookups `warm` did not foresee probe one by one; say the failure once."""
+    resolver = _resolver(_fake_interpreter(tmp_path, "echo 'boom' >&2\nexit 1"))
+    resolver.warm([("os", "path"), ("functools", "partial")])
+    for name in ("abc", "OrderedDict", "deque"):
+        assert resolver.is_module("collections", name) is None
+    (warning,) = resolver.take_warnings()
+    assert "5 import(s) left unresolved" in warning
