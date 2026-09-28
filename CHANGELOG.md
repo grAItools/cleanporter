@@ -14,8 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Breaking under the pre-1.0 policy above, so the next release is `0.4.0`, not a
-patch:
+## [0.4.0] - 2026-09-28
+
+Breaking under the pre-1.0 policy above:
 
 - `cleanporter.build` returns a `Project` rather than a 4-tuple; `analyze.build`
   and `Resolver.note_uses` are removed, and `Resolver` takes a required
@@ -861,6 +862,6 @@ never-guess design, and the rewriter gained its all-or-nothing safety model.
   the annotation rewrite.
 - An existing binding that is rebound or deleted is never reused for a rewrite.
 
-[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/grAItools/cleanporter/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/grAItools/cleanporter/releases/tag/v0.2.0
+[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/grAItools/cleanporter/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/grAItools/cleanporter/releases/tag/v0.3.0
