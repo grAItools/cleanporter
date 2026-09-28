@@ -842,7 +842,9 @@ class _Fixer(cst.CSTTransformer):
             if not isinstance(scope, metadata.GlobalScope):
                 continue
             parent = _imports.resolve_parent(imp, self._rec.base_pkg)
-            if parent is None:
+            # An out-of-scope parent is never rewritten, so its entry would
+            # never be looked up -- and asking would classify it after all.
+            if parent is None or not self._decider.in_scope(parent):
                 continue
             relative = _imports.relative_level(imp) > 0
             for name, asname, _alias in _imports.imported_names(imp):

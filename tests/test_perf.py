@@ -33,25 +33,59 @@ def test_positions_are_computed_once_and_cached():
 
 
 def test_repeated_analysis_does_not_rewalk_the_tree(monkeypatch):
-    import cleanporter.analyze as analyze_mod
-
     rec = _record()
     mm = firstparty.ModuleMap.from_paths([FIXTURES / "pkg", rec.path])
     resolver = resolver_lib.Resolver(mm)
     resolver.warm(analyze.collect_pairs([rec]))
 
-    calls = {"n": 0}
-    real = analyze_mod.iter_units
+    assert rec.units, "the one walk happens here, before counting starts"
+    walks = {"n": 0}
+    real_visit = cst.Module.visit
 
-    def counting(tree, base_pkg):
-        calls["n"] += 1
-        return real(tree, base_pkg)
+    def counting_visit(self, visitor):
+        walks["n"] += 1
+        return real_visit(self, visitor)
 
-    monkeypatch.setattr(analyze_mod, "iter_units", counting)
+    monkeypatch.setattr(cst.Module, "visit", counting_visit)
 
     analyze.analyze_record(rec, resolver, config.Config())
     analyze.analyze_record(rec, resolver, config.Config())
-    assert calls["n"] == 0, "the cached rec.units must be reused, not recomputed"
+    assert walks["n"] == 0, "the cached facts and units must be reused, not recomputed"
+    assert rec._positions is None, "a check needs no position metadata"
+
+
+def test_build_walks_each_tree_exactly_once(monkeypatch, tmp_path):
+    """Every fact `build` needs comes from one visitor pass per file.
+
+    It used to walk each tree seven times -- once per question, and
+    `max_relative_level` twice -- which was most of what a check cost.
+    """
+    pkg = tmp_path / "pkg"
+    (pkg / "sub").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "sub" / "__init__.py").write_text("from .mod import *\n")
+    (pkg / "sub" / "mod.py").write_text("THING = 1\n")
+    (pkg / "a.py").write_text(
+        "import os\nfrom .sub.mod import THING\nfrom ..outside import x\n"
+        "from pkg import sub\nprint(os.sep, sub.mod.THING, THING)\n"
+    )
+    walks: list[cst.Module] = []
+    real_visit = cst.Module.visit
+
+    def counting_visit(self, visitor):
+        walks.append(self)
+        return real_visit(self, visitor)
+
+    monkeypatch.setattr(cst.Module, "visit", counting_visit)
+    records, _resolver, errors, _warnings = analyze.build([pkg], config.Config(root=tmp_path))
+
+    assert not errors
+    assert len(records) == 4
+    assert len(walks) == len(records)
+    assert {id(tree) for tree in walks} == {id(rec.tree) for rec in records}
+    for rec in records:
+        assert rec._facts is not None, "build hands its facts to the record"
+        assert rec._positions is None, "and resolves no position metadata"
 
 
 def test_no_skip_walk_without_rules():
