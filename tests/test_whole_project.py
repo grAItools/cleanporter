@@ -116,15 +116,25 @@ def test_an_excluded_listed_file_is_not_reported(tree: pathlib.Path) -> None:
     assert engine.run([generated], cfg).files_checked == 1
 
 
-def test_a_listed_file_outside_the_root_is_analysed_and_reported(
+def test_the_library_refuses_a_listed_file_outside_the_root(
     tree: pathlib.Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
+    """Refused by the engine itself, so a library caller cannot skip the check."""
     outside = tmp_path_factory.mktemp("elsewhere") / "script.py"
-    outside.write_text("from os.path import join\n\njoin\n", encoding="utf-8")
+    before = "from os.path import join\n\njoin\n"
+    outside.write_text(before, encoding="utf-8")
+    consumer = tree / "consumer.py"
     cfg = config.Config(root=tree, python="self")
-    result = engine.run([outside], cfg, whole_project=True)
-    assert _codes(result) == [("script.py", "CP001")]
-    assert result.files_checked == 1
+    result = engine.run([consumer, outside], cfg, engine.Mode.FIX, whole_project=True)
+    [error] = result.errors
+    assert error.path == outside
+    assert "outside the project root" in error.detail
+    assert "files:" in error.detail
+    assert (result.findings, result.patches, result.files_checked) == ((), (), 0)
+    assert result.exit_code() == 2
+    # The whole run is refused: not even the file inside the root is fixed.
+    assert outside.read_text(encoding="utf-8") == before
+    assert consumer.read_text(encoding="utf-8") == "from demo import helper\n\nhelper()\n"
 
 
 def test_a_missing_listed_path_is_a_warning(tree: pathlib.Path) -> None:
@@ -171,44 +181,64 @@ def test_cli_without_a_pyproject_is_an_error(tmp_path: pathlib.Path, capsys) -> 
     assert "needs a pyproject.toml" in capsys.readouterr().err
 
 
-@pytest.fixture
-def stray(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
-    """A clean file under no pyproject.toml, outside every project."""
-    path = tmp_path_factory.mktemp("stray") / "stray.py"
-    path.write_text("import os\n\nos.sep\n", encoding="utf-8")
-    assert config.find_pyproject(path) is None
-    return path
-
-
 @pytest.mark.parametrize("stray_first", [True, False])
-def test_the_project_does_not_depend_on_which_file_comes_first(
-    tree: pathlib.Path, stray: pathlib.Path, capsys, *, stray_first: bool
+def test_a_stray_file_under_no_pyproject_is_refused(
+    tmp_path: pathlib.Path, monkeypatch, capsys, *, stray_first: bool
 ) -> None:
-    """pre-commit lists files in no promised order; the project is the first with one."""
-    listed = [str(stray), str(tree / "demo" / "__init__.py")]
-    rc = cli.main(["--whole-project", *(listed if stray_first else listed[::-1])])
-    out = capsys.readouterr().out
-    # consumer.py was read either way: its use of the re-export declines the rewrite.
-    assert "__init__.py:1:0: CP003 " in out
-    assert "checked 2 file(s)" in out
-    assert rc == 1
+    """``scripts/`` beside the project: fixed as an outside file, it broke its neighbours.
+
+    ``scripts/util.py`` re-exports ``helper``, which ``scripts/run.py``
+    imports from it. Judged on ``py/``'s evidence, ``run.py`` was never read
+    and the re-export went. Refused in either order, and nothing is written.
+    """
+    (tmp_path / "py").mkdir()
+    (tmp_path / "py" / "pyproject.toml").write_text('[project]\nname = "p"\n', "utf-8")
+    (tmp_path / "py" / "app.py").write_text("import os\n", encoding="utf-8")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "lib.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    util = "from lib import helper\n\n\ndef main():\n    return helper()\n"
+    (scripts / "util.py").write_text(util, encoding="utf-8")
+    (scripts / "run.py").write_text("from util import helper\n\nhelper()\n", "utf-8")
+    assert config.find_pyproject(scripts / "util.py") is None
+    monkeypatch.chdir(tmp_path)
+    listed = ["py/app.py", "scripts/util.py"]
+    rc = cli.main(["--whole-project", "--fix", *(listed if stray_first else listed[::-1])])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "scripts/util.py:1:0: CP002 file not processed: outside the project root py" in err
+    assert (scripts / "util.py").read_text(encoding="utf-8") == util
 
 
-def test_a_symlink_to_a_file_outside_the_project_belongs_to_the_project(
-    tree: pathlib.Path, stray: pathlib.Path, capsys
+def test_a_symlink_into_another_project_is_refused(
+    tree: pathlib.Path, tmp_path_factory: pytest.TempPathFactory, capsys
 ) -> None:
-    """Placed by where it is listed, not by its target, which has no pyproject.toml."""
-    stray.write_text("from os.path import join\n\njoin\n", encoding="utf-8")
+    """Inside the root as written, in another project once resolved."""
+    other = tmp_path_factory.mktemp("other")
+    (other / "pyproject.toml").write_text('[project]\nname = "other"\n', encoding="utf-8")
+    target = other / "mod.py"
+    target.write_text("from os.path import join\n\njoin\n", encoding="utf-8")
     link = tree / "linked.py"
     try:
-        link.symlink_to(stray)
+        link.symlink_to(target)
     except OSError:  # pragma: no cover - e.g. Windows without the privilege
         pytest.skip("cannot create a symlink here")
-    rc = cli.main(["--whole-project", "--python", "self", str(link)])
-    captured = capsys.readouterr()
-    assert "needs a pyproject.toml" not in captured.err
-    assert "CP001 imports object 'join'" in captured.out
-    assert "checked 1 file(s)" in captured.out
+    rc = cli.main(["--whole-project", "--fix", str(link)])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "outside the project root" in err
+    assert "through a symlink" in err
+    assert target.read_text(encoding="utf-8") == "from os.path import join\n\njoin\n"
+
+
+def test_a_symlink_within_the_root_is_accepted(tree: pathlib.Path, capsys) -> None:
+    link = tree / "alias.py"
+    try:
+        link.symlink_to(tree / "consumer.py")
+    except OSError:  # pragma: no cover - e.g. Windows without the privilege
+        pytest.skip("cannot create a symlink here")
+    rc = cli.main(["--whole-project", str(link)])
+    assert "CP001" in capsys.readouterr().out
     assert rc == 1
 
 
@@ -232,8 +262,9 @@ def test_files_from_two_projects_are_refused(
     err = capsys.readouterr().err
     assert rc == 2
     assert "judges one project per run" in err
-    assert str(tree / "pyproject.toml") in err
-    assert str(nested / "pyproject.toml") in err
+    # Named relative to the cwd, with the listed paths that belong to each.
+    assert "examples/ex/pyproject.toml (examples/ex/a.py)" in err
+    assert " pyproject.toml (demo/__init__.py)" in err
     assert "files:" in err
     assert (tree / "demo" / "__init__.py").read_text(encoding="utf-8") == _REEXPORT
 

@@ -102,8 +102,8 @@ repos:
 ```
 
 The hooks run with `--whole-project`: a changed file is judged on the evidence
-of a full run over the `pyproject.toml` root, plus any listed outside files,
-and only the changed files are reported. See
+of a full run over its `pyproject.toml` root, and only the changed files are
+reported. See
 [pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
 
 ## Exit codes

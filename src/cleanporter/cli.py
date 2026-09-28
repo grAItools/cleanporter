@@ -172,11 +172,11 @@ def _project_anchor(
 
     Each listed path's nearest pyproject.toml is looked up from the path as
     written, not from a symlink's target. Every path that has one must share
-    it: that is the project, whatever order pre-commit lists files in. A path
-    under none rides along as an outside file. Two projects are refused, not
-    reconciled: picking one leaves the other's consumers out of the evidence,
-    and a file of the other would be fixed as an outside file on none of its
-    own project's evidence -- the re-export a consumer there imports deleted.
+    it: that is the project, whatever order pre-commit lists files in. Two
+    projects are refused, not reconciled: whichever was picked, a file of the
+    other would be judged on evidence that is not its own project's. A path
+    under none is not placed here; the engine refuses it, and any symlink
+    leading out of the project, as outside the root (`engine.run`).
 
     The project's first path goes first because the engine names the first
     path's configuration in its mismatch warning. Returns the error message
@@ -199,20 +199,27 @@ def _project_anchor(
     return pyproject.parent, [first, *(p for p in paths if p is not first)]
 
 
+def _relative(path: pathlib.Path) -> str:
+    """*path* relative to the cwd when it is under it, else as it is."""
+    try:
+        return str(path.relative_to(pathlib.Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
 def _several_projects(owners: dict[pathlib.Path, list[pathlib.Path]]) -> str:
     """The `--whole-project` refusal for listed paths from several projects."""
     shown = 3
     projects = "; ".join(
-        f"{pyproject} ({', '.join(str(p) for p in listed[:shown])}"
+        f"{_relative(pyproject)} ({', '.join(str(p) for p in listed[:shown])}"
         + (f" and {len(listed) - shown} more" if len(listed) > shown else "")
         + ")"
         for pyproject, listed in owners.items()
     )
     return (
-        f"--whole-project judges one project per run, but the listed paths belong to "
-        f"{len(owners)}: {projects}. Run once per project: in pre-commit, one hook entry "
-        "per project with its own `files:` pattern, or `exclude:` a nested project "
-        "(examples/, benchmarks/) from the outer one's hook"
+        f"--whole-project judges one project per run; these paths span {len(owners)}: "
+        f"{projects}. Give each project its own hook entry (`files:`), or `exclude:` a "
+        "nested one"
     )
 
 

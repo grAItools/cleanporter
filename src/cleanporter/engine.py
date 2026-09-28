@@ -50,11 +50,20 @@ partial tree, and two things a run knows come from the files it is given:
 
 So a whole-project run builds the `project_lib.Project` a full run over the
 project root (`config.Config.root`: the directory of the ``pyproject.toml``
-in use) plus any listed outside files would build, and then fixes, reports
-and counts only the files under the listed paths: every rewrite is judged on
-that run's evidence. Evidence still stops at the root, so a consumer in
-another project (a sibling uv workspace member, say) is as invisible as it
-is to any run. The root is walked like any directory, so a listed file the
+in use) would build, and then fixes, reports and counts only the files under
+the listed paths: every rewrite is judged on that run's evidence. Evidence
+still stops at the root, so a consumer in another project (a sibling uv
+workspace member, say) is as invisible as it is to any run.
+
+Every listed path must therefore lie inside the root, both as written
+(absolute, symlinks kept) and resolved. One that does not -- a stray script
+under no ``pyproject.toml``, a symlink into another project -- would be
+judged on evidence that is not its own tree's: its neighbours, or its real
+project's consumers, are never read, so a fix could delete what they import.
+It is refused, and so is the whole run: each such path is a
+`RunResult.errors` entry (exit 2) and nothing is analysed or written.
+
+The root is walked like any directory, so a listed file the
 configuration excludes (or one in a skipped directory) is not reported: a
 hook handed every changed file honours ``exclude`` as ``cleanporter .`` run
 from the project root does. A file elsewhere in the tree that cannot be read
@@ -192,7 +201,8 @@ class Listener:
 
     Every method does nothing; override the ones you want. The calls come in
     this order: the warning that the paths belong to different projects, then
-    (in a whole-project run) the listed paths that do not exist, then the
+    (in a whole-project run) the listed paths outside the root -- after which
+    a refused run stops -- and the listed paths that do not exist, then the
     notes (the interpreter detected for the probe), then the warnings from
     building the project (a missing path, nesting roots, a failed warm-up
     probe), then the files that could not be loaded (sorted by path; in a
@@ -264,8 +274,9 @@ def run(
     instead, and the run goes on.
 
     With *whole_project*, the whole tree under ``config.root`` is read for
-    evidence and only the files under *paths* are fixed, reported and counted
-    (see the module docstring).
+    evidence and only the files under *paths* are fixed, reported and counted;
+    a path outside the root, as written or resolved, refuses the whole run with
+    a `RunResult.errors` entry per such path (see the module docstring).
     """
     tally = _Tally(listener or _SILENT)
     # A whole-project run places a listed path by where it was listed, not by
@@ -273,6 +284,13 @@ def run(
     mismatch = config_lib.mismatch_warning(paths, resolve=not whole_project)
     if mismatch is not None:
         tally.warn(mismatch)
+    if whole_project:
+        escaped = [p for p in paths if _escapes(p, config.root)]
+        for path in escaped:
+            tally.fail(_escape_error(path, config.root))
+        if escaped:
+            # Refuse the run, not just the file: see the module docstring.
+            return RunResult(mode, 0, (), (), tuple(tally.errors), tuple(tally.warnings))
     analysed, reported = _scope(paths, config, tally) if whole_project else (paths, None)
     # Warmed with the whole tree's pairs, not just the reported files': probe
     # verdicts can depend on the batch they are asked in (`Resolver.warm`).
@@ -315,24 +333,79 @@ def _scope(
 ) -> tuple[list[pathlib.Path], frozenset[pathlib.Path]]:
     """A whole-project run's paths to analyse, and the resolved files to report.
 
-    The listed *paths* are expanded as any run expands them -- a missing one
-    is the usual warning -- and every file found is to be reported. What is
-    analysed is ``config.root``, plus each listed file outside it, which a
-    walk of the root would never reach. The root is spelled relative to the
-    cwd when it can be, so findings name files as a run over ``.`` would
-    rather than by absolute path.
+    The listed *paths*, all inside the root (`_escapes`), are expanded as any
+    run expands them -- a missing one is the usual warning -- and every file
+    found is to be reported. What is analysed is ``config.root``, spelled
+    relative to the cwd when it can be, so findings name files as a run over
+    ``.`` would rather than by absolute path.
     """
     files, warnings = discover.iter_python_files(paths, config)
     for warning in warnings:
         tally.warn(warning)
-    root = config.root.resolve()
     reported = frozenset(f.resolve() for f in files)
-    outside = [f for f in files if not f.resolve().is_relative_to(root)]
+    return [_relative(config.root)], reported
+
+
+def _relative(path: pathlib.Path) -> pathlib.Path:
+    """*path* relative to the cwd, or as it is when it cannot be."""
     try:
-        spelled = pathlib.Path(os.path.relpath(config.root, pathlib.Path.cwd()))
+        return pathlib.Path(os.path.relpath(path, pathlib.Path.cwd()))
     except ValueError:  # pragma: no cover - different drive on Windows
-        spelled = config.root
-    return [spelled, *outside], reported
+        return path
+
+
+def _escapes(path: pathlib.Path, root: pathlib.Path) -> bool:
+    """Whether listed *path* lies outside *root* as written or as resolved.
+
+    As written, the absolute path with ``..`` folded but symlinks kept must
+    have the root among its ancestors -- compared as files, so a root
+    reached through a symlinked directory still counts. Resolved, it must
+    sit under the resolved root, so a symlink cannot lead out of it.
+    """
+    return not (path.resolve().is_relative_to(root.resolve()) and _written_inside(path, root))
+
+
+def _written_inside(path: pathlib.Path, root: pathlib.Path) -> bool:
+    """Whether *root* is among the ancestors of *path* as written (see `_escapes`)."""
+    real_root = root.resolve()
+    written = _absolute(path)
+    return any(_same_dir(a, real_root) for a in (written, *written.parents))
+
+
+def _absolute(path: pathlib.Path) -> pathlib.Path:
+    """*path* made absolute with ``..`` folded and symlinks kept.
+
+    `os.path.abspath`, not `pathlib.Path.absolute`: it folds ``..``, so the
+    parents of the result are real ancestors; `pathlib.Path.resolve` would
+    follow the symlinks this keeps.
+    """
+    return pathlib.Path(os.path.abspath(path))  # noqa: PTH100 -- see the docstring
+
+
+def _same_dir(path: pathlib.Path, real_root: pathlib.Path) -> bool:
+    if path == real_root:
+        return True
+    try:
+        return path.is_dir() and path.samefile(real_root)
+    except OSError:
+        return False
+
+
+def _escape_error(path: pathlib.Path, root: pathlib.Path) -> model.Finding:
+    """The `RunResult.errors` entry refusing a whole-project run over *path*."""
+    # Inside as written, so outside only once resolved: a symlink leads out.
+    how = " through a symlink" if _written_inside(path, root) else ""
+    return model.Finding(
+        path,
+        1,
+        0,
+        "?",
+        "?",
+        model.Status.UNRESOLVED,
+        f"outside the project root {_relative(root)}{how}; --whole-project judges one "
+        "project's files on that project's evidence, so nothing was analysed or written. "
+        "Keep it out of this hook with `files:` or `exclude:`",
+    )
 
 
 def _process(

@@ -57,26 +57,32 @@ cross-file:
   a file under one can be given the wrong module name.
 
 `--whole-project` closes both. The run reads the whole project — the
-directory of the `pyproject.toml` above the first listed file that has one,
-walked as `cleanporter .` run from that directory would walk it — so every
-file's imports are evidence and every package is on the map, and then fixes,
+directory of the `pyproject.toml` the listed files sit under, walked as
+`cleanporter .` run from that directory would walk it — so every file's
+imports are evidence and every package is on the map, and then fixes,
 reports and counts only the files it was given. A rewrite is judged on the
-evidence of a full run over the `pyproject.toml` root, plus any listed
-outside files. The exit code is decided by the
-given files alone: a violation in a file you did not touch does not block
+evidence of a full run over the `pyproject.toml` root. The exit code is
+decided by the given files alone: a violation in a file you did not touch does not block
 your commit, and a file elsewhere that cannot be parsed is a warning (its
 imports are then missing from the evidence, which the warning says).
 
 Consequences worth knowing:
 
-- **A `pyproject.toml` is required, and only one.** The project is the
-  `pyproject.toml` the listed files sit under; a symlink is placed by where
-  it sits, not by its target. When no listed file has one there is no
-  telling where the project starts, and when they sit under *different*
-  ones there is no single project to judge them on: either way the run
-  exits `2` rather than pick one, whatever order pre-commit lists files in.
-  A file under no `pyproject.toml` at all is analysed alongside. Override
-  the hook's `entry` (`entry: cleanporter`) if your project has none.
+- **One `pyproject.toml`, and every file inside it.** The project is the
+  `pyproject.toml` the listed files sit under. When no listed file has one
+  there is no telling where the project starts, and when they sit under
+  *different* ones there is no single project to judge them on: either way
+  the run exits `2` rather than pick one, whatever order pre-commit lists
+  files in. Every listed file must also lie inside the project's directory,
+  both as written and with symlinks resolved. A file under no
+  `pyproject.toml` (a `scripts/` directory beside the project), or a symlink
+  into another project, would be judged on evidence that is not its own
+  tree's — its neighbours never read, so a fix could delete what they
+  import — so it is refused: it is reported as `file not processed:
+  outside the project root …`, the run exits `2`, and nothing at all is
+  analysed or written. Keep such files out of the hook with `files:` or
+  `exclude:`. Override the hook's `entry` (`entry: cleanporter`) if your
+  project has no `pyproject.toml`.
 - **`exclude` is honoured for the files pre-commit passes.** A changed file
   that `exclude` (or a skipped directory such as `build/`) leaves out of the
   walk is not reported, as it would not be by `cleanporter .` run from the
@@ -92,11 +98,9 @@ Consequences worth knowing:
   again. Unstaged changes are stashed by pre-commit while hooks run, so the
   tree read is what you are committing, plus any untracked files.
 - **`pyproject.toml` not at the repository root? Add a `files:` pattern.**
-  pre-commit passes every changed Python file in the repository. A file
-  under no `pyproject.toml` (a `scripts/` beside the project) is analysed and
-  reported under this project's configuration, with a warning; a file of
-  another project stops the run (below). Scope the hook to the project,
-  `files: ^myproject/.*\.py$`.
+  pre-commit passes every changed Python file in the repository, and any
+  outside the project stops the run (above; for another project, below).
+  Scope the hook to the project, `files: ^myproject/.*\.py$`.
 
 ## Several projects in one repository
 
