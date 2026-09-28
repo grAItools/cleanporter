@@ -46,6 +46,13 @@ turned ``from .readers import read`` into ``from io import readers``. See
 with none (``from . import C`` in a top-level package), which `analyze.Decider`
 keeps as written.
 
+Scope metadata is the expensive part of a fix, and most files in a run have
+nothing to fix. So `fix_record` first asks the same decision whether *any*
+import in the file is a ``CP001`` (`_has_candidates`), and a file with none is
+handed back untouched without building it. That is not a shortcut the fixer
+could disagree with: everything it emits -- a rewrite, a blocker, a never-read
+name -- starts from a name that decision calls ``CP001``.
+
 Two phases inside one traversal, and the split is the safety model: on the way
 down `_Fixer` fills a single `_Plan` -- node id to replacement, for statements,
 references and lazy annotation strings -- and the ``leave_*`` hooks apply it on
@@ -879,9 +886,11 @@ def fix_record(
     rec: analyze.FileRecord, resolver: resolver.Resolver, config: config.Config
 ) -> FixOutcome:
     """Rewrite one file, or leave it exactly as it was and say why."""
-    if rec.skipped.whole_file:
-        # Nothing to weigh: a `skip` rule took the file whole. Bail before the
-        # metadata resolution, which is the expensive part.
+    if not _has_candidates(rec, resolver, config):
+        # Nothing to weigh -- a file with no `CP001`, or one a `skip` rule
+        # took whole. Bail before the metadata resolution, which is the
+        # expensive part; see `_has_candidates` for why the outcome is the
+        # one the fixer would have reached.
         return FixOutcome("clean", rec.source)
     wrapper = cst.MetadataWrapper(rec.tree, unsafe_skip_copy=True)
     fixer = _Fixer(rec, resolver, config)
@@ -932,6 +941,37 @@ def fix_record(
         return FixOutcome("skipped", rec.source, [unwritable], unread=frozenset(fixer.unread))
 
     return FixOutcome("fixed", new_source, [], fixer.plan.fixed, frozenset(fixer.unread))
+
+
+def _has_candidates(
+    rec: analyze.FileRecord, resolver: resolver.Resolver, config: config.Config
+) -> bool:
+    """Whether any import in *rec* is one `_Fixer` could rewrite or explain.
+
+    Asked before building ``ScopeProvider`` metadata, which is most of what a
+    ``--diff`` or ``--fix`` costs and which most files never need: they have
+    no `CP001` at all. The answer is `analyze.Decider.decide` with no
+    never-read names -- exactly what ``check`` reports, and what
+    `analyze.analyze_record` is about to compute for this record anyway.
+
+    False means the fixer would return ``"clean"`` with no blockers and no
+    `FixOutcome.unread`, so skipping it changes nothing. Everything the fixer
+    emits comes from a name `_Fixer._partition` gets back from the same
+    ``decide``: it rewrites only a `Decision.rewrite`, and every blocker --
+    a guard, a rebound or deleted name, a comment it would lose, an
+    unspellable or TYPE_CHECKING-gated line -- is raised for a name being
+    rewritten. A never-read name is the one extra input it supplies, and
+    ``decide`` consults it last, turning what would have been a `CP001` into
+    a `CP003`; so with no `CP001` here there is nothing for it to turn. The
+    fixer's own set of imports is no larger (it skips stars, compound lines
+    and imports its metadata cannot scope), and the line each is decided on
+    is the same: `analyze.FileRecord.import_starts` is libcst's position of
+    the node. The post-rewrite checks (re-parse, self-created skip region,
+    encoding) run only on a rewrite, which there cannot be.
+    """
+    starts = rec.import_starts
+    decider = analyze.Decider(rec, resolver, config)
+    return any(decider.decide(unit, starts[unit.node][0]).rewrite for unit in rec.units)
 
 
 def _unwritable(rec: analyze.FileRecord, new_source: str) -> model.Finding | None:
