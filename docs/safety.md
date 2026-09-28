@@ -483,16 +483,17 @@ configuration would have forbidden. Prefer the bare last-component spelling
 
     Anything short of a firm "yes, a module" keeps that one import exactly as
     written and reports `CP003`, while the rest of the file is still fixed.
-    That includes a `P.S` this run cannot see at all. The module map answers
-    for any name whose *top-level* component is first-party, scanned subtree
-    or not, so a run pointed at one distribution of a namespace package
-    cannot see a sibling's modules. It does not call them objects — an
-    object needs a binding in the parent's source, and absence is not one —
-    so both the import it read and the one it would write come out
-    undetermined. The cost is a declined fix that would have been correct;
-    the finding says which evidence was missing ("neither on disk under this
-    run's import roots nor bound in …"), and pointing cleanporter at the
-    whole tree, or declaring `source_roots`, resolves it.
+
+    A `P.S` this run cannot see at all never gets that far. The module map
+    answers for any name whose *top-level* component is first-party, scanned
+    subtree or not, so a run pointed at one distribution of a namespace package
+    cannot see a sibling's modules. It does not call them objects — an object
+    needs a binding in the parent's source, and absence is not one — so the
+    import naming one is `CP002` and nothing is written for it. The cost is a
+    fix that would have been correct; the finding says which evidence was
+    missing ("neither on disk under this run's import roots nor bound in …"),
+    and pointing cleanporter at the whole tree, or declaring `source_roots`,
+    resolves it.
 
     Written inside `pkg/__init__.py` this is the same check: there the
     package's attributes are the file's own module-level names, so the
@@ -506,13 +507,15 @@ configuration would have forbidden. Prefer the bare last-component spelling
   rewritten symbol is neither rewritten nor treated as a blocker. (A comment
   *inside* an import statement is a separate matter, and does block.)
 - **Some `CP003` findings can never be cleared by `--fix`.** A wildcard
-  import, an explicit `S as S` re-export and a load-bearing re-export are all
-  reported in every mode and are never rewritten, and `cli.run` counts
-  `CP003` toward the failure exit code. A project that legitimately uses those
-  idioms therefore cannot reach exit `0` on the strength of `--fix` alone; the
-  finding is a true statement about the code, not a defect to be fixed. Silence
-  them with `exempt_names`, `exempt_modules` or `exclude` if you want a green
-  run — cleanporter's own `__init__.py` deliberately does not, and the README
+  import, an explicit `S as S` re-export, a load-bearing re-export, a
+  replacement that cannot be shown to bind the module it names, and
+  `from . import C` where the package is top-level are all reported in every
+  mode and are never rewritten, and the exit code counts `CP003` toward
+  failure. A project that legitimately uses those idioms therefore cannot
+  reach exit `0` on the strength of `--fix` alone; the finding is a true
+  statement about the code, not a defect to be fixed. Silence them with
+  `exempt_names`, `exempt_modules` or `exclude` if you want a green run —
+  cleanporter's own `__init__.py` deliberately does not, and the README
   explains why.
 - **A string the parse cannot see through is treated as prose.** The
   string guard clears a string that does not parse as Python and is not a
