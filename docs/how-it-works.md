@@ -261,20 +261,21 @@ it is.
 the run.
 
 Results are cached per `(PARENT, NAME)` pair for the duration of a run. Each
-file is parsed once, and a check walks its syntax tree once: that single pass
-collects every import, every `module.attribute` read and every star import,
-and everything else the analysis needs is read off what it collected. Where
-each import starts is taken from a parse with Python's own `ast` rather than
-from libcst's position metadata, which would cost a second full pass over the
-tree. That parse is used only where it provably gives libcst's answer. A file
-it cannot vouch for gets the metadata instead: one with `\r` line endings, one
-whose grammar the running Python does not accept, or one libcst does not
-reproduce exactly. libcst drops a form feed (`\f`) or a backslash
+file is parsed once by libcst, and a check walks its syntax tree once: that
+single pass collects every import, every `module.attribute` read and every
+star import, and everything else the analysis needs is read off what it
+collected. Where each import starts is taken from a parse with Python's own
+`ast` rather than from libcst's position metadata, which would cost a second
+full pass over the tree. That parse is used only where it provably gives
+libcst's answer.
+A file it cannot vouch for gets the metadata instead: one with `\r` line
+endings, one whose grammar the running Python does not accept, or one libcst
+does not reproduce exactly. libcst drops a form feed (`\f`) or a backslash
 continuation from a statement's leading whitespace, which moves the columns
 and lines it reports. Either way, the lines and columns printed are libcst's.
-`--fix` adds the scope analysis the guards need on top. The cache is in
-memory only: a very large third-party surface re-pays the (batched) probe cost
-on every invocation.
+`--fix` adds the scope analysis the guards need on top. The cache is in memory
+only: a very large third-party surface re-pays the (batched) probe cost on
+every invocation.
 
 ## Relative imports
 

@@ -14,6 +14,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Breaking under the pre-1.0 policy above, so the next release is `0.4.0`, not a
+patch:
+
+- `cleanporter.build` returns a `Project` rather than a 4-tuple; `analyze.build`
+  and `Resolver.note_uses` are removed, and `Resolver` takes a required
+  keyword-only `evidence=`.
+- `python = ""` and `--python ""` are errors (exit `2`), as is a drive-relative
+  `python` such as `C:python.exe`; a relative `python` path is read against the
+  `pyproject.toml` directory rather than the current directory.
+- Some first-party `CP001` findings are now `CP002` (never rewritten, counted
+  only under `--strict`), so a run may change exit code in either direction.
+- `from . import X` in a top-level package is now `CP003` in every mode and kept
+  as written; `--fix` writes relative replacements for relative imports; under
+  `scope = "first-party"`, `--fix`/`--diff` no longer rewrite stdlib and
+  third-party imports.
+- A file that could not be processed now reads `CP002 file not processed:
+  <reason>`, not `could not determine whether '?.?' …`.
+
 ### Added
 
 - **A library API for a whole run: `cleanporter.run(paths, config, mode)`.**
@@ -100,9 +118,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A corpus check** (`corpus/run.py`, `corpus/packages.txt`, and a daily
   `Corpus` workflow). It runs `--fix` over a pinned set of real third-party
   packages, then *imports and executes* the result, comparing every failure
-  against the same probe run on the pristine copy. All three fixes below were
-  found by it and none by `tests/` — they do not fail a parse, so the fixer's
-  own re-parse backstop passed them. See `corpus/README.md`.
+  against the same probe run on the pristine copy. The fixes below credited to
+  the corpus check were found by it and none by `tests/` — they do not fail a
+  parse, so the fixer's own re-parse backstop passed them. See
+  `corpus/README.md`.
 
 ### Changed
 
@@ -294,12 +313,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrapper bought nothing, so it is deleted and both run as plain local hooks
   next to `zuban`. CI's lint job is now `uv run prek run --all-files` rather
   than its own spelling of the same commands, so it cannot drift from the git
-  hooks. Scope moved into `pyproject.toml` for all three checkers
-  (`[tool.mypy] files`, `[tool.pyright] include`), so no invocation needs a
-  path argument. `pyright` now also covers `tests/` (excluding
-  `tests/fixtures/`, which is input data rather than project code), which
-  turned up two narrowing failures in `tests/test_analyze.py`; `mypy --strict`
-  still checks `src/cleanporter` only.
+  hooks. Scope moved into `pyproject.toml` for every checker (`[tool.mypy]
+  files`, `[tool.pyright] include`), so no invocation needs a path argument.
+  `pyright` briefly covered `tests/` too, which turned up two narrowing
+  failures in `tests/test_analyze.py`; where each checker's scope settled is
+  the split by generation, above.
 
 - **The two ruff pins are now asserted to agree.** Ruff is installed twice and
   unavoidably: `uv run ruff check` uses `uv.lock`'s copy, while the git hook --
@@ -566,13 +584,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `__dict__` holds a non-module under that name, so such an import is `CP002`
   instead of silently compliant. (Eagerly bound, which is what the idiom does
   — a shadow supplied lazily by a module-level `__getattr__` is not detected,
-  because asking for it would import the leaf. `docs/safety.md` lists it.) And a `P.S` the run cannot see *at all* is declined as well: the
-  module map answers for any name whose top-level component is first-party,
-  scanned subtree or not, so a run pointed at one distribution of a namespace
-  package can call a sibling's module an object. That costs a fix which would
-  have been correct, and the finding says which run would not see it —
-  pointing cleanporter at the whole tree, or declaring `source_roots`,
-  resolves it.
+  because asking for it would import the leaf. `docs/safety.md` lists it.)
+  And a `P.S` the run cannot see *at all* is not rewritten: a run pointed at one
+  distribution of a namespace package cannot see a sibling's modules, and since
+  a first-party object now needs a binding in its parent's source (see *A
+  first-party submodule missing from the checkout*, above), the import naming
+  one is `CP002`. That costs a fix which would have been correct; the finding
+  names the missing evidence, and pointing cleanporter at the whole tree, or
+  declaring `source_roots`, resolves it.
 
 - **A package importing its own submodule absolutely is no longer read as a
   shadowing binding.** `from . import signals` inside `pkg/__init__.py` was
@@ -711,11 +730,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file is still rewritten. An ordinary alias (`import Thing as T`) declares
   nothing and is still rewritten.
 
-    This hole predates the string-guard change below, but was masked by it:
-    rewriting `_pytest` with the narrowed guard broke the package at import
-    time on `from .exceptions import UsageError as UsageError`, which the old
-    guard had been shielding by accident, via unrelated prose mentions of
-    `UsageError` elsewhere in the same file.
+    This hole predates the string-guard change under *Changed*, but was masked
+    by it: rewriting `_pytest` with the narrowed guard broke the package at
+    import time on `from .exceptions import UsageError as UsageError`, which
+    the old guard had been shielding by accident, via unrelated prose mentions
+    of `UsageError` elsewhere in the same file.
 
 ## [0.3.0] - 2026-08-27
 

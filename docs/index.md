@@ -161,6 +161,8 @@ cleanporter --fix src/mypkg/consumer.py pkg/other.py
 
 - **[Usage](usage.md)** — every flag, the finding codes, exit codes, and the
   CI / `git apply` / sweep workflows.
+- **[Library API](library.md)** — a whole run from Python: `cleanporter.run`,
+  `RunResult` and `Project`.
 - **[Configuration](configuration.md)** — the `[tool.cleanporter]` table, how
   CLI flags layer on top of it, and the default exemptions.
 - **[How it works](how-it-works.md)** — the layered resolution model and the
