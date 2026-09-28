@@ -655,6 +655,19 @@ _AGREEMENT_TREE = {
         "    return Widget(), go()\n"
     ),
     "blocked.py": 'from app.helpers import go\n\n__all__ = ["go"]\nx = go()\n',
+    # Files whose only `CP001` is not a module-level import, or is one the
+    # fixer turns into a `CP003`: `rewrite._has_candidates` must still see it.
+    "nested.py": "def later():\n    from app.helpers import go\n\n    return go()\n",
+    "gated.py": (
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from app.helpers import Widget\n"
+        "\n"
+        "def make(w: 'Widget') -> None:\n"
+        "    pass\n"
+    ),
+    "unread.py": "from app.helpers import go\n",
     "user.py": (
         "from __future__ import annotations\n"
         "from typing import TYPE_CHECKING, Any\n"
@@ -875,23 +888,39 @@ def test_skipping_files_without_a_cp001_changes_no_output(tmp_path, monkeypatch)
 def test_a_file_without_a_cp001_gets_no_scope_analysis(tmp_path, monkeypatch):
     """The metadata the fixer needs is built for exactly the files with a `CP001`.
 
-    Those are the files ``check`` reports one in -- including a file whose
-    only `CP001` becomes a `CP003` under ``--fix``, since only the fixer's
-    scope analysis can find a name nothing reads.
+    Those are the files ``check`` reports one in, wherever the import sits --
+    ``nested.py``'s only one is function-local and ``gated.py``'s is under
+    ``if TYPE_CHECKING:`` -- and including ``unread.py``, whose only `CP001`
+    becomes a `CP003` under ``--fix``: only the fixer's scope analysis can
+    find a name nothing reads.
     """
-    _write_agreement_tree(tmp_path / "app")
+    root = tmp_path / "app"
+    _write_agreement_tree(root)
     cfg = config.Config(root=tmp_path)
-    checked = engine.run([tmp_path / "app"], cfg)
-    with_cp001 = {f.path.read_text(encoding="utf-8") for f in checked.findings if f.code == "CP001"}
-    real = cst.MetadataWrapper
-    wrapped: list[str] = []
+    checked = engine.run([root], cfg)
+    with_cp001 = {f.path for f in checked.findings if f.code == "CP001"}
+    assert {root / "nested.py", root / "gated.py", root / "unread.py"} <= with_cp001
+
+    # `cst.MetadataWrapper` is handed only a tree, so the file it belongs to
+    # is noted on the way into `fix_record`.
+    real_fix, real_wrapper = rewrite.fix_record, cst.MetadataWrapper
+    fixing: list[pathlib.Path] = []
+    wrapped: list[pathlib.Path] = []
+
+    def noting(
+        rec: analyze.FileRecord, resolver: resolver_lib.Resolver, cfg: config.Config
+    ) -> rewrite.FixOutcome:
+        fixing.append(rec.path)
+        return real_fix(rec, resolver, cfg)
 
     def spy(module: cst.Module, *, unsafe_skip_copy: bool = False) -> cst.MetadataWrapper:
-        wrapped.append(module.code)
-        return real(module, unsafe_skip_copy=unsafe_skip_copy)
+        wrapped.append(fixing[-1])
+        return real_wrapper(module, unsafe_skip_copy=unsafe_skip_copy)
 
+    monkeypatch.setattr(rewrite, "fix_record", noting)
     monkeypatch.setattr(cst, "MetadataWrapper", spy)
-    engine.run([tmp_path / "app"], cfg, engine.Mode.DIFF)
+    engine.run([root], cfg, engine.Mode.DIFF)
+    assert len(fixing) == len(_AGREEMENT_TREE), "the fixer is still asked about every file"
     assert len(wrapped) == len(set(wrapped)), "one metadata build per file"
     assert set(wrapped) == with_cp001
     assert 0 < len(with_cp001) < len(_AGREEMENT_TREE)

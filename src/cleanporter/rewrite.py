@@ -951,8 +951,12 @@ def _has_candidates(
     Asked before building ``ScopeProvider`` metadata, which is most of what a
     ``--diff`` or ``--fix`` costs and which most files never need: they have
     no `CP001` at all. The answer is `analyze.Decider.decide` with no
-    never-read names -- exactly what ``check`` reports, and what
-    `analyze.analyze_record` is about to compute for this record anyway.
+    never-read names -- exactly what ``check`` reports. It costs little:
+    whenever it says False, `analyze.analyze_record` goes on to decide this
+    same record, and reuses its cached `analyze.FileRecord.import_starts` and
+    the resolver's cached verdicts. (After a rewrite that record is the
+    rewritten one, and the decisions here are extra -- but a file being
+    rewritten pays for scope analysis, which dwarfs them.)
 
     False means the fixer would return ``"clean"`` with no blockers and no
     `FixOutcome.unread`, so skipping it changes nothing. Everything the fixer

@@ -20,12 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to fix.** libcst's scope metadata, which the fixer's guards need, used to be
   built for every file in the run; it is now built only for a file in which
   `check` would report a `CP001`, decided by the same per-import decision the
-  report uses. A file without one cannot produce a rewrite, a `CP003` or a
-  never-read name, so the output is byte-identical. The saving scales with the
-  share of files that are already clean: over libcst's source after one
-  `--fix` (34 of 297 files still with a `CP001`), `--diff` went from 200 s to
-  112 s, against 33 s for a check; over libcst as released, where 261 of the
-  297 files have one, it is unchanged at about 232 s.
+  report uses. For a file without one the fixer can produce no rewrite, add no
+  `CP003` of its own and find no never-read name, so the output is
+  byte-identical; the `CP003`s `check` itself reports are reported as before.
+  One failure mode goes with it: an exception inside libcst's scope analysis on
+  a file with no `CP001` can no longer abort the run. The saving scales with the
+  share of files that are already clean: over libcst's source after one `--fix`
+  (34 of 297 files still with a `CP001`), `--diff` went from 200 s to 112 s,
+  against 33 s for a check; over libcst as released, where 261 of the 297 files
+  have one, it is unchanged at about 232 s.
 
 ## [0.4.0] - 2026-09-28
 

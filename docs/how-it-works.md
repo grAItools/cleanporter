@@ -260,8 +260,11 @@ it is.
 `treat_unresolved_as_error = true`) when you want unresolvable imports to fail
 the run.
 
-Results are cached per `(PARENT, NAME)` pair for the duration of a run. Each
-file is parsed once by libcst, and a check walks its syntax tree once: that
+Results are cached per `(PARENT, NAME)` pair for the duration of a run. The
+cache is in memory only: a very large third-party surface re-pays the
+(batched) probe cost on every invocation.
+
+Each file is parsed once by libcst, and a check walks its syntax tree once: that
 single pass collects every import, every `module.attribute` read and every
 star import, and everything else the analysis needs is read off what it
 collected. Where each import starts is taken from a parse with Python's own
@@ -275,9 +278,7 @@ continuation from a statement's leading whitespace, which moves the columns
 and lines it reports. Either way, the lines and columns printed are libcst's.
 `--fix` and `--diff` add the scope analysis the guards need on top, but only
 for a file with at least one `CP001`: a file with none has nothing the fixer
-could rewrite or explain, so it costs about what a check does. The cache is in memory
-only: a very large third-party surface re-pays the (batched) probe cost on
-every invocation.
+could rewrite or explain, so it costs about what a check does.
 
 ## Relative imports
 
