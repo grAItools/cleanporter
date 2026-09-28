@@ -1,0 +1,30 @@
+# Hooks this repository publishes for pre-commit and prek. Use them from a
+# project's .pre-commit-config.yaml (see docs/pre-commit.md):
+#
+#     - repo: https://github.com/grAItools/cleanporter
+#       rev: vX.Y.Z  # a release tag; the first with these hooks follows 0.4.0
+#       hooks:
+#         - id: cleanporter
+#
+# Both hooks pass `--whole-project`: pre-commit hands over only the changed
+# files, and a run over those alone would judge them on a partial tree (see
+# the `engine` module docstring). With the flag the whole project, rooted at
+# its pyproject.toml, is read for evidence and only the changed files are
+# reported and fixed. That is also why they are `require_serial`: split into
+# parallel batches, each process would read the whole tree again.
+
+- id: cleanporter
+  name: cleanporter
+  description: Check that from-imports import modules only (Google Python Style Guide 2.2).
+  entry: cleanporter --whole-project
+  language: python
+  types: [python]
+  require_serial: true
+
+- id: cleanporter-fix
+  name: cleanporter (fix)
+  description: Rewrite from-imports of objects into module imports, where provably safe.
+  entry: cleanporter --whole-project --fix
+  language: python
+  types: [python]
+  require_serial: true

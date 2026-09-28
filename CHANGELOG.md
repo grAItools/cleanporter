@@ -26,6 +26,18 @@ Breaking under the pre-1.0 policy above:
 
 ### Added
 
+- **pre-commit hooks, and `--whole-project` to make them safe.** The
+  repository now publishes a `.pre-commit-hooks.yaml` with two hooks,
+  `cleanporter` (check) and `cleanporter-fix` (`--fix`), for pre-commit and
+  prek. pre-commit passes a hook only the changed files, and a run over those
+  alone judges them on a partial tree: a re-export that only an unlisted file
+  imports looks unused, so `--fix` would delete it, and a first-party package
+  no listed file lives in is not first-party at all, so the probe answers for
+  it from whatever is installed under that name. The new `--whole-project`
+  flag (`run(..., whole_project=True)` in the library) reads the whole
+  project — the directory of the `pyproject.toml` — for evidence and fixes,
+  reports and counts only the listed files; both hooks use it. Documented
+  under [pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
 - **cleanporter finds the project's interpreter by itself.** Installed with
   `pipx` or `uv tool`, cleanporter runs in an environment without the target
   project's dependencies, so every third-party import used to come back

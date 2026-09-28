@@ -37,6 +37,9 @@ _CROSS_FILE_NOTE = (
     "cleanporter: note: --fix cannot see dotted references from other files; re-run your tests"
 )
 
+#: `--whole-project` with no pyproject.toml to say where the project starts.
+_NO_PROJECT = "--whole-project needs a pyproject.toml to mark the project root; none above"
+
 _EXIT_ERROR = 2  # the rest of the exit-code rule is `engine.RunResult.exit_code`
 
 
@@ -104,6 +107,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--strict", action="store_true", help="also fail on imports that could not be classified"
     )
     parser.add_argument(
+        "--whole-project",
+        action="store_true",
+        help="analyse the whole project (the directory of pyproject.toml) for evidence, but "
+        "fix, report and count only the given paths; for pre-commit, which passes only "
+        "changed files",
+    )
+    parser.add_argument(
         "--show-skipped",
         action="store_true",
         help="list the imports a [tool.cleanporter.skip] rule took out (CP004)",
@@ -161,12 +171,20 @@ def run(args: argparse.Namespace) -> int:
         print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
         return _EXIT_ERROR
 
+    if args.whole_project and config_lib.find_pyproject(anchor) is None:
+        # Without one, the "project" would be the first path's directory:
+        # a partial tree presented as the whole, which is what the flag is for.
+        print(f"cleanporter: error: {_NO_PROJECT} {anchor}", file=sys.stderr)
+        return _EXIT_ERROR
+
     mode = _mode(args)
     # Everything that is not the patch -- warnings, parse errors, findings, the
     # summary -- goes here; see the stream contract in the module docstring.
     report = sys.stdout if mode is engine.Mode.CHECK else sys.stderr
     paths = [pathlib.Path(p) for p in args.paths]
-    result = engine.run(paths, config, mode, listener=_Printer(report))
+    result = engine.run(
+        paths, config, mode, listener=_Printer(report), whole_project=args.whole_project
+    )
 
     if result.wrote:
         # The one place the tool changes something it cannot fully check: a

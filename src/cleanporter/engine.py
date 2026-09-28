@@ -28,6 +28,34 @@ is; its patch is kept in the result, marked with the error
 (`FilePatch.write_error`), but the listener hears only the error -- the
 command prints no patch for a file it did not change. Every other file is
 processed as usual. `RunResult.exit_code` is the command's exit-code rule.
+
+**Whole-project runs** (``whole_project=True``, ``--whole-project``) separate
+the files a run *reads* from the files it *reports*. A pre-commit hook is
+handed only the changed files, but a run over only those is a run over a
+partial tree, and two things a run knows come from the files it is given:
+
+* the cross-file *use* evidence (`resolver.Resolver.is_load_bearing`): a
+  re-export that only an unlisted file imports looks unused, so ``--fix``
+  would rewrite it and break that file at import time;
+* the first-party module map's *import roots*, which are inferred from the
+  files given: a sibling top-level package none of whose files was listed is
+  not first-party, so its imports go to the interpreter probe -- which answers
+  from whatever it finds installed under that name, a stale non-editable
+  copy or an unrelated distribution -- and the absolute-import evidence that
+  demotes a PEP 420 namespace root (`firstparty.ModuleMap.demote_roots`) is
+  missing, so a file under one can be given the wrong dotted name.
+
+So a whole-project run builds the `project_lib.Project` from the project
+root (`config.Config.root`: the directory of the ``pyproject.toml`` in use),
+plus any listed path outside it, exactly as a run over the whole tree would --
+and then fixes, reports and counts only the files under the listed paths.
+Every rewrite is judged on the same evidence as a full run, so it is as safe
+as one. The root is walked like any directory, so a listed file the
+configuration excludes (or one in a skipped directory) is not reported: a
+hook handed every changed file honours ``exclude`` as ``cleanporter .``
+does. A file elsewhere in the tree that cannot be read or parsed is a
+warning rather than an error, since the run does not report on it -- but
+its imports are then missing from the evidence, and the warning says so.
 """
 
 from __future__ import annotations
@@ -41,7 +69,7 @@ from collections.abc import Iterable
 
 import libcst as cst
 
-from cleanporter import analyze, model, rewrite
+from cleanporter import analyze, discover, model, rewrite
 from cleanporter import config as config_lib
 from cleanporter import project as project_lib
 
@@ -159,11 +187,13 @@ class Listener:
 
     Every method does nothing; override the ones you want. The calls come in
     this order: the warning that the paths belong to different projects, then
-    the notes (the interpreter detected for the probe), then the warnings from
+    (in a whole-project run) the listed paths that do not exist, then the
+    notes (the interpreter detected for the probe), then the warnings from
     building the project (a missing path, nesting roots, a failed warm-up
-    probe), then the files that could not be loaded (sorted by path), then per
-    file a write error or a patch, then warnings from probes the warm-up did
-    not foresee.
+    probe), then the files that could not be loaded (sorted by path; in a
+    whole-project run an unlisted one is a warning instead), then per file a
+    write error or a patch, then warnings from probes the warm-up did not
+    foresee.
     """
 
     def warning(self, message: str) -> None:
@@ -218,6 +248,7 @@ def run(
     mode: Mode = Mode.CHECK,
     *,
     listener: Listener | None = None,
+    whole_project: bool = False,
 ) -> RunResult:
     """Check -- and under *mode*, diff or fix -- the Python files under *paths*.
 
@@ -226,20 +257,32 @@ def run(
     Raises what reading the paths themselves can raise (`OSError`); a file
     that cannot be read, parsed or written is a `RunResult.errors` entry
     instead, and the run goes on.
+
+    With *whole_project*, the whole tree under ``config.root`` is read for
+    evidence and only the files under *paths* are fixed, reported and counted
+    (see the module docstring).
     """
     tally = _Tally(listener or _SILENT)
     mismatch = config_lib.mismatch_warning(paths)
     if mismatch is not None:
         tally.warn(mismatch)
-    project = project_lib.build(paths, config)
+    analysed, reported = _scope(paths, config, tally) if whole_project else (paths, None)
+    project = project_lib.build(analysed, config)
     for note in project.notes:
         tally.note(note)
     for warning in project.warnings:
         tally.warn(warning)
     for error in sorted(project.errors, key=lambda f: (str(f.path), f.line)):
-        tally.fail(error)
+        if reported is None or error.path.resolve() in reported:
+            tally.fail(error)
+        else:
+            tally.warn(
+                f"{error.path}: {error.detail}; not a listed file, so the run goes on, "
+                "but its imports are missing from the cross-file evidence"
+            )
 
-    for rec in project.records:
+    records = [r for r in project.records if reported is None or r.path.resolve() in reported]
+    for rec in records:
         _process(rec, project, mode, tally)
     # A probe batch outside the project's warm-up (a lookup it did not
     # foresee) can fail too; say why as well.
@@ -249,13 +292,38 @@ def run(
     tally.findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
     return RunResult(
         mode,
-        len(project.records),
+        len(records),
         tuple(tally.findings),
         tuple(tally.patches),
         tuple(tally.errors),
         tuple(tally.warnings),
         tuple(tally.notes),
     )
+
+
+def _scope(
+    paths: list[pathlib.Path], config: config_lib.Config, tally: _Tally
+) -> tuple[list[pathlib.Path], frozenset[pathlib.Path]]:
+    """A whole-project run's paths to analyse, and the resolved files to report.
+
+    The listed *paths* are expanded as any run expands them -- a missing one
+    is the usual warning -- and every file found is to be reported. What is
+    analysed is ``config.root``, plus each listed file outside it, which a
+    walk of the root would never reach. The root is spelled relative to the
+    cwd when it can be, so findings name files as a run over ``.`` would
+    rather than by absolute path.
+    """
+    files, warnings = discover.iter_python_files(paths, config)
+    for warning in warnings:
+        tally.warn(warning)
+    root = config.root.resolve()
+    reported = frozenset(f.resolve() for f in files)
+    outside = [f for f in files if not f.resolve().is_relative_to(root)]
+    try:
+        spelled = pathlib.Path(os.path.relpath(config.root, pathlib.Path.cwd()))
+    except ValueError:  # pragma: no cover - different drive on Windows
+        spelled = config.root
+    return [spelled, *outside], reported
 
 
 def _process(
