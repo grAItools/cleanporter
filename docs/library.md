@@ -157,13 +157,20 @@ classified by an interpreter probe, which imports each *parent* package
 - **stdout is redirected, process-wide, down to the file descriptor.** While
   the probe imports, `sys.stdout` is pointed at `sys.stderr`
   (`contextlib.redirect_stdout`) *and* file descriptor 1 at descriptor 2
-  (`os.dup2`, restored afterwards), so a package that prints on import — or
-  writes to descriptor 1 directly, as an extension module or `os.write(1, …)`
-  does — cannot land in a patch or a `--format` document. Both are global to
-  the process, so this is **not thread-safe**: anything another thread writes
-  to stdout meanwhile, through Python or the descriptor, goes to stderr.
-  `sys.stdout` is flushed before and after. Where descriptor 1 cannot be
-  duplicated (closed, say), only the Python-level redirection applies.
+  (`os.dup2`, restored afterwards however the probe exits), so a package that
+  prints on import — or writes to descriptor 1 directly: `os.write(1, …)`,
+  unbuffered C output, a subprocess — cannot land in a patch or a `--format`
+  document. Both are global to the process, so this is **not thread-safe**:
+  anything another thread writes to stdout meanwhile, through Python or the
+  descriptor, goes to stderr. `sys.stdout` is flushed before and after. With
+  no `sys.stdout` or `sys.stderr`, or a descriptor that cannot be duplicated
+  (closed, say), only the Python-level redirection applies.
+- **Not C stdio's buffer.** An extension that `printf`s on import while
+  stdout is a pipe or file keeps that output in the C library's buffer, which
+  is flushed at process exit — after the descriptor is restored, so onto
+  stdout, after whatever the caller wrote there. When a dependency prints
+  from C on import, probe out of process: set `python` to an interpreter
+  other than the calling one.
 - **To isolate a run**, set `python` in the `Config` to a *different*
   interpreter (for example
   `dataclasses.replace(cfg, python="/path/to/venv/bin/python")`, the library

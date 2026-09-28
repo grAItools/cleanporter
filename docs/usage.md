@@ -207,7 +207,12 @@ format:
   copy is for the person reading the CI log. (The `--fix` reminder is not one
   of the run's notes: it is on stderr only.) That holds even for a
   third-party package that writes to stdout while the probe imports it, by
-  `print` or straight to file descriptor 1: see
+  `print` or straight to file descriptor 1 (`os.write`, unbuffered C output,
+  a subprocess). The exception is C stdio output an extension module buffers
+  — a `printf` from C while stdout is a pipe — which is flushed when the
+  process exits, after the document; if a dependency prints from C on import,
+  pass `--python <interpreter>` — one other than cleanporter's own — so the
+  probe runs in a subprocess. See
   [Side effects](library.md#side-effects).
 - **The exit code is exactly the text report's** — `0`, `1` or `2`, under the
   same rules, `--strict` included. A run that never starts — a malformed

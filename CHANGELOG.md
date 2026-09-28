@@ -61,7 +61,10 @@ Breaking under the pre-1.0 policy above:
   So that stdout really holds only the document, the in-process probe now
   also points file descriptor 1 at stderr while it imports (it redirected
   only `sys.stdout` before), so a package that writes to the descriptor on
-  import cannot corrupt a report or a `--diff` patch either. See
+  import (`os.write`, unbuffered C output, a subprocess) cannot corrupt a
+  report or a `--diff` patch either. C stdio output an extension buffers is
+  still flushed at exit, after the document: use `--python` for such a
+  dependency. See
   [Machine-readable output](https://graitools.github.io/cleanporter/usage/#machine-readable-output).
 - **cleanporter finds the project's interpreter by itself.** Installed with
   `pipx` or `uv tool`, cleanporter runs in an environment without the target

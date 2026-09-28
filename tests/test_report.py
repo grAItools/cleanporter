@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import pathlib
+import shutil
+import subprocess
+import sys
 
 import pytest
 
 import cleanporter
-from cleanporter import _report, cli, engine, model
+from cleanporter import _report, cli, engine, model, resolver
 
 CONSUMER = (
     "from demo.helpers import THING\n"
@@ -514,6 +518,71 @@ def test_a_package_writing_to_fd_1_on_import_cannot_corrupt_the_document(
     assert [f["code"] for f in document["findings"]] == ["CP001"]
     assert "LOUD BANNER" in captured.err
     assert "PRINTED BANNER" in captured.err
+
+
+class _BoomError(Exception):
+    pass
+
+
+def _raise_inside_the_redirection() -> None:
+    with resolver._stdout_to_stderr():
+        os.write(1, b"during\n")
+        raise _BoomError
+
+
+def test_descriptor_1_is_restored_when_the_block_raises(capfd):
+    with pytest.raises(_BoomError):
+        _raise_inside_the_redirection()
+    os.write(1, b"after\n")
+    captured = capfd.readouterr()
+    assert captured.out == "after\n"
+    assert captured.err == "during\n"
+
+
+class _UnflushableStream(io.StringIO):
+    def flush(self) -> None:
+        raise OSError(9, "Bad file descriptor")
+
+
+def test_descriptor_1_is_restored_when_a_flush_fails(capfd, monkeypatch):
+    """A flush on the way out must not skip putting descriptor 1 back."""
+    monkeypatch.setattr(sys, "stderr", _UnflushableStream())
+    with resolver._stdout_to_stderr():
+        os.write(1, b"during\n")
+    os.write(1, b"after\n")
+    monkeypatch.undo()
+    captured = capfd.readouterr()
+    assert captured.out == "after\n"
+    assert captured.err == "during\n"
+
+
+def test_a_run_with_no_sys_stdout_exits_cleanly(project, monkeypatch):
+    """``>&-``, ``pythonw``, a GUI host: `sys.stdout` is None, and that is not a failure."""
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from definitely_missing_pkg_xyz import other\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(sys, "stdout", None)
+    assert cli.main(["--python", "self", "src"]) == 0  # the probe ran in process
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell to close fd 2")
+def test_a_run_with_descriptor_2_closed_exits_cleanly(project):
+    """``2>&-``: descriptor 2 cannot be the target of the probe's redirection."""
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from definitely_missing_pkg_xyz import other\n", encoding="utf-8"
+    )
+    code = (
+        "import sys; from cleanporter import cli; sys.exit(cli.main(['--python', 'self', 'src']))"
+    )
+    done = subprocess.run(
+        ["sh", "-c", 'exec "$0" -c "$1" 2>&-', sys.executable, code],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stdout
+    assert "checked 3 file(s)" in done.stdout
 
 
 def test_whole_project_json_reports_only_the_listed_files(project, capsys):
