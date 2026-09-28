@@ -5,7 +5,10 @@ exit code. It builds the `project.Project`, then, per file in discovery order:
 
 * under `Mode.DIFF` or `Mode.FIX`, asks `rewrite.fix_record` for the rewrite
   and, when there is one, makes a `FilePatch` of it -- and under `Mode.FIX`
-  first writes it to disk, atomically, and re-parses what was written;
+  first writes it to disk, atomically, and re-parses what was written. A file
+  with no `CP001` costs little more than under `Mode.CHECK`: the fixer answers
+  it from the check's own decisions, without the scope analysis a rewrite
+  needs;
 * analyses the file as it now is (`analyze.analyze_record`), with whatever
   the fixer learned about names nothing reads, so a declined import is
   reported with its reason.
