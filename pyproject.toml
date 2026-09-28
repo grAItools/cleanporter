@@ -160,16 +160,17 @@ extend-ignore-names = ["visit_*", "leave_*"]
 [tool.ruff.lint.mccabe]
 # Ratchets, not aspirations: each limit is the current worst case in the tree,
 # so existing code passes and new growth has to justify itself. The worst case
-# is `rewrite.py::_plan_line` for statements and branches and
-# `_bindings.py::_collect` for complexity. They only ever go down: extracting
-# `_plan_line`'s name partition into `_Fixer._partition` moved all three, so
-# they moved with it.
-max-complexity = 24
+# is `rewrite.py::_plan_line` for statements, `_bindings.py::_collect` for
+# branches, and the two of them for complexity. They only ever go down:
+# extracting `_plan_line`'s name partition into `_Fixer._partition` moved all
+# three, so they moved with it, and extracting its line-level blockers into
+# `_Fixer._spelling_or_blocker` moved complexity and statements again.
+max-complexity = 23
 
 [tool.ruff.lint.pylint]
 max-branches = 23
 max-returns = 11
-max-statements = 53
+max-statements = 52
 
 [tool.ruff.format]
 docstring-code-format = true

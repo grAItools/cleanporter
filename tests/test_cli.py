@@ -259,7 +259,7 @@ def test_fix_with_no_path_arguments_keeps_the_package_importable(src_layout, mon
     proc = _imports_cleanly(src_layout)
     assert proc.returncode == 0, proc.stderr
     after = (src_layout / "src" / "mypkg" / "consumer.py").read_text(encoding="utf-8")
-    assert after == "from mypkg import helpers\nw = helpers.Widget()\n"
+    assert after == "from . import helpers\nw = helpers.Widget()\n"
 
 
 def test_check_on_a_src_layout_names_the_module_without_the_src_prefix(
@@ -372,9 +372,12 @@ def test_an_explicit_root_beats_a_namespace_package_inferred_below_it(
     cli.main(["--fix", "--root", "src", "."])
     capsys.readouterr()
 
-    # Not `import other`, which compiles and then raises ModuleNotFoundError.
+    # The replacement stays relative, so it names no package at all: not
+    # `import other`, which the inferred root would give and which compiles
+    # and then raises ModuleNotFoundError, and not `from mypkg import other`
+    # either, which only the declared root makes right.
     assert (project / "src" / "mypkg" / "mod.py").read_text(encoding="utf-8") == (
-        "from mypkg import other\nt = other.Thing()\n"
+        "from . import other\nt = other.Thing()\n"
     )
     proc = _runs(project, "mypkg.mod", project / "src")
     assert proc.returncode == 0, proc.stderr
@@ -394,7 +397,7 @@ def test_a_flat_namespace_package_stays_importable_after_fix(tmp_path, monkeypat
     capsys.readouterr()
 
     assert (tmp_path / "mypkg" / "consumer.py").read_text(encoding="utf-8") == (
-        "from mypkg import helpers\nw = helpers.Widget()\n"
+        "from . import helpers\nw = helpers.Widget()\n"
     )
     proc = _runs(tmp_path, "mypkg.consumer", tmp_path)
     assert proc.returncode == 0, proc.stderr
@@ -544,10 +547,174 @@ def test_a_namespace_package_holding_a_subpackage_is_not_rewritten_to_stdlib(
     capsys.readouterr()
 
     assert (tmp_path / "analytics" / "io" / "__init__.py").read_text(encoding="utf-8") == (
-        "from analytics.io import readers\n\nvalues = readers.read()\n"
+        "from . import readers\n\nvalues = readers.read()\n"
     )
     proc = _runs(tmp_path, "analytics.io", tmp_path)
     assert proc.returncode == 0, proc.stderr
+
+
+# -- relative imports stay relative -----------------------------------------
+
+
+def test_a_namespace_package_nothing_imports_is_rewritten_relative_not_to_stdlib(
+    tmp_path, monkeypatch, capsys
+):
+    """The PEP 420 layout with no evidence at all about where the root is.
+
+    Nothing imports ``analytics.io``, so ``analytics/`` is inferred as a root
+    and the file's package is qualified as ``io``. The replacement must not
+    name that: ``from io import readers`` is the standard library, and still
+    imports. The relative spelling needs no root.
+    """
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "analytics" / "io").mkdir(parents=True)
+    (tmp_path / "analytics" / "io" / "readers.py").write_text(
+        "def read():\n    return 1\n", encoding="utf-8"
+    )
+    init = tmp_path / "analytics" / "io" / "__init__.py"
+    init.write_text("from .readers import read\n\nprint(read())\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    cli.main(["--diff", "analytics"])
+    patch = capsys.readouterr().out
+    assert "+from . import readers\n" in patch
+    assert "from io import" not in patch
+
+    cli.main(["--fix", "analytics"])
+    capsys.readouterr()
+    assert init.read_text(encoding="utf-8") == ("from . import readers\n\nprint(readers.read())\n")
+    proc = _runs(tmp_path, "analytics.io", tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "1\n"
+
+
+@pytest.fixture
+def nested_packages(tmp_path: pathlib.Path) -> pathlib.Path:
+    """``top/pkg/sub``, each a regular package, with objects at every level."""
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "top" / "pkg" / "sub").mkdir(parents=True)
+    (tmp_path / "top" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "top" / "pkg" / "__init__.py").write_text(
+        "class Obj:\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "top" / "pkg" / "util.py").write_text(
+        "def helper():\n    return 2\n", encoding="utf-8"
+    )
+    (tmp_path / "top" / "pkg" / "sub" / "__init__.py").write_text("", encoding="utf-8")
+    return tmp_path
+
+
+def test_importing_from_the_current_package_climbs_one_level_further(
+    nested_packages, monkeypatch, capsys
+):
+    """``from . import Obj`` names the package itself; ``from .. import pkg`` reaches it."""
+    project = nested_packages
+    module = project / "top" / "pkg" / "a.py"
+    module.write_text("from . import Obj\nx = Obj()\n", encoding="utf-8")
+    deeper = project / "top" / "pkg" / "sub" / "b.py"
+    deeper.write_text(
+        "from .. import Obj\nfrom ..util import helper\ny = Obj(), helper()\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project)
+
+    assert cli.main(["--fix", "."]) == 0
+    capsys.readouterr()
+
+    assert module.read_text(encoding="utf-8") == "from .. import pkg\nx = pkg.Obj()\n"
+    assert deeper.read_text(encoding="utf-8") == (
+        "from ... import pkg\nfrom .. import util\ny = pkg.Obj(), util.helper()\n"
+    )
+    for name in ("top.pkg.a", "top.pkg.sub.b"):
+        proc = _runs(project, name, project)
+        assert proc.returncode == 0, proc.stderr
+
+
+def test_a_package_init_importing_from_itself_climbs_one_level_further(
+    nested_packages, monkeypatch, capsys
+):
+    """Inside ``pkg/__init__.py`` the package is still importable from its parent.
+
+    ``from .. import pkg`` there finds ``top.pkg`` half-initialised in
+    ``sys.modules`` -- the same module object ``from . import Obj`` read
+    ``Obj`` from.
+    """
+    project = nested_packages
+    init = project / "top" / "pkg" / "__init__.py"
+    init.write_text(
+        "class Obj:\n    pass\n\n\nfrom . import Obj as Alias\n\nx = Alias()\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project)
+
+    assert cli.main(["--fix", "."]) == 0
+    capsys.readouterr()
+
+    assert init.read_text(encoding="utf-8") == (
+        "class Obj:\n    pass\n\n\nfrom .. import pkg\n\nx = pkg.Obj()\n"
+    )
+    proc = _runs(project, "top.pkg", project)
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.parametrize("filename", ["__init__.py", "mod.py"])
+def test_importing_from_a_top_level_package_itself_keeps_that_line(
+    tmp_path, monkeypatch, capsys, filename
+):
+    """No relative spelling reaches a package with no parent package.
+
+    The only other spelling is absolute, ``import pkg``, which depends on the
+    import root where the original did not. That line is kept byte-identical
+    with a ``CP003`` saying why; the rest of the file is still rewritten.
+    """
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("VERSION = '1'\n", encoding="utf-8")
+    target = tmp_path / "pkg" / filename
+    head = "VERSION = '1'\n" if filename == "__init__.py" else ""
+    target.write_text(
+        head + "from . import VERSION as V\nfrom os.path import join\nprint(V, join('a'))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["--fix", "."]) == 1
+    captured = capsys.readouterr()
+    report = captured.out + captured.err
+    assert "CP003" in report
+    assert "names the package 'pkg' itself" in report
+    assert target.read_text(encoding="utf-8") == (
+        head + "from . import VERSION as V\nfrom os import path\nprint(V, path.join('a'))\n"
+    )
+    proc = _runs(tmp_path, "pkg" if filename == "__init__.py" else "pkg.mod", tmp_path)
+    assert proc.returncode == 0, proc.stderr
+
+
+def test_a_replacement_the_parent_package_shadows_keeps_that_line(tmp_path, monkeypatch, capsys):
+    """``from .. import pkg`` binds whatever ``top`` binds under ``pkg``.
+
+    ``top/__init__.py`` binds ``pkg`` to an int, so the replacement cannot be
+    shown to reach the package. The line is kept, the finding names the
+    replacement as it would have been written, and the next line is fixed.
+    """
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "top" / "pkg").mkdir(parents=True)
+    (tmp_path / "top" / "__init__.py").write_text("pkg = 1\n", encoding="utf-8")
+    (tmp_path / "top" / "pkg" / "__init__.py").write_text(
+        "class Obj:\n    pass\n", encoding="utf-8"
+    )
+    target = tmp_path / "top" / "pkg" / "a.py"
+    target.write_text(
+        "from . import Obj\nfrom os.path import join\nx = Obj(), join('a')\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main(["--fix", "."]) == 1
+    captured = capsys.readouterr()
+    report = captured.out + captured.err
+    assert "CP003" in report
+    assert "the replacement 'from .. import pkg' cannot be shown" in report
+    assert target.read_text(encoding="utf-8") == (
+        "from . import Obj\nfrom os import path\nx = Obj(), path.join('a')\n"
+    )
 
 
 # -- a name that is also one of the package's own submodules ----------------
@@ -1336,25 +1503,27 @@ def test_a_file_ending_in_a_lone_cr_is_left_byte_identical(project, capsys):
 
 
 def test_a_rewrite_the_files_encoding_cannot_hold_is_declined(tmp_path, monkeypatch, capsys):
-    """The absolute spelling names the package from its directory.
+    """The one relative spelling that names a package names it by its directory.
 
-    Inside a package's ``__init__``, ``from .readers import read`` becomes
-    ``from анализ.io import readers`` -- a name the file itself never spelled,
-    and one its declared Latin-1 cannot hold. Written as UTF-8 it would
-    contradict the cookie; the file is declined instead.
+    ``from . import read`` imports from the package itself, which a relative
+    import reaches only from its parent: ``from .. import анализ`` -- a name
+    the file itself never spelled, and one its declared Latin-1 cannot hold.
+    Written as UTF-8 it would contradict the cookie; the file is declined
+    instead.
     """
-    package = tmp_path / "анализ"
-    (package / "io").mkdir(parents=True)
-    (package / "__init__.py").write_bytes(b"")
-    (package / "io" / "readers.py").write_bytes(b"def read():\n    return []\n")
-    init = package / "io" / "__init__.py"
-    original = b"# coding: latin-1\nfrom .readers import read\n\nvalues = read()\n"
-    init.write_bytes(original)
+    outer = tmp_path / "outer"
+    package = outer / "анализ"
+    package.mkdir(parents=True)
+    (outer / "__init__.py").write_bytes(b"")
+    (package / "__init__.py").write_bytes(b"def read():\n    return []\n")
+    mod = package / "mod.py"
+    original = b"# coding: latin-1\nfrom . import read\n\nvalues = read()\n"
+    mod.write_bytes(original)
     monkeypatch.chdir(tmp_path)
     assert cli.main(["--fix", "."]) == 1
     err = capsys.readouterr().err
     assert "the rewrite needs 'анализ', which the file's encoding (iso-8859-1) cannot" in err
-    assert init.read_bytes() == original
+    assert mod.read_bytes() == original
 
 
 def test_first_line_not_utf8_points_at_the_byte(project, capsys):

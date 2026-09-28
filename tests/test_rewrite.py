@@ -1765,3 +1765,149 @@ def test_a_file_in_its_own_encoding_is_fixed():
     result = _encoded_outcome(src, "latin-1", src.encode("latin-1"))
     assert result.status == "fixed"
     assert result.source == 'from pkg.sub import mod\nx = mod.Thing("\xe9")\n'
+
+
+# -- relative imports stay relative -------------------------------------------
+#
+# The resolver classifies by absolute name; the statement the fixer writes
+# must not depend on that name, because it is only as good as the import root
+# inferred for the file.
+
+
+def test_a_level_one_relative_import_is_rewritten_relative():
+    result = outcome("from .sub.mod import Thing\nx = Thing()\n")
+    assert result.status == "fixed"
+    assert result.source == "from .sub import mod\nx = mod.Thing()\n"
+
+
+def test_compliant_names_on_a_relative_line_keep_their_spelling():
+    result = outcome("from .sub.mod import Thing, go\nx = go()\n")
+    assert result.status == "fixed"
+    assert result.source == "from .sub import mod\nfrom .sub.mod import Thing\nx = mod.go()\n"
+    assert result.unread == frozenset({"Thing"})
+
+
+def _fix_in(tmp_path: pathlib.Path, target: str, source: str) -> rewrite.FixOutcome:
+    """Fix *source*, written to *target* under a ``top/pkg/sub`` package tree."""
+    top = tmp_path / "top"
+    (top / "pkg" / "sub").mkdir(parents=True, exist_ok=True)
+    (top / "__init__.py").write_text("")
+    (top / "pkg" / "util.py").write_text("def helper():\n    return 1\n")
+    (top / "pkg" / "sub" / "__init__.py").write_text("")
+    init = top / "pkg" / "__init__.py"
+    if not init.exists():
+        init.write_text("class Obj:\n    pass\n")
+    (top / target).write_text(source)
+    cfg = config_lib.Config(root=tmp_path)
+    records, resolver, _e, _w = analyze.build([top], cfg)
+    rec = next(r for r in records if r.path.resolve() == (top / target).resolve())
+    return rewrite.fix_record(rec, resolver, cfg)
+
+
+def test_a_level_two_relative_import_is_rewritten_relative(tmp_path: pathlib.Path) -> None:
+    result = _fix_in(tmp_path, "pkg/sub/b.py", "from ..util import helper\nx = helper()\n")
+    assert result.status == "fixed"
+    assert result.source == "from .. import util\nx = util.helper()\n"
+
+
+def test_a_level_two_import_through_a_sibling_package(tmp_path: pathlib.Path) -> None:
+    sibling = tmp_path / "top" / "pkg" / "sib"
+    sibling.mkdir(parents=True)
+    (sibling / "__init__.py").write_text("")
+    (sibling / "mod.py").write_text("class X:\n    pass\n")
+    result = _fix_in(tmp_path, "pkg/sub/b.py", "from ..sib.mod import X\nx = X()\n")
+    assert result.status == "fixed"
+    assert result.source == "from ..sib import mod\nx = mod.X()\n"
+
+
+def test_importing_from_the_current_package_adds_a_dot(tmp_path: pathlib.Path) -> None:
+    """``from . import Obj`` has no module part; ``from .. import pkg`` is the package."""
+    result = _fix_in(tmp_path, "pkg/a.py", "from . import Obj\nx = Obj()\n")
+    assert result.status == "fixed"
+    assert result.source == "from .. import pkg\nx = pkg.Obj()\n"
+
+
+def test_importing_from_the_package_two_up_adds_a_dot(tmp_path: pathlib.Path) -> None:
+    result = _fix_in(tmp_path, "pkg/sub/b.py", "from .. import Obj\nx = Obj()\n")
+    assert result.status == "fixed"
+    assert result.source == "from ... import pkg\nx = pkg.Obj()\n"
+
+
+def test_a_package_init_importing_from_itself_adds_a_dot(tmp_path: pathlib.Path) -> None:
+    src = "class Obj:\n    pass\n\n\nfrom . import Obj as O\nx = O()\n"
+    result = _fix_in(tmp_path, "pkg/__init__.py", src)
+    assert result.status == "fixed"
+    assert result.source == "class Obj:\n    pass\n\n\nfrom .. import pkg\nx = pkg.Obj()\n"
+
+
+def test_importing_from_a_top_level_package_itself_keeps_that_line(
+    tmp_path: pathlib.Path,
+) -> None:
+    """``solo`` has no parent package, so only ``import solo`` would reach it.
+
+    That spelling depends on the import root and the original did not, so the
+    line is kept, byte-identical, and says why -- and, like an unreachable
+    replacement, it is the line that is kept, not the file: ``join`` on the
+    next line is still rewritten.
+    """
+    solo = tmp_path / "solo"
+    solo.mkdir()
+    (solo / "__init__.py").write_text("class Thing:\n    pass\n")
+    src = "from . import Thing\nfrom os.path import join\nx = Thing(join)\n"
+    (solo / "mod.py").write_text(src)
+    cfg = config_lib.Config(root=tmp_path)
+    records, resolver, _e, _w = analyze.build([solo], cfg)
+    rec = next(r for r in records if r.path.name == "mod.py")
+    result = rewrite.fix_record(rec, resolver, cfg)
+    assert result.status == "fixed"
+    assert result.blockers == []
+    assert result.source == "from . import Thing\nfrom os import path\nx = Thing(path.join)\n"
+    # Reported against the file as it was: `join` is the CP001 just fixed.
+    kept, fixed = analyze.analyze_record(rec, resolver, cfg, result.unread)
+    assert (fixed.line, fixed.code) == (2, "CP001")
+    finding = kept
+    assert (finding.line, finding.code, finding.name) == (1, "CP003", "Thing")
+    assert "names the package 'solo' itself" in finding.detail
+    assert "would depend on the import root" in finding.detail
+    assert "inferred" not in finding.detail
+
+
+def test_two_relative_spellings_of_one_module_share_a_binding(tmp_path: pathlib.Path) -> None:
+    """Both anchor on this file's own package: the same module whatever the root is."""
+    src = "from ..util import helper\nfrom ...pkg.util import helper as h2\nx = helper(), h2()\n"
+    result = _fix_in(tmp_path, "pkg/sub/b.py", src)
+    assert result.status == "fixed"
+    assert result.source == "from .. import util\nx = util.helper(), util.helper()\n"
+
+
+def test_an_existing_relative_module_import_is_reused(tmp_path: pathlib.Path) -> None:
+    src = "from .. import util\nfrom ..util import helper\nx = helper(), util\n"
+    result = _fix_in(tmp_path, "pkg/sub/b.py", src)
+    assert result.status == "fixed"
+    assert result.source == "from .. import util\nx = util.helper(), util\n"
+
+
+def test_relative_and_absolute_spellings_get_separate_bindings():
+    """They name one module only if the inferred root is right, which is not proven."""
+    src = "from pkg.sub.mod import Thing\nfrom .sub.mod import go\nx = Thing(), go()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\nfrom .sub import mod as mod_2\nx = mod.Thing(), mod_2.go()\n"
+    )
+
+
+def test_an_existing_absolute_import_is_not_reused_for_a_relative_line():
+    src = "from pkg.sub import mod\nfrom .sub.mod import go\nx = mod, go()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg.sub import mod\nfrom .sub import mod as mod_2\nx = mod, mod_2.go()\n"
+    )
+
+
+def test_absolute_imports_keep_their_absolute_spelling():
+    src = "from pkg.sub.mod import Thing\nfrom pkg.sub.mod import go\nx = Thing(), go()\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == "from pkg.sub import mod\nx = mod.Thing(), mod.go()\n"

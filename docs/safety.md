@@ -224,10 +224,11 @@ uses a legacy codec whose decoding does not round-trip — `cp932`, for one,
 reads two different byte sequences as the same character — writing it back
 would change lines the fix never touched, so the file is declined instead. The
 same applies to a rewrite that would need a character the file's encoding
-cannot represent — the absolute spelling of a relative import names the
-package after its directory, which can be `анализ` in a file declared
-`latin-1` — and to a file libCST itself does not reproduce byte for byte, such
-as one whose last line ends in a lone `\r`, which libCST drops.
+cannot represent — `from . import C` in `pkg/анализ/mod.py` becomes
+`from .. import анализ`, naming the package after its directory, in a file
+that may be declared `latin-1` — and to a file libCST itself does not
+reproduce byte for byte, such as one whose last line ends in a lone `\r`,
+which libCST drops.
 
 ### The rewrite did not re-parse
 
@@ -315,10 +316,37 @@ configuration would have forbidden. Prefer the bare last-component spelling
       "usually" is not proof, and following order through conditional and
       `try` bodies is a heuristic this layer deliberately does without. This
       is a known, accepted source of `CP002`.
-- **Relative imports become absolute.** `from .sub.mod import C` is rewritten
-  to `from pkg.sub import mod` plus `mod.C`. The import that is *kept* (any
-  compliant names in a mixed statement) keeps its original relative form; the
-  new module import is always absolute.
+- **Relative imports stay relative, and one form is kept.**
+  `from .sub.mod import C` is rewritten to `from .sub import mod` plus `mod.C`.
+  The absolute name is what the resolver classifies, but it is only as good as
+  the import root cleanporter inferred for the file, so it is never written
+  out: a PEP 420 namespace directory once turned `from .readers import read`
+  into `from io import readers` (see
+  [Import roots](how-it-works.md#import-roots)). The relative replacement
+  climbs from wherever the file really is, exactly as the original did.
+
+    `from . import C` has no module part to split: it imports from the package
+    itself, and a relative import can name a package only from its parent. In
+    `pkg/sub/mod.py` that is `from .. import sub` plus `sub.C`. This spelling
+    *does* depend on the root giving `sub` a parent package, but only in a
+    way that fails loudly: if the root is wrong and `sub` is really
+    top-level, the import raises `ImportError` ("attempted relative import
+    beyond top-level package") the first time the module is imported. It can
+    never silently bind a different module the way `import io` did. Like any
+    replacement, it is also checked to bind the package it names (see below).
+
+    When the package is top-level under this run's roots — `from . import
+    __version__` in `pkg/cli.py` is the common case — there is no relative
+    spelling at all, and the absolute one, `import pkg`, would depend on the
+    import root where the original did not. That import is reported `CP003`
+    and kept exactly as written, in every mode; the rest of the file is still
+    fixed.
+
+    A relative and an absolute import of the same module in one file are
+    given separate module bindings (one of them aliased, `mod_2`): they are
+    the same module only if the inferred root is right. Two relative imports
+    of one module share a binding however they are spelled, since both climb
+    from the file's own package.
 - **Imports are not re-sorted.** The fixer inserts or replaces a statement in
   place rather than reflowing the import block. Use isort or Ruff separately
   for layout.

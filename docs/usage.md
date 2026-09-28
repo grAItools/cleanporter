@@ -63,9 +63,13 @@ skipped before resolution is attempted.
     purely informational: like `CP001`, it makes the run exit `1`.
 
     Most `CP003` findings are the fixer explaining a decision, so they only
-    appear under `--fix` or `--diff`. The one exception is a wildcard import
-    (`from x import *`), which is reported as `CP003` in every mode — there is
-    no module import that reproduces it, so it can never be rewritten.
+    appear under `--fix` or `--diff`. The exceptions are reasons that belong
+    to the import itself, which are reported as `CP003` in every mode: a
+    wildcard import (`from x import *`), for which no module import is a
+    replacement; an explicit or load-bearing re-export; a replacement that
+    cannot be shown to bind the module it names; and `from . import C` where
+    the package is top-level, which has no relative replacement (see
+    [Known limitations](safety.md#known-limitations)).
 
 !!! note "`CP004` findings never count"
 
@@ -129,9 +133,10 @@ If a rewrite could not be written back that way, the file is declined with a
 - a file in one of the few legacy multi-byte encodings (such as `cp932`) that
   read two byte sequences as one character, where decoding and re-encoding
   would change a line the fix never touched;
-- a rewrite that needs a character the declared encoding cannot hold — the
-  absolute spelling of a relative import names the package after its
-  directory, which may be non-ASCII in a file declared `latin-1`;
+- a rewrite that needs a character the declared encoding cannot hold —
+  `from . import C` in a subpackage becomes `from .. import <subpackage>`,
+  naming it after its directory, which may be non-ASCII in a file declared
+  `latin-1`;
 - a file libCST does not reproduce byte for byte, such as one whose last line
   ends in a lone `\r`.
 

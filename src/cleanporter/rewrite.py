@@ -37,6 +37,15 @@ because a mechanical rewrite could change runtime behaviour):
 Multiple object names sharing one module reuse a single new binding; compliant
 names in a mixed statement are kept in place.
 
+A relative import is rewritten to a relative import: ``from .sub.mod import C``
+becomes ``from .sub import mod``. Its absolute name is still what the resolver
+classifies, but that name is only as good as the import root inferred for the
+file, and writing it into the file is how a PEP 420 namespace package once
+turned ``from .readers import read`` into ``from io import readers``. See
+`_imports.module_import_spelling` for the spellings, including the one case
+with none (``from . import C`` in a top-level package), which `analyze.Decider`
+keeps as written.
+
 Two phases inside one traversal, and the split is the safety model: on the way
 down `_Fixer` fills a single `_Plan` -- node id to replacement, for statements,
 references and lazy annotation strings -- and the ``leave_*`` hooks apply it on
@@ -602,6 +611,12 @@ def _rewrite_string_content(
     return node.with_changes(value=new_value)
 
 
+def _module_import_stmt(spelling: tuple[str, str], bind: str) -> cst.SimpleStatementLine:
+    """The statement binding *bind* to a module spelled as *spelling*."""
+    code = _imports.render_import(spelling, bind)
+    return cst.ensure_type(cst.parse_statement(code), cst.SimpleStatementLine)
+
+
 class _Fixer(cst.CSTTransformer):
     METADATA_DEPENDENCIES = (metadata.ScopeProvider, metadata.PositionProvider)
 
@@ -613,10 +628,11 @@ class _Fixer(cst.CSTTransformer):
         self._resolver = resolver
         self.plan = _Plan()
         self.blockers: list[guards.Hit] = []
-        self._module_binding: dict[
-            tuple[metadata.Scope, str], str
-        ] = {}  # (scope, parent) -> bound token
-        self._existing: dict[str, str] = {}  # already-imported module -> its name
+        #: (scope, parent, relative) -> bound token. *relative* is part of
+        #: the key for the reason `_build_existing` gives.
+        self._module_binding: dict[tuple[metadata.Scope, str, bool], str] = {}
+        #: (already-imported module, spelled relative) -> the name it is bound to.
+        self._existing: dict[tuple[str, bool], str] = {}
         #: Names bound at module scope. Kept *live*: grows as `_binding_for`
         #: allocates new module-level tokens, so a later function scope's
         #: collision check sees them (fix-round-1 Critical 2).
@@ -805,7 +821,20 @@ class _Fixer(cst.CSTTransformer):
         return merged
 
     def _build_existing(self, node: cst.Module) -> None:
-        """Map already-imported modules to the simple name they are bound to."""
+        """Map already-imported modules to the simple name they are bound to.
+
+        Keyed by the absolute module *and* whether the import spelled it
+        relatively, and a rewritten line only reuses a binding spelled the
+        way its own import is. Two relative spellings that anchor to the same
+        name reach the same module whatever the import root really is: both
+        climb from this file's own package, and every component either names
+        is a directory or the author's own text. Two absolute spellings are
+        the same text. A relative spelling and an absolute one are the same
+        module only if the inferred import root is right -- the premise the
+        fixer stopped relying on when it began writing relative imports
+        relative (`_imports.module_import_spelling`) -- so they do not share:
+        the rewritten line gets its own import, aliased if the name is taken.
+        """
         for _line, imp in self._import_lines(node):
             if _imports.is_star(imp) or id(imp) in self._tc_ids:
                 continue
@@ -815,9 +844,10 @@ class _Fixer(cst.CSTTransformer):
             parent = _imports.resolve_parent(imp, self._rec.base_pkg)
             if parent is None:
                 continue
+            relative = _imports.relative_level(imp) > 0
             for name, asname, _alias in _imports.imported_names(imp):
                 if self._resolver.is_module(parent, name) is True:
-                    self._existing[f"{parent}.{name}"] = asname or name
+                    self._existing[f"{parent}.{name}", relative] = asname or name
         # plain ``import a`` / ``import a as z`` (top-level modules only)
         for plain in _collect_imports(node):
             scope = self.get_metadata(metadata.ScopeProvider, plain, None)
@@ -836,9 +866,9 @@ class _Fixer(cst.CSTTransformer):
                 as_node = alias.asname.name if alias.asname else None
                 bound = as_node.value if isinstance(as_node, cst.Name) else None
                 if bound is not None:
-                    self._existing[mod] = bound
+                    self._existing[mod, False] = bound
                 elif "." not in mod:
-                    self._existing[mod] = mod
+                    self._existing[mod, False] = mod
 
     def _import_lines(
         self, node: cst.Module
@@ -929,29 +959,9 @@ class _Fixer(cst.CSTTransformer):
         if not fix:
             return
         self._fixed_locals.update(asname or name for name, asname in fix)
-        if _interior_comments(imp):
-            # The kept-names line is regenerated from text and the whole
-            # statement is replaced, so any comment *inside* the import
-            # would vanish. Same ruling as the line-level comment check
-            # below: silently discarding an author's comment is worse than
-            # declining to fix the file.
-            self.blockers.append(
-                (
-                    self._line_of(imp),
-                    "rewriting this import would discard a comment inside it",
-                )
-            )
-            return
-        if id(imp) in self._tc_ids and not self._future_annotations:
-            self.blockers.append(
-                (
-                    self._line_of(imp),
-                    (
-                        "TYPE_CHECKING-gated import; rewriting it without "
-                        "`from __future__ import annotations` risks NameError"
-                    ),
-                )
-            )
+        spelling = self._spelling_or_blocker(imp, parent)
+        if isinstance(spelling, str):
+            self.blockers.append((self._line_of(imp), spelling))
             return
 
         # Resolve each fixed name's rebinding status, and collect the
@@ -1008,9 +1018,11 @@ class _Fixer(cst.CSTTransformer):
 
         # new statements: one module import per (deduped) parent, plus kept names
         new_lines: list[cst.BaseStatement] = []
-        bind, need_new_line = self._binding_for(scope, parent, extra_avoid)
+        bind, need_new_line = self._binding_for(
+            scope, (parent, _imports.relative_level(imp) > 0), extra_avoid
+        )
         if need_new_line:
-            new_lines.append(self._module_import_stmt(parent, bind))
+            new_lines.append(_module_import_stmt(spelling, bind))
 
         if keep:
             prefix = "." * _imports.relative_level(imp)
@@ -1079,6 +1091,30 @@ class _Fixer(cst.CSTTransformer):
             return
         self.plan.line_repl[id(line)] = new_lines
 
+    def _spelling_or_blocker(self, imp: cst.ImportFrom, parent: str) -> tuple[str, str] | str:
+        """How to spell the module import replacing *imp*, or why it cannot be rewritten.
+
+        The spelling is `_imports.module_import_spelling`'s ``(package,
+        token)``; a plain string is the reason the whole line is declined.
+        """
+        if _interior_comments(imp):
+            # The kept-names line is regenerated from text and the whole
+            # statement is replaced, so any comment *inside* the import
+            # would vanish. Same ruling as the line-level comment check in
+            # `_plan_line`: silently discarding an author's comment is worse
+            # than declining to fix the file.
+            return "rewriting this import would discard a comment inside it"
+        if id(imp) in self._tc_ids and not self._future_annotations:
+            return (
+                "TYPE_CHECKING-gated import; rewriting it without "
+                "`from __future__ import annotations` risks NameError"
+            )
+        # `analyze.Decider` keeps every name on a line with no spelling, so a
+        # line that reaches here always has one. Should the two ever disagree,
+        # the file is declined rather than written with a guessed name.
+        spelling = _imports.module_import_spelling(imp, parent)
+        return _imports.unspellable_reason(imp, parent) if spelling is None else spelling
+
     def _local_names(self, scope: metadata.Scope) -> set[str]:
         """Names assigned directly in *scope*, ignoring enclosing scopes.
 
@@ -1146,7 +1182,7 @@ class _Fixer(cst.CSTTransformer):
         return names
 
     def _binding_for(
-        self, scope: metadata.Scope, parent: str, extra_avoid: set[str]
+        self, scope: metadata.Scope, module: tuple[str, bool], extra_avoid: set[str]
     ) -> tuple[str, bool]:
         """Token to qualify *this line's* references through.
 
@@ -1174,15 +1210,20 @@ class _Fixer(cst.CSTTransformer):
 
         Returns ``(bind, False)`` when the memoized token, or a
         pre-existing import already in the file, can be reused as-is.
+
+        *module* is ``(parent, relative)``: the absolute module and whether
+        this line spells it relatively. Only a binding spelled the same way
+        is reused -- see `_build_existing`.
         """
-        key = (scope, parent)
+        parent, relative = module
+        key = (scope, parent, relative)
         memoized = self._module_binding.get(key)
         if memoized is not None:
             if memoized not in extra_avoid:
                 return memoized, False
             return self._allocate_token(scope, parent, extra_avoid), True
 
-        existing = self._existing.get(parent)
+        existing = self._existing.get(module)
         if existing is not None:
             # A module-level import is visible from nested scopes unless
             # *this* scope or an enclosing function/class scope assigns
@@ -1302,17 +1343,6 @@ class _Fixer(cst.CSTTransformer):
         else:
             self._local_names(scope).add(bind)
         return bind
-
-    def _module_import_stmt(self, parent: str, bind: str) -> cst.SimpleStatementLine:
-        if "." in parent:
-            pkg, token = parent.rsplit(".", 1)
-            code = f"from {pkg} import {token}"
-        else:
-            token = parent
-            code = f"import {parent}"
-        if bind != token:
-            code += f" as {bind}"
-        return cst.ensure_type(cst.parse_statement(code), cst.SimpleStatementLine)
 
     # -- application -------------------------------------------------------
     def leave_SimpleStatementLine(
@@ -1436,9 +1466,10 @@ def _unwritable(rec: analyze.FileRecord, new_source: str) -> model.Finding | Non
     * a codec that does not round-trip -- a few legacy multi-byte ones map
       several byte sequences to one character, so decoding and re-encoding
       would change lines nobody edited;
-    * text the codec cannot represent at all: the absolute spelling of a
-      relative import names the package from its *directory*, which can be
-      ``анализ`` in a file declared ``latin-1``.
+    * text the codec cannot represent at all: ``from . import C`` in
+      ``pkg/анализ/mod.py`` is rewritten to ``from .. import анализ``, naming
+      the package from its *directory*, in a file that may be declared
+      ``latin-1``.
     """
     if rec.tree.code != rec.source:
         reason = "libCST does not reproduce this file byte for byte"

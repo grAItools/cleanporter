@@ -89,6 +89,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`--fix` writes a relative import's replacement relative.** `from .sub.mod
+  import C` used to become `from pkg.sub import mod`; it now becomes `from .sub
+  import mod`, and `from . import C` in `pkg/sub/mod.py` becomes `from .. import
+  sub`. Absolute imports are rewritten as before, and `CP003` messages about a
+  replacement quote it as it would be written. Two consequences. `from .
+  import C` where the package is top-level — `from . import __version__` in
+  `pkg/cli.py` is the common one — has no relative replacement, and the
+  absolute one (`import pkg`) would depend on the import root where the
+  original did not, so that import is now a `CP003`, in every mode, and kept
+  as written; the rest of its file is still fixed. It used to be rewritten.
+  And a relative and an absolute import of the same module in one file no
+  longer share a module binding: each gets its own, one of them aliased
+  (`mod_2`), because the two are the same module only if the inferred import
+  root is right. Two relative imports of one module still share one.
+
 - **Paths from different projects in one run now draw a warning.** A run loads
   the configuration found from its *first* path, and a later path whose nearest
   `pyproject.toml` is a different file — another project, or a nested one — was
@@ -200,6 +215,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   import.
 
 ### Fixed
+
+- **A relative import in a namespace package is no longer rewritten to the
+  standard library.** In `analytics/io/__init__.py`, with `analytics/` a PEP
+  420 namespace directory that no other file imports, `from .readers import
+  read` was rewritten to `from io import readers`. Nothing inside `analytics`
+  can show that `analytics/` is not an import root, so the file was qualified
+  as `io`, and the fixer wrote that name out: the rewritten package looked for
+  `readers` in the standard library's `io` and failed to import. The
+  replacement is now `from . import readers`, which names no package and is
+  right wherever the root really is.
 
 - **`--python` naming another virtual environment now probes *that*
   environment.** The probe ran in process whenever the target interpreter,

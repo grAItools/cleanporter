@@ -212,11 +212,15 @@ class Resolver:
         """Dotted module name of *path*, or None when it is not under a root."""
         return self._map.qualname_for(path, relative_level)
 
-    def replacement_unreachable(self, parent: str) -> str | None:
+    def replacement_unreachable(self, parent: str, replacement: str | None = None) -> str | None:
         """Why the import the fixer would *write* for *parent* cannot be trusted.
 
         Returns the reason, or ``None`` when the replacement provably binds
-        the module ``parent``.
+        the module ``parent``. *replacement* is the statement as the fixer
+        would spell it, for the message -- a relative import's replacement is
+        relative (`_imports.module_import_spelling`) -- and defaults to the
+        absolute ``from P import S``. The question asked is the same either
+        way: both spellings bind ``getattr(P, 'S')``.
 
         The fixer turns ``from P.S import obj`` into an import of ``P.S``
         itself, spelled ``from P import S``, and qualifies every use as
@@ -274,10 +278,8 @@ class Resolver:
             if verdict is False
             else self.reason(package, token)
         )
-        return (
-            f"the replacement 'from {package} import {token}' cannot be shown "
-            f"to bind the module '{parent}': {cause}"
-        )
+        spelled = replacement or f"from {package} import {token}"
+        return f"the replacement '{spelled}' cannot be shown to bind the module '{parent}': {cause}"
 
     def submodules(self, dotted: str) -> frozenset[str]:
         """Leaf names of *dotted*'s own submodules; empty when it has none.

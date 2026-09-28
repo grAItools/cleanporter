@@ -278,13 +278,27 @@ climbs above the top-level package — more leading dots than there are package
 components to consume — it cannot be anchored, and cleanporter reports `CP002`
 rather than picking something plausible.
 
+The absolute name is for classifying only. When `--fix` rewrites a relative
+import, the module import it writes is relative too — `from .helpers import
+Widget` becomes `from . import helpers` — so it climbs from wherever the file
+really is, as the original did, whatever the import root. `from . import C`
+imports from the package itself, whose only relative spelling is from its
+parent (`from .. import sub` in `pkg/sub/mod.py`). That one does lean on the
+root giving the package a parent, but a wrong root makes it fail loudly with
+`ImportError` at import time; it cannot bind a different module. Where the
+package is top-level there is no relative spelling, and that import is kept
+as a `CP003` — see [Known limitations](safety.md#known-limitations).
+
 ## Import roots
 
 An *import root* is a directory that would be on `sys.path` for the files
 being analysed: `src/` in a src-layout project, the repository root in a flat
-one. Getting it wrong produces a dotted name that does not exist at runtime —
-and in `--fix` mode that name gets written into the file, which is code that
-compiles and then raises `ModuleNotFoundError`.
+one. Getting it wrong produces a dotted name that does not exist at runtime,
+or names a different module, and every relative import in the file is
+classified under it. `--fix` does not write that name out for a relative
+import (see [Relative imports](#relative-imports)); it did once, which
+produced code that compiled and then raised `ModuleNotFoundError`, or looked
+for the name in the standard library.
 
 Roots come from two places:
 
@@ -319,7 +333,9 @@ package deep, so its own relative imports rule nothing out. Nothing *inside*
 `analytics` can settle it. A file outside it saying `from analytics.io import
 x` can: `analytics` is then a package under some higher root, so it is not a
 root itself. Without this rule, `from .readers import read` inside that
-`__init__.py` would be rewritten to `from io import readers` — the standard
+`__init__.py` is classified as an import from `io.readers`. The fixer still
+writes `from . import readers`, which is right either way; before it wrote
+relative imports relative, it wrote `from io import readers` — the standard
 library. Only *inferred* roots that sit inside another root can be demoted
 this way; a declared root never is.
 
