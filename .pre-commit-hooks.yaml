@@ -12,6 +12,10 @@
 # its pyproject.toml, is read for evidence and only the changed files are
 # reported and fixed. That is also why they are `require_serial`: split into
 # parallel batches, each process would read the whole tree again.
+#
+# `files: \.py$` narrows `types: [python]`, which also selects extensionless
+# scripts with a python shebang: the project walk only collects `*.py`, so
+# such a script would be passed and silently never checked.
 
 - id: cleanporter
   name: cleanporter
@@ -19,6 +23,7 @@
   entry: cleanporter --whole-project
   language: python
   types: [python]
+  files: \.py$
   require_serial: true
 
 - id: cleanporter-fix
@@ -27,4 +32,5 @@
   entry: cleanporter --whole-project --fix
   language: python
   types: [python]
+  files: \.py$
   require_serial: true

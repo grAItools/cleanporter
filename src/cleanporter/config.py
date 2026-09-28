@@ -281,9 +281,18 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
     )
 
 
-def find_pyproject(start: pathlib.Path) -> pathlib.Path | None:
-    """Walk upward from *start* looking for a pyproject.toml."""
-    current = start.resolve()
+def find_pyproject(start: pathlib.Path, *, resolve: bool = True) -> pathlib.Path | None:
+    """Walk upward from *start* looking for a pyproject.toml.
+
+    By default *start* is resolved first, so a symlink is looked up from its
+    target. With *resolve* false the walk starts from the absolute path as
+    written instead: a whole-project run (``--whole-project``) asks which
+    project a *listed* path sits in, and a symlink inside the project whose
+    target lives elsewhere belongs to the project it was listed in.
+    """
+    # os.path.abspath, not Path.absolute: it also folds `..` lexically, so the
+    # walk's parents are real ancestors; Path.resolve would follow symlinks.
+    current = start.resolve() if resolve else pathlib.Path(os.path.abspath(start))  # noqa: PTH100
     if current.is_file():
         current = current.parent
     while True:
@@ -309,7 +318,7 @@ def load_config(start: pathlib.Path) -> Config:
     return _parse_table(table, pyproject.parent)
 
 
-def mismatch_warning(paths: Sequence[pathlib.Path]) -> str | None:
+def mismatch_warning(paths: Sequence[pathlib.Path], *, resolve: bool = True) -> str | None:
     """Warning text when *paths* do not all share the first one's pyproject.toml.
 
     A run loads one configuration, found from its first path (see
@@ -318,14 +327,14 @@ def mismatch_warning(paths: Sequence[pathlib.Path]) -> str | None:
     still analysed, but under the first project's rules, and nothing used to
     say so. This names the configuration in use and every path whose own is
     being ignored. It does not change which configuration wins. ``None`` when
-    every path agrees.
+    every path agrees. *resolve* is passed to `find_pyproject`.
     """
     if not paths:
         return None
-    used = find_pyproject(paths[0])
+    used = find_pyproject(paths[0], resolve=resolve)
     ignored: dict[pathlib.Path | None, list[str]] = {}
     for path in paths[1:]:
-        own = find_pyproject(path)
+        own = find_pyproject(path, resolve=resolve)
         # Two spellings of one file (a case-insensitive filesystem) agree.
         same = own == used or (own is not None and used is not None and own.samefile(used))
         if not same:

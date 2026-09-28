@@ -48,15 +48,16 @@ partial tree, and two things a run knows come from the files it is given:
   demotes a PEP 420 namespace root (`firstparty.ModuleMap.demote_roots`) is
   missing, so a file under one can be given the wrong dotted name.
 
-So a whole-project run builds the `project_lib.Project` from the project
-root (`config.Config.root`: the directory of the ``pyproject.toml`` in use),
-plus any listed path outside it, exactly as a run over the whole tree would --
-and then fixes, reports and counts only the files under the listed paths.
-Every rewrite is judged on the same evidence as a full run, so it is as safe
-as one. The root is walked like any directory, so a listed file the
+So a whole-project run builds the `project_lib.Project` a full run over the
+project root (`config.Config.root`: the directory of the ``pyproject.toml``
+in use) plus any listed outside files would build, and then fixes, reports
+and counts only the files under the listed paths: every rewrite is judged on
+that run's evidence. Evidence still stops at the root, so a consumer in
+another project (a sibling uv workspace member, say) is as invisible as it
+is to any run. The root is walked like any directory, so a listed file the
 configuration excludes (or one in a skipped directory) is not reported: a
-hook handed every changed file honours ``exclude`` as ``cleanporter .``
-does. A file elsewhere in the tree that cannot be read or parsed is a
+hook handed every changed file honours ``exclude`` as ``cleanporter .`` run
+from the project root does. A file elsewhere in the tree that cannot be read or parsed is a
 warning rather than an error, since the run does not report on it -- but
 its imports are then missing from the evidence, and the warning says so.
 """
@@ -266,7 +267,9 @@ def run(
     (see the module docstring).
     """
     tally = _Tally(listener or _SILENT)
-    mismatch = config_lib.mismatch_warning(paths)
+    # A whole-project run places a listed path by where it was listed, not by
+    # a symlink's target (see `config.find_pyproject`).
+    mismatch = config_lib.mismatch_warning(paths, resolve=not whole_project)
     if mismatch is not None:
         tally.warn(mismatch)
     analysed, reported = _scope(paths, config, tally) if whole_project else (paths, None)

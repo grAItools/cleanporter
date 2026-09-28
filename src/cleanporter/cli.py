@@ -38,7 +38,9 @@ _CROSS_FILE_NOTE = (
 )
 
 #: `--whole-project` with no pyproject.toml to say where the project starts.
-_NO_PROJECT = "--whole-project needs a pyproject.toml to mark the project root; none above"
+_NO_PROJECT = (
+    "--whole-project needs a pyproject.toml to mark the project root; none is above any listed path"
+)
 
 _EXIT_ERROR = 2  # the rest of the exit-code rule is `engine.RunResult.exit_code`
 
@@ -163,25 +165,45 @@ class _Printer(engine.Listener):
             print(f"fixed: {patch.path}", file=self._report)
 
 
+def _project_anchor(
+    paths: list[pathlib.Path],
+) -> tuple[pathlib.Path, list[pathlib.Path]] | None:
+    """For `--whole-project`: the project directory, and *paths* with its path first.
+
+    The project is that of the first listed path with a pyproject.toml above
+    it -- looked up from the path as written, not from a symlink's target --
+    so the answer does not depend on the order pre-commit lists files in. That
+    path goes first because the engine names the first path's configuration
+    in its mismatch warning. ``None`` when no path has one.
+    """
+    for path in paths:
+        pyproject = config_lib.find_pyproject(path, resolve=False)
+        if pyproject is not None:
+            return pyproject.parent, [path, *(p for p in paths if p is not path)]
+    return None
+
+
 def run(args: argparse.Namespace) -> int:
-    anchor = pathlib.Path(args.paths[0]).resolve()
+    paths = [pathlib.Path(p) for p in args.paths]
+    anchor = paths[0].resolve()
+    if args.whole_project:
+        found = _project_anchor(paths)
+        if found is None:
+            # Without one, the "project" would be the first path's directory:
+            # a partial tree presented as the whole, which the flag exists to avoid.
+            print(f"cleanporter: error: {_NO_PROJECT}", file=sys.stderr)
+            return _EXIT_ERROR
+        anchor, paths = found
     try:
         config = _apply_overrides(config_lib.load_config(anchor), args)
     except config_lib.ConfigError as exc:
         print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
         return _EXIT_ERROR
 
-    if args.whole_project and config_lib.find_pyproject(anchor) is None:
-        # Without one, the "project" would be the first path's directory:
-        # a partial tree presented as the whole, which is what the flag is for.
-        print(f"cleanporter: error: {_NO_PROJECT} {anchor}", file=sys.stderr)
-        return _EXIT_ERROR
-
     mode = _mode(args)
     # Everything that is not the patch -- warnings, parse errors, findings, the
     # summary -- goes here; see the stream contract in the module docstring.
     report = sys.stdout if mode is engine.Mode.CHECK else sys.stderr
-    paths = [pathlib.Path(p) for p in args.paths]
     result = engine.run(
         paths, config, mode, listener=_Printer(report), whole_project=args.whole_project
     )

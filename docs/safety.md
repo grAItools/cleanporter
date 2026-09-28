@@ -492,7 +492,8 @@ configuration would have forbidden. Prefer the bare last-component spelling
     import naming one is `CP002` and nothing is written for it. The cost is a
     fix that would have been correct; the finding says which evidence was
     missing ("neither on disk under this run's import roots nor bound in …"),
-    and pointing cleanporter at the whole tree, or declaring `source_roots`,
+    and pointing cleanporter at the whole tree (for a few files, with
+    [`--whole-project`](usage.md#flags)), or declaring `source_roots`,
     resolves it.
 
     Written inside `pkg/__init__.py` this is the same check: there the

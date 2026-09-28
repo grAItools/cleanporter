@@ -101,9 +101,9 @@ repos:
       - id: cleanporter        # or cleanporter-fix, to rewrite
 ```
 
-The hooks run with `--whole-project`: the whole project is read for evidence,
-so a changed file is judged exactly as a full run would judge it, and only the
-changed files are reported. See
+The hooks run with `--whole-project`: a changed file is judged on the evidence
+of a full run over the `pyproject.toml` root, plus any listed outside files,
+and only the changed files are reported. See
 [pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
 
 ## Exit codes

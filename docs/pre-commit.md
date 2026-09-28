@@ -24,11 +24,15 @@ repos:
 `rev` is a release tag. The hooks first ship in the release after `0.4.0`;
 `pre-commit autoupdate` (`prek autoupdate`) moves `rev` to the latest one.
 
-Both hooks run on Python files only, configure themselves from
-`[tool.cleanporter]` in your `pyproject.toml` like any other run, and take
-extra flags through `args` — `args: [--strict]`, say. The hooks' own flags
-are part of their `entry`, not their `args`, so setting `args` adds to them
-rather than replacing `--whole-project`.
+Both hooks run on `*.py` files only (`types: [python]` plus `files: \.py$`:
+an extensionless script with a python shebang is left out, because the
+project walk only collects `*.py` and would never check it), configure
+themselves from `[tool.cleanporter]` in your `pyproject.toml` like any other
+run, and take extra flags through `args` — `args: [--strict]`, say. The
+hooks' own flags are part of their `entry`, not their `args`, so setting
+`args` adds to them rather than replacing `--whole-project`. pre-commit lets
+you override `entry` on a remote hook too, so `entry: cleanporter` drops the
+flag without a `repo: local` hook.
 
 ## Why the whole project is read
 
@@ -53,33 +57,59 @@ cross-file:
   a file under one can be given the wrong module name.
 
 `--whole-project` closes both. The run reads the whole project — the
-directory of the `pyproject.toml` found above the first file, walked exactly
-as `cleanporter .` would walk it — so every file's imports are evidence and
-every package is on the map, and then fixes, reports and counts only the
-files it was given. A rewrite is therefore declined for exactly the reasons a
-run over the whole tree would decline it. The exit code is decided by the
+directory of the `pyproject.toml` above the first listed file that has one,
+walked as `cleanporter .` run from that directory would walk it — so every
+file's imports are evidence and every package is on the map, and then fixes,
+reports and counts only the files it was given. A rewrite is judged on the
+evidence of a full run over the `pyproject.toml` root, plus any listed
+outside files. The exit code is decided by the
 given files alone: a violation in a file you did not touch does not block
 your commit, and a file elsewhere that cannot be parsed is a warning (its
 imports are then missing from the evidence, which the warning says).
 
 Consequences worth knowing:
 
-- **A `pyproject.toml` is required.** Without one there is no telling where
-  the project starts, and the run exits `2` rather than treat the first file's
-  directory as the whole tree. Drop the flag (override the hook's `entry` in
-  a `repo: local` hook) if your project has none.
+- **A `pyproject.toml` is required.** The project is the one above the
+  first listed file that has one, whatever order pre-commit lists files in;
+  a symlink is placed by where it sits, not by its target. When no listed
+  file has one there is no telling where the project starts, and the run
+  exits `2` rather than treat a file's directory as the whole tree. Override
+  the hook's `entry` (`entry: cleanporter`) if your project has none.
 - **`exclude` is honoured for the files pre-commit passes.** A changed file
   that `exclude` (or a skipped directory such as `build/`) leaves out of the
-  walk is not reported, as it would not be by `cleanporter .`. Without the
-  flag, a file named on the command line is always checked.
+  walk is not reported, as it would not be by `cleanporter .` run from the
+  project root. Without the flag, a file named on the command line is always
+  checked.
+- **Paths are compared as the filesystem spells them.** A listed file is
+  matched to the walked tree by its resolved path, and on a case-insensitive
+  filesystem (macOS by default) a path spelled in a different case from the
+  one on disk is not matched, and so not reported. pre-commit passes the
+  paths the repository records, which match.
 - **Every commit reads the whole tree.** That is why both hooks are
   `require_serial`: split into parallel batches, each process would read it
   again. Unstaged changes are stashed by pre-commit while hooks run, so the
   tree read is what you are committing, plus any untracked files.
-- **One project per run.** Files from two `pyproject.toml` projects in one
-  repository are all analysed under the first one's configuration, with a
-  warning. In a monorepo, add the hook once per project with a `files:`
-  pattern.
+- **`pyproject.toml` not at the repository root? Add a `files:` pattern.**
+  pre-commit passes every changed Python file in the repository. A file
+  outside the project (a `scripts/` beside it, another project) is analysed
+  and reported under this project's configuration, with a warning. Scope the
+  hook to the project, `files: ^myproject/.*\.py$`, and in a monorepo add the
+  hook once per project, each with its own pattern.
+
+## Evidence stops at the nearest `pyproject.toml`
+
+The whole project is one `pyproject.toml`'s directory, and nothing outside it
+is read. In a repository of nested projects or a uv workspace, a consumer in
+*another* project is invisible, as it is to any run. Say
+`libs/foo/pyproject.toml` and `apps/web/pyproject.toml`, with
+`libs/foo/src/foo/__init__.py` re-exporting `helper` (`from foo.core import
+helper`) and only `apps/web/app.py` importing it from there (`from foo import
+helper`). A commit touching `libs/foo` runs on `libs/foo`'s project;
+`apps/web` is not evidence, so the re-export looks unused, and
+`cleanporter-fix` rewrites it and breaks `apps/web` at import time.
+`--whole-project` judges a changed file on a full run over its own project,
+not over the repository. Where projects import each other, prefer the
+`cleanporter` check hook, and run your whole test suite after any fix.
 
 ## Exit codes and `cleanporter-fix`
 

@@ -119,7 +119,8 @@ run's import roots, and 'pkg' binds '_version' by importing its own submodule
 of that name`, or `'pkg.helpers' is neither on disk under this run's import
 roots nor bound in 'pkg'`. A first-party name that ends up here is *not* handed to the
 interpreter probe: that would import first-party code, which is what this
-layer exists to avoid. Pointing cleanporter at the whole tree, or declaring
+layer exists to avoid. Pointing cleanporter at the whole tree (or, when checking a few files, passing
+[`--whole-project`](usage.md#flags)), or declaring
 `source_roots`, is what settles a sibling portion it cannot see.
 
 At an import root, the scan that builds this map skips the directories file

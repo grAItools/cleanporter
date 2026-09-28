@@ -171,13 +171,56 @@ def test_cli_without_a_pyproject_is_an_error(tmp_path: pathlib.Path, capsys) -> 
     assert "needs a pyproject.toml" in capsys.readouterr().err
 
 
+@pytest.fixture
+def stray(tmp_path_factory: pytest.TempPathFactory) -> pathlib.Path:
+    """A clean file under no pyproject.toml, outside every project."""
+    path = tmp_path_factory.mktemp("stray") / "stray.py"
+    path.write_text("import os\n\nos.sep\n", encoding="utf-8")
+    assert config.find_pyproject(path) is None
+    return path
+
+
+@pytest.mark.parametrize("stray_first", [True, False])
+def test_the_project_does_not_depend_on_which_file_comes_first(
+    tree: pathlib.Path, stray: pathlib.Path, capsys, *, stray_first: bool
+) -> None:
+    """pre-commit lists files in no promised order; the project is the first with one."""
+    listed = [str(stray), str(tree / "demo" / "__init__.py")]
+    rc = cli.main(["--whole-project", *(listed if stray_first else listed[::-1])])
+    out = capsys.readouterr().out
+    # consumer.py was read either way: its use of the re-export declines the rewrite.
+    assert "__init__.py:1:0: CP003 " in out
+    assert "checked 2 file(s)" in out
+    assert rc == 1
+
+
+def test_a_symlink_to_a_file_outside_the_project_belongs_to_the_project(
+    tree: pathlib.Path, stray: pathlib.Path, capsys
+) -> None:
+    """Placed by where it is listed, not by its target, which has no pyproject.toml."""
+    stray.write_text("from os.path import join\n\njoin\n", encoding="utf-8")
+    link = tree / "linked.py"
+    try:
+        link.symlink_to(stray)
+    except OSError:  # pragma: no cover - e.g. Windows without the privilege
+        pytest.skip("cannot create a symlink here")
+    rc = cli.main(["--whole-project", "--python", "self", str(link)])
+    captured = capsys.readouterr()
+    assert "needs a pyproject.toml" not in captured.err
+    assert "CP001 imports object 'join'" in captured.out
+    assert "checked 1 file(s)" in captured.out
+    assert rc == 1
+
+
 # -- .pre-commit-hooks.yaml -------------------------------------------------
 
 
 def _manifest() -> list[dict[str, object]]:
-    """The manifest, parsed by PyYAML (a dependency of libcst) in a child process.
+    """The manifest, parsed by PyYAML in a child process.
 
-    A child, so this suite's type checkers never see the untyped ``yaml``
+    PyYAML is in the dev dependency group for this: libcst pulls it in on
+    some Pythons only (on 3.13 it depends on ``pyyaml-ft`` instead). A child
+    process, so this suite's type checkers never see the untyped ``yaml``
     module; JSON is the typed boundary.
     """
     code = "import json, sys, yaml; json.dump(yaml.safe_load(open(sys.argv[1])), sys.stdout)"
@@ -199,6 +242,9 @@ def test_the_manifest_publishes_a_check_and_a_fix_hook() -> None:
     for hook in hooks.values():
         assert hook["language"] == "python"
         assert hook["types"] == ["python"]
+        # `types: [python]` also matches extensionless shebang scripts, which
+        # the project walk never collects: they would be passed and unchecked.
+        assert hook["files"] == r"\.py$"
         # Every run reads the whole tree: parallel batches would each re-read it.
         assert hook["require_serial"] is True
         assert hook.get("pass_filenames", True) is True
