@@ -163,8 +163,8 @@ from, so the pair stays ambiguous.
 
 Everything else is settled by asking a Python interpreter — the one named by
 `--python` (or the `python` key), or else the project's own, detected from
-`$UV_PROJECT_ENVIRONMENT` or the `.venv` at the project or uv workspace root,
-or else from `$VIRTUAL_ENV`, or else the interpreter running cleanporter (see
+`$UV_PROJECT_ENVIRONMENT` or the `.venv` at the project root (the uv
+workspace root, for a workspace member), or else from `$VIRTUAL_ENV`, or else the interpreter running cleanporter (see
 [The probe interpreter](configuration.md#the-probe-interpreter)). Detection
 only picks *which* environment answers; a pick that lacks a package, or cannot
 run, leaves the import `CP002`, so it can never make a verdict more optimistic

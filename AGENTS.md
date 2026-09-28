@@ -15,7 +15,8 @@ that weakens either is a regression no matter how well it tests:
    (first-party filesystem → interpreter probe → undetermined). The probe's
    interpreter is the one `--python`/`python =` names, else the project's own
    detected, in uv's order, from `$UV_PROJECT_ENVIRONMENT` or `.venv` at the
-   project root, then at its uv workspace root, then `$VIRTUAL_ENV`
+   project root (the workspace root instead, for a uv workspace member), then
+   `$VIRTUAL_ENV`
    (`_interpreter.py`), else cleanporter's own; `self` forces cleanporter's
    own, `auto` detection; detection picks which environment answers, never an
    answer. It runs in-process only when that is cleanporter's own

@@ -56,7 +56,8 @@ class Config:
     exempt_names: frozenset[str] = frozenset()
     #: Interpreter used for the stdlib/third-party probe: ``None`` (unset) or
     #: ``"auto"`` detects the project's own (``$UV_PROJECT_ENVIRONMENT`` or
-    #: ``.venv`` at ``root`` or its uv workspace root, else ``$VIRTUAL_ENV``;
+    #: ``.venv`` at ``root``, or at the uv workspace root for a member, else
+    #: ``$VIRTUAL_ENV``;
     #: see `cleanporter._interpreter`), ``"self"`` is cleanporter's own, in
     #: process, and anything else names one. A relative path read from
     #: pyproject.toml arrives already joined to ``root``.

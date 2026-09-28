@@ -203,7 +203,7 @@ cleanporter --strict src/ tests/
 ```
 
 cleanporter finds the project's interpreter by itself — the `.venv` beside
-`pyproject.toml` (or at the uv workspace root), or else an activated virtual
+`pyproject.toml` (the uv workspace root's, for a member), or else an activated virtual
 environment — so a copy installed with `pipx` or `uv tool` still classifies
 your third-party imports. The project root is the directory of the
 `pyproject.toml` found above the first path; with none, it is the first

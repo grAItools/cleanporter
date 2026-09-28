@@ -100,15 +100,22 @@ project has none — so a shell that still has some other environment activated
 does not decide what your project is checked against:
 
 1. `$UV_PROJECT_ENVIRONMENT` — where uv keeps the project environment when told
-   not to use `.venv`; a relative value is read against the project root;
-2. `.venv` in the project root;
-3. the same two against the **uv workspace root**, when the project is a
-   workspace member: the nearest ancestor whose `pyproject.toml` has a
-   `[tool.uv.workspace]` table whose `members` globs match the project root
-   and whose `exclude` globs do not — uv's own rule, and where uv keeps a
-   member's environment. The walk stops at the first ancestor declaring a
-   workspace, member or not;
-4. `$VIRTUAL_ENV` — an activated virtual environment.
+   not to use `.venv`; a relative value is read against the environment root
+   (below);
+2. `.venv` in the environment root;
+3. `$VIRTUAL_ENV` — an activated virtual environment.
+
+The *environment root* is where uv would put the project's environment: the
+project root, unless the project is a **uv workspace member**, in which case
+it is the workspace root — and the member's own directory is not tried, as uv
+does not use it. Membership follows uv: the *first* directory above the
+project root that holds a `pyproject.toml` decides. If that file has a
+`[tool.uv.workspace]` table whose `members` globs match the project root and
+whose `exclude` globs do not, it is the workspace root; if it is a plain
+project (an `examples/demo` project inside a package), a workspace the project
+is not a member of, or a file that cannot be read, there is no workspace, and
+nothing further up is looked at. A project root that itself declares
+`[tool.uv.workspace]` is its own workspace root.
 
 The *project root* is the directory of the `pyproject.toml` in use. **With no
 `pyproject.toml` above the first path argument, it is that path's directory**
@@ -123,18 +130,21 @@ executable file wins; a candidate that does not exist, or cannot be run, is
 passed over without a word — detection is a search, not a request. Nothing
 else is tried: no `uv` subprocess, no `PATH` search, **no conda environment**
 (`$CONDA_PREFIX` is not read; name a conda interpreter with `--python`), and
-no walk up the directory tree beyond the one workspace lookup. If nothing is
+no walk up the directory tree beyond the first `pyproject.toml` above the
+project root. If nothing is
 found, the interpreter running cleanporter is used, in process, as before.
 
 When the environment found *is* the one running cleanporter — its interpreter
 is cleanporter's own `sys.executable`, or its directory is cleanporter's
 `sys.prefix` and that is a virtual environment, as when you `uv run
 cleanporter` or `uv run python -m cleanporter` from the project's own
-environment — the probe runs in process and nothing is printed. Anything else
-is probed in a subprocess, exactly as if it had been passed with `--python`,
-and cleanporter says which one it picked, and why, in one line on stderr —
-naming the active `$VIRTUAL_ENV` too when the project's own environment was
-preferred over it:
+environment — the probe runs in process and nothing is printed, unless an
+active `$VIRTUAL_ENV` names a *different* directory: then a note says the
+project's environment was used rather than it. (`uv run` sets `$VIRTUAL_ENV`
+to the project's own, so it stays silent.) Anything else is probed in a
+subprocess, exactly as if it had been passed with `--python`, and cleanporter
+says which one it picked, and why, in one line on stderr — naming the active
+`$VIRTUAL_ENV` too when the project's own environment was preferred over it:
 
 ```text
 cleanporter: note: classifying stdlib and third-party imports with /work/proj/.venv/bin/python, found from the .venv in the project root /work/proj; set python = 'self' (--python self) to use cleanporter's own interpreter

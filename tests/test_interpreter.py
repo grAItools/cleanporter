@@ -108,7 +108,7 @@ def test_the_projects_dot_venv_wins_over_an_active_virtual_env(tmp_path, monkeyp
     choice = _interpreter.choose(None, tmp_path)
     assert choice.python == str(project)
     assert choice.note is not None
-    assert f"not from the active $VIRTUAL_ENV {tmp_path / 'elsewhere'}" in choice.note
+    assert f"not the active $VIRTUAL_ENV {tmp_path / 'elsewhere'}" in choice.note
 
 
 @posix_only
@@ -119,7 +119,7 @@ def test_virtual_env_is_used_when_the_project_has_no_environment(tmp_path, monke
     assert choice.python == str(active)
     assert choice.note is not None
     assert "found from $VIRTUAL_ENV;" in choice.note
-    assert "not from the active" not in choice.note
+    assert "not the active" not in choice.note
 
 
 @posix_only
@@ -130,7 +130,7 @@ def test_an_active_virtual_env_that_is_the_projects_is_not_called_passed_over(
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / ".venv"))
     note = _interpreter.choose(None, tmp_path).note
     assert note is not None
-    assert "not from the active" not in note
+    assert "not the active" not in note
 
 
 @posix_only
@@ -252,11 +252,58 @@ def test_uv_project_environment_is_read_against_the_workspace_root(tmp_path, mon
 
 
 @posix_only
-def test_a_members_own_dot_venv_is_tried_first(tmp_path):
+def test_a_members_own_dot_venv_is_not_tried(tmp_path):
+    """uv keeps a member's environment at the workspace root, and so looks only there."""
     member = _workspace(tmp_path, 'members = ["packages/*"]')
+    python = _fake_venv(tmp_path / ".venv")
+    _fake_venv(member / ".venv")
+    assert _interpreter.choose(None, member).python == str(python)
+
+
+@posix_only
+def test_a_member_without_a_workspace_environment_falls_back_to_virtual_env(tmp_path, monkeypatch):
+    member = _workspace(tmp_path, 'members = ["packages/*"]')
+    _fake_venv(member / ".venv")
+    active = _fake_venv(tmp_path / "active")
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "active"))
+    assert _interpreter.choose(None, member).python == str(active)
+
+
+@posix_only
+def test_a_project_inside_a_member_is_its_own_environment_root(tmp_path):
+    """uv's counterexample: the first ancestor pyproject.toml (a plain project) decides.
+
+    ``/ws`` (members ``packages/**``), ``/ws/packages/a`` (a plain project) and
+    ``/ws/packages/a/examples/demo`` (its own project): uv uses demo's ``.venv``.
+    """
+    _workspace(tmp_path, 'members = ["packages/**"]')
     _fake_venv(tmp_path / ".venv")
-    own = _fake_venv(member / ".venv")
-    assert _interpreter.choose(None, member).python == str(own)
+    demo = tmp_path / "packages" / "app" / "examples" / "demo"
+    demo.mkdir(parents=True)
+    (demo / "pyproject.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+    python = _fake_venv(demo / ".venv")
+    choice = _interpreter.choose(None, demo)
+    assert choice.python == str(python)
+    assert choice.note is not None
+    assert "the .venv in the project root" in choice.note
+
+
+@posix_only
+def test_a_project_that_declares_a_workspace_is_its_own_root(tmp_path):
+    _workspace(tmp_path, 'members = ["packages/*"]')
+    python = _fake_venv(tmp_path / ".venv")
+    choice = _interpreter.choose(None, tmp_path)
+    assert choice.python == str(python)
+    assert choice.note is not None
+    assert "the .venv in the project root" in choice.note
+
+
+@posix_only
+def test_a_relative_root_is_made_absolute(tmp_path, monkeypatch):
+    member = _workspace(tmp_path, 'members = ["packages/*"]')
+    python = _fake_venv(tmp_path / ".venv")
+    monkeypatch.chdir(member)
+    assert _interpreter.choose(None, pathlib.Path()).python == str(python)
 
 
 @posix_only
@@ -290,12 +337,36 @@ def test_the_workspace_walk_stops_at_the_nearest_declaring_ancestor(tmp_path):
 
 
 @posix_only
-def test_an_unreadable_ancestor_pyproject_is_passed_over(tmp_path):
-    (tmp_path / "pyproject.toml").write_text("this is [not toml", encoding="utf-8")
-    project = tmp_path / "proj"
-    project.mkdir()
+def test_an_unreadable_first_ancestor_pyproject_means_no_workspace(tmp_path):
+    """It still ends the walk: a workspace further up is not consulted."""
+    _workspace(tmp_path, 'members = ["**"]')
     _fake_venv(tmp_path / ".venv")
-    assert _interpreter.choose(None, project) == _interpreter.Choice(None)
+    (tmp_path / "packages" / "pyproject.toml").write_text("this is [not", encoding="utf-8")
+    assert _interpreter.choose(None, tmp_path / "packages" / "app") == _interpreter.Choice(None)
+
+
+@posix_only
+def test_an_in_process_pick_still_names_a_different_active_virtual_env(tmp_path, monkeypatch):
+    """The shell's environment is never ignored silently."""
+    _fake_venv(tmp_path / ".venv")
+    _fake_venv(tmp_path / "other")
+    _running_in(monkeypatch, tmp_path / ".venv")
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "other"))
+    choice = _interpreter.choose(None, tmp_path)
+    assert choice.python is None
+    assert choice.note is not None
+    assert f"not the active $VIRTUAL_ENV {tmp_path / 'other'}" in choice.note
+    assert "in process" in choice.note
+
+
+@posix_only
+def test_uv_run_is_silent(tmp_path, monkeypatch):
+    """``uv run cleanporter``: $VIRTUAL_ENV is the project's own venv, spelled any way."""
+    _fake_venv(tmp_path / ".venv")
+    (tmp_path / "link").symlink_to(tmp_path / ".venv")
+    _running_in(monkeypatch, tmp_path / ".venv")
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "link"))
+    assert _interpreter.choose(None, tmp_path) == _interpreter.Choice(None)
 
 
 # -- config and command line ------------------------------------------------------

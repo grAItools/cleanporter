@@ -83,7 +83,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         metavar="PATH|auto|self",
         help="interpreter used to classify stdlib/third-party names: a path or command, "
         "'auto' to detect the project's ($UV_PROJECT_ENVIRONMENT or .venv at the project "
-        "or uv workspace root, else $VIRTUAL_ENV; the default), or 'self' for cleanporter's own",
+        "root, or at the uv workspace root for a member, else $VIRTUAL_ENV; the default), "
+        "or 'self' for cleanporter's own",
     )
     parser.add_argument(
         "--exempt",

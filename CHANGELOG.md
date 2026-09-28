@@ -33,14 +33,14 @@ Breaking under the pre-1.0 policy above:
   the probe uses the first executable interpreter found, in uv's order:
   `$UV_PROJECT_ENVIRONMENT`, then `.venv`, at the project root (the directory
   of the `pyproject.toml` in use, or the first path's directory when there is
-  none), then the same at the uv workspace root when the project is a member
-  of one, then `$VIRTUAL_ENV`. A candidate that is missing or not executable
+  none) — or, when the project is a uv workspace member, at the workspace root
+  instead — then `$VIRTUAL_ENV`. A candidate that is missing or not executable
   is passed over silently, and nothing else — no `uv` subprocess, no `PATH`
   search, no conda — is consulted. The pick is probed out of process, as if
   passed with `--python`, unless it is cleanporter's own environment (its
   `sys.executable`, or its `sys.prefix` venv), and a one-line
   `cleanporter: note:` on stderr names it and says why, including an active
-  `$VIRTUAL_ENV` it passed over (in `RunResult.notes`, and `Listener.note`,
+  `$VIRTUAL_ENV` it passed over (said even when the pick stays in process) (in `RunResult.notes`, and `Listener.note`,
   for library callers). Detection only chooses which
   environment answers: one lacking a package, or unable to run, leaves the
   import `CP002`, never an optimistic verdict. `python`/`--python` accept
