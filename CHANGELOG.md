@@ -238,6 +238,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration shape that changes it, and asserts they agree import by
   import.
 
+- **`rewrite.py` is split into the fixer and what it plans from.** It had grown
+  to some 1,600 lines mixing independent concerns. `TYPE_CHECKING` detection
+  moved to `_type_checking.py`, finding and renaming lazy annotation strings
+  and `__all__` names to `_annotations.py`, and the small tree walks they share
+  to `_nodes.py`, each with its reasoning; `rewrite.py` keeps the plan, the
+  transformer and `fix_record`. A pure move: `--diff` output and exit codes are
+  byte-identical before and after over the test fixtures, this repository,
+  `pygments`, `packaging` and `_pytest`.
+
 ### Fixed
 
 - **A relative import in a namespace package is no longer rewritten to the

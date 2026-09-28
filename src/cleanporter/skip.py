@@ -403,9 +403,9 @@ def _names_in(
     f-string part (``f"Th" "ing"``) has no ``evaluated_value``, a lone
     f-string is not a `libcst.SimpleString` at all, and ``"Th" + "ing"`` is an
     expression rather than a literal -- none of the three pins ``Thing``. That
-    is symmetrical rather than lucky: `rewrite._annotation_strings` collects
-    only `libcst.SimpleString`, so the fixer does not rewrite those shapes
-    either, and the region comes out byte-identical regardless. What is left
+    is symmetrical rather than lucky: `_annotations.annotation_strings`
+    collects only `libcst.SimpleString`, so the fixer does not rewrite those
+    shapes either, and the region comes out byte-identical regardless. What is left
     is the pre-existing gap in the whole-file string guard, which misses them
     identically in a file with no rule at all.
     """
