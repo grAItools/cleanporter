@@ -18,10 +18,13 @@ Order of resolution for a ``from PARENT import NAME``:
    the parent package is imported (cached); never the leaf, never objects.
 3. **Undetermined** -> ``None``. ``check`` reports it, ``fix`` skips it.
 
-The interpreter probe runs in-process when ``python`` is provably the current
-interpreter *environment* (see `_is_this_interpreter`), otherwise in a
-subprocess so tool deps stay out of the target env and native-library crashes
-are contained.
+The interpreter probe runs in-process when ``python`` is ``None`` or provably
+the current interpreter *environment* (see `_interpreter.is_this_interpreter`),
+otherwise in a subprocess so tool deps stay out of the target env and
+native-library crashes are contained. Which interpreter that is -- named,
+cleanporter's own, or the project's, detected -- is decided before the
+resolver is built (`_interpreter.choose`, from `project.build`); the resolver
+takes an interpreter, not the ``python`` setting's ``"auto"``/``"self"``.
 
 Probing imports third-party packages, and some print on import. In-process,
 ``sys.stdout`` is pointed at ``sys.stderr`` for the duration, so a banner
@@ -51,14 +54,13 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import json
-import os
 import pathlib
 import subprocess
 import sys
 
 from cleanporter import firstparty, model
 
-from . import _probe
+from . import _interpreter, _probe
 
 #: Wall-clock budget for one out-of-process probe batch. A probe that
 #: outlives it is killed and its whole batch reported undetermined.
@@ -81,39 +83,6 @@ def _stderr_tail(stderr: str | bytes | None) -> str:
     if len(tail) > _STDERR_TAIL_CHARS:
         tail = "..." + tail[-_STDERR_TAIL_CHARS:]
     return f"; stderr: {tail}" if tail else ""
-
-
-def _is_this_interpreter(python: str) -> bool:
-    """Whether running *python* would give this very environment, provably.
-
-    What an interpreter can import is decided by its *environment*, and a
-    virtual environment is found from where its executable is invoked -- the
-    ``pyvenv.cfg`` beside it or one level up -- not from the binary it links
-    to. Every venv built from one base Python is a symlink to the same file,
-    so comparing symlink-*resolved* paths, as this used to, called any other
-    venv of the same Python "this interpreter" and probed it in process,
-    against cleanporter's own ``sys.path``: a package only the target had was
-    "not importable", and one only cleanporter's environment had was
-    classified as if the target had it.
-
-    So the comparison is of the path as invoked, made absolute without
-    touching a symlink, against ``sys.executable``. Equal strings name the
-    same location and so the same environment. The one lexical step that
-    could break that is collapsing ``..`` -- ``venv/link/../bin/python``
-    reads as ``venv/bin/python`` but, through a symlinked ``link``, runs
-    something else -- so a path with a ``..`` component is never called equal.
-
-    A bare command name (no path separator) is never equal either: the
-    subprocess looks it up on ``PATH``, whereas making it absolute joins it to
-    the cwd, so ``python3`` run from inside a venv's ``bin`` would be answered
-    in process while ``PATH`` names some other interpreter entirely.
-    Every miss costs a subprocess, never a wrong answer.
-    """
-    if not any(sep in python for sep in (os.sep, os.altsep) if sep):
-        return False
-    if not sys.executable or ".." in pathlib.PurePath(python).parts:
-        return False
-    return str(pathlib.Path(python).absolute()) == sys.executable
 
 
 @dataclasses.dataclass(frozen=True)
@@ -159,7 +128,7 @@ class Resolver:
     ) -> None:
         self._map = module_map
         self._python = python or sys.executable
-        self._in_process = python is None or _is_this_interpreter(python)
+        self._in_process = python is None or _interpreter.is_this_interpreter(python)
         self._cache: dict[tuple[str, str], bool | None] = {}
         self._evidence = evidence
         self._notes: dict[tuple[str, str], str] = {}

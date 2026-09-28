@@ -14,6 +14,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Breaking under the pre-1.0 policy above:
+
+- With no `--python` and no `python` key, the probe now runs under the
+  project's own interpreter when one is detected, not cleanporter's; for the
+  library, `Config.python = None` (the default) now means "detect" rather than
+  "the calling interpreter". `python = "self"` / `--python self` /
+  `Config(python="self")` restores the old behaviour. `RunResult` and
+  `Project` gain a trailing `notes` field, and `engine.Listener` a `note`
+  method.
+
+### Added
+
+- **cleanporter finds the project's interpreter by itself.** Installed with
+  `pipx` or `uv tool`, cleanporter runs in an environment without the target
+  project's dependencies, so every third-party import used to come back
+  `CP002` unless you knew about `--python`. Now, when no interpreter is named,
+  the probe uses the first executable interpreter of `$VIRTUAL_ENV`, then
+  `$UV_PROJECT_ENVIRONMENT` (relative to the project root), then the `.venv`
+  beside the `pyproject.toml` in use (or the first path's directory when there
+  is none); a candidate that is missing or not executable is passed over
+  silently, and nothing else — no `uv` subprocess, no `PATH` search — is
+  consulted. The pick is probed out of process, as if passed with `--python`,
+  unless it is cleanporter's own `sys.executable`, and a one-line
+  `cleanporter: note:` on stderr names it and says why (in `RunResult.notes`,
+  and `Listener.note`, for library callers). Detection only chooses which
+  environment answers: one lacking a package, or unable to run, leaves the
+  import `CP002`, never an optimistic verdict. `python`/`--python` accept
+  `auto` (detect; the default) and `self` (cleanporter's own, in process)
+  besides a path or command, so `--python auto` restores detection over a
+  configured interpreter. Documented under
+  [The probe interpreter](https://graitools.github.io/cleanporter/configuration/#the-probe-interpreter).
+
 ## [0.4.0] - 2026-09-28
 
 Breaking under the pre-1.0 policy above:

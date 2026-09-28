@@ -45,8 +45,9 @@ alone — `C` might be a C-extension submodule, a lazily created module, a
 namespace package, or a re-exported class. A wrong guess is a nuisance for a
 checker but **emits broken code** for a fixer. So cleanporter resolves in
 layers — from the filesystem, then by asking a Python interpreter directly
-(out of process when `--python` names a different one) — and **never
-guesses**: anything it cannot prove is reported and left alone.
+(your project's own, found from `$VIRTUAL_ENV` or its `.venv`, out of process
+when it is not the one running cleanporter; `--python` names another) — and
+**never guesses**: anything it cannot prove is reported and left alone.
 
 ## Installation
 

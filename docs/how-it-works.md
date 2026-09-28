@@ -161,8 +161,14 @@ from, so the pair stays ambiguous.
 
 ### 2. Stdlib and third-party, by interpreter probe
 
-Everything else is settled by asking a Python interpreter — the one selected
-by `--python`, defaulting to the interpreter running cleanporter.
+Everything else is settled by asking a Python interpreter — the one named by
+`--python` (or the `python` key), or else the project's own, detected from
+`$VIRTUAL_ENV`, `$UV_PROJECT_ENVIRONMENT` or the `.venv` beside
+`pyproject.toml`, or else the interpreter running cleanporter (see
+[The probe interpreter](configuration.md#the-probe-interpreter)). Detection
+only picks *which* environment answers; a pick that lacks a package, or cannot
+run, leaves the import `CP002`, so it can never make a verdict more optimistic
+than the environment asked can prove.
 
 The question is put to a small, **stdlib-only** classifier module. It imports
 only `PARENT`, then asks `importlib.util.find_spec("PARENT.NAME")`: a spec
@@ -198,13 +204,14 @@ Three properties of this layer matter:
   the run is collected up front and classified in a single batch, with parent
   imports cached across the batch.
 - **It can run out of process.** When `--python` points at a *different*
-  interpreter, the classifier is executed there as a subprocess, exchanging
+  interpreter, or detection finds one, the classifier is executed there as a subprocess, exchanging
   JSON over stdin/stdout. That keeps cleanporter's own dependency (libCST) out
   of the target project's virtualenv, and contains a native-library crash in a
-  subprocess rather than taking the whole run down. When there is no
-  `--python` (or `python` key) — the default case — or it names the very
-  executable cleanporter is running as, the same stdlib-only code runs in
-  process, since there is nothing to isolate.
+  subprocess rather than taking the whole run down. When the interpreter is
+  cleanporter's own — `--python self`, detection finding nothing, or a named
+  or detected interpreter that is the very executable cleanporter is running
+  as — the same stdlib-only code runs in process, since there is nothing to
+  isolate.
 
   "The very executable" means the same path, made absolute but with no symlink
   resolved: equal to cleanporter's own `sys.executable`, and containing no `..`
