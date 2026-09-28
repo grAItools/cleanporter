@@ -184,6 +184,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the tests do the same thing; spelled the old way it was an implicit
   re-export, which strict checking over `tests/` reports.
 
+- **Checking and fixing now make one decision per import.** Whether an imported
+  name is compliant, a `CP001`, unresolved, declined or taken by a `skip` rule
+  was worked out twice — once in `analyze.analyze_record` for the report and
+  again in `rewrite._Fixer._partition` for the rewrite — and the two copies
+  were kept in step by hand. Both now ask `analyze.Decider.decide`, so the
+  fixer rewrites only names checking reports as `CP001` (never-read names
+  become `CP003` under `--fix`); a guard hit still declines the whole file.
+  That holds by construction rather than by review. Findings, reasons and
+  their order are unchanged apart from the fix below. A test runs both modes
+  over a tree that reaches every finding the decision can produce — each
+  `CP003` reason, `CP002` from the resolver and from an unanchorable relative
+  import, `CP004` from a rule covering the line and from a pin — under every
+  configuration shape that changes it, and asserts they agree import by
+  import.
+
 ### Fixed
 
 - **`--python` naming another virtual environment now probes *that*
@@ -328,6 +343,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file. A read-only file is still refused, and a symlink is written through
   rather than replaced. Extended attributes, ACLs and hard links are not
   preserved.
+
+- **`scope = "first-party"` now applies to `--fix` and `--diff` too.** Checking
+  passed over a stdlib or third-party import under that scope, but the fixer
+  never consulted it: a file containing `from os.path import join` reported
+  nothing, exited `0`, and was still rewritten to `from os import path` /
+  `path.join(...)` by `--fix`. An import outside the configured scope is now
+  neither reported nor rewritten. This was a consequence of the duplicated
+  decision described under *Changed*.
+
+  One knock-on effect under that scope: a file `--fix` used to decline because
+  a guard hit a stdlib or third-party name it was about to rewrite (that name
+  in an `__all__` string, say) no longer wants to rewrite that name, so the
+  guard no longer fires and the file's first-party imports may now be
+  rewritten.
 
 - **The replacement import is now checked to bind the module it names.** The
   fix for `from P.S import obj` is `from P import S` plus `S.obj` at every use

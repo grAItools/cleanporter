@@ -10,6 +10,12 @@ Imports inside functions/classes are fixed in place too: each scope that
 imports a module gets its own binding, tracked independently of any
 module-level import of the same module.
 
+The fixer rewrites only names checking reports as ``CP001`` (never-read names
+become ``CP003`` under ``--fix``); a guard hit still declines the whole file.
+Both ask `analyze.Decider.decide` about every imported name, so an exempt name,
+one outside the configured ``scope``, or a module is neither reported nor
+touched.
+
 Safety boundary (these are reported by ``check`` but deliberately NOT auto-fixed
 because a mechanical rewrite could change runtime behaviour):
 
@@ -605,7 +611,6 @@ class _Fixer(cst.CSTTransformer):
         super().__init__()
         self._rec = rec
         self._resolver = resolver
-        self._config = config
         self.plan = _Plan()
         self.blockers: list[guards.Hit] = []
         self._module_binding: dict[
@@ -639,6 +644,8 @@ class _Fixer(cst.CSTTransformer):
         #: What `[tool.cleanporter.skip]` takes out of this file, computed by
         #: the record so `analyze` and this class cannot answer it differently.
         self._skipped = rec.skipped
+        #: The per-import decision `analyze.analyze_record` reports from.
+        self._decider = analyze.Decider(rec, resolver, config)
         #: Names kept because nothing in this file reads them. Reported by
         #: `analyze.analyze_record`, which cannot work them out on its own.
         self.unread: set[str] = set()
@@ -851,50 +858,38 @@ class _Fixer(cst.CSTTransformer):
     ) -> tuple[list[str], list[tuple[str, str | None]]]:
         """Split this import's names into the ones kept and the ones rewritten.
 
-        Kept: names a `[tool.cleanporter.skip]` rule covers or pins, exempt
-        names, modules, anything the resolver could not classify, re-exports,
-        names nothing in this file reads, and -- for the whole line at once --
-        every name whose replacement import cannot be shown to bind the module
-        it names (`resolver.Resolver.replacement_unreachable`).
+        Rewritten: exactly the names `analyze.Decider.decide` calls a `CP001`
+        -- the same call ``check`` reports from, so the fixer cannot rewrite
+        what ``check`` passes over (an exempt name, one outside the configured
+        `scope`, a module), nor anything it reports as unresolved, skipped by
+        a `[tool.cleanporter.skip]` rule, or declined: an unreachable
+        replacement, a re-export, a name nothing in this file reads.
 
-        A re-export -- declared as
-        ``S as S``, or inferred from another analysed file importing ``S``
-        from *this* module -- means this very import line is what makes
-        ``<this module>.S`` exist for somebody else, so rewriting it would
-        delete an attribute they read. Kept in place rather than blocking the
-        file, exactly as an unresolved name is, so the file's other rewrites
-        still happen.
+        A re-export -- declared as ``S as S``, or inferred from another
+        analysed file importing ``S`` from *this* module -- means this very
+        import line is what makes ``<this module>.S`` exist for somebody else,
+        so rewriting it would delete an attribute they read. Kept in place
+        rather than blocking the file, exactly as an unresolved name is, so
+        the file's other rewrites still happen.
 
-        The order of the chain is the reported order: a skip comes first
-        because it is the author overriding everything the tool could work
-        out, the two line-wide reasons (that skip and an unreachable
-        replacement) precede the per-name ones, and `_note_unread` comes
-        *last* because reaching it means every other reason to keep the name
-        was already false -- which is what makes the set it records exactly
-        the set `analyze` would otherwise report as `CP001`.
+        Only this method can supply never-read names (it holds the scope
+        metadata), and the decision reports one only when every other reason
+        to keep the name was false -- which is what makes the set recorded in
+        `unread` exactly the set `analyze` would otherwise report as `CP001`.
         """
         keep: list[str] = []
         fix: list[tuple[str, str | None]] = []
-        unreachable = self._resolver.replacement_unreachable(parent) is not None
-        skipped_line = self._skipped.covers(self._line_of(imp)) is not None
+        line = self._line_of(imp)
         never_read = self._unread_names(imp, scope)
-        for name, asname, _alias in _imports.imported_names(imp):
-            bound = asname or name
-            if (
-                skipped_line
-                or unreachable
-                or self._skipped.pin(bound) is not None
-                or self._config.is_exempt(parent, name)
-                or _imports.is_explicit_reexport(name, asname)
-                or (
-                    self._rec.qualname and self._resolver.is_load_bearing(self._rec.qualname, bound)
-                )
-                or self._resolver.is_module(parent, name) is not False
-                or self._note_unread(bound, never_read)
-            ):
-                keep.append(_render_alias(name, asname))
-            else:
+        for name, asname, alias in _imports.imported_names(imp):
+            unit = analyze.ImportUnit(imp, parent, name, asname, alias, star=False)
+            decision = self._decider.decide(unit, line, never_read)
+            if decision.unread:
+                self.unread.add(asname or name)
+            if decision.rewrite:
                 fix.append((name, asname))
+            else:
+                keep.append(_render_alias(name, asname))
         return keep, fix
 
     def _unread_names(self, imp: cst.ImportFrom, scope: metadata.Scope) -> frozenset[str]:
@@ -919,13 +914,6 @@ class _Fixer(cst.CSTTransformer):
             if ours and not any(a.references for a in ours):
                 out.add(bound)
         return frozenset(out)
-
-    def _note_unread(self, bound: str, never_read: frozenset[str]) -> bool:
-        """Last link in `_partition`'s keep chain; records what it keeps."""
-        if bound not in never_read:
-            return False
-        self.unread.add(bound)
-        return True
 
     def _plan_line(self, line: cst.SimpleStatementLine, imp: cst.ImportFrom) -> None:
         if _imports.is_star(imp):

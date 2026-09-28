@@ -100,6 +100,27 @@ def test_bad_config_exits_2(project, capsys):
     assert "configuration error" in capsys.readouterr().err
 
 
+def test_scope_first_party_check_and_fix_agree(project, capsys):
+    """B1: ``check`` was silent on a stdlib import that ``--diff``/``--fix`` rewrote."""
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\nversion = "0"\n[tool.cleanporter]\nscope = "first-party"\n',
+        encoding="utf-8",
+    )
+    target = project / "src" / "demo" / "m.py"
+    source = 'from os.path import join\nprint(join("a", "b"))\n'
+    target.write_text(source, encoding="utf-8")
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8"
+    )
+    src = str(project / "src")
+    assert cli.main([src]) == 0
+    assert "CP001" not in capsys.readouterr().out
+    assert cli.main(["--diff", src]) == 0
+    assert "os.path" not in capsys.readouterr().out
+    assert cli.main(["--fix", src]) == 0
+    assert target.read_text(encoding="utf-8") == source
+
+
 def test_missing_path_warns_and_exits_0(project, capsys):
     rc = cli.main([str(project / "nope")])
     captured = capsys.readouterr()

@@ -281,13 +281,143 @@ def star_imported_modules(tree: cst.Module, base_pkg: str) -> set[str]:
     return found
 
 
-def _skippable(rule: skip_lib.Rule | None, finding: model.Finding) -> model.Finding:
-    """*finding*, or the `CP004` that a matching *rule* replaces it with."""
+#: Why a wildcard import is reported and never rewritten.
+_WILDCARD = "wildcard import cannot be rewritten to a module import"
+#: Why a relative import that climbs out of every known package is `CP002`.
+_UNANCHORED = "relative import could not be anchored to a package"
+_REEXPORT = (
+    "explicit re-export ('as' aliasing the name to itself); rewriting it would remove a public name"
+)
+_UNREAD = (
+    "the imported name is never read in this file, so rewriting the import "
+    "would only remove the binding -- and something outside this file "
+    "(a pytest fixture, an entry point) may be reading it"
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class Decision:
+    """What cleanporter does with one imported name, in every mode.
+
+    ``status`` is the finding to report, or ``None`` for a name nothing is
+    reported about -- exempt, outside the configured `scope`, or a module. The
+    fixer rewrites only names checking reports as `CP001` (never-read names
+    become `CP003` under ``--fix``); a guard hit still declines the whole
+    file. So a name ``check`` reports as anything else -- or does not report
+    at all -- is never touched by ``--fix``.
+    """
+
+    status: model.Status | None
+    detail: str = ""
+    #: Kept only because nothing in the file reads it. The fixer collects
+    #: these to hand back to `analyze_record`; see `rewrite.FixOutcome.unread`.
+    unread: bool = False
+
+    @property
+    def rewrite(self) -> bool:
+        """True when this is a `CP001` the fixer should rewrite."""
+        return self.status is model.Status.VIOLATION
+
+
+#: Nothing to report and nothing to rewrite.
+COMPLIANT = Decision(None)
+#: A `CP001`: reported by ``check``, rewritten by ``--fix``.
+VIOLATION = Decision(model.Status.VIOLATION)
+
+
+def _overridden(rule: skip_lib.Rule | None, decision: Decision) -> Decision:
+    """*decision*, or the `CP004` that a matching *rule* replaces it with."""
     if rule is None:
-        return finding
-    return dataclasses.replace(
-        finding, status=model.Status.SKIPPED_BY_CONFIG, detail=rule.describe()
-    )
+        return decision
+    return Decision(model.Status.SKIPPED_BY_CONFIG, rule.describe())
+
+
+class Decider:
+    """The one per-import decision ladder, shared by ``check`` and ``--fix``.
+
+    `analyze_record` turns each `Decision` into a finding and
+    `rewrite._Fixer` turns it into a keep-or-rewrite choice. They used to be
+    two hand-synchronised copies of this chain, and the copies drifted: the
+    fixer never learned about ``scope = "first-party"``, so ``check`` passed
+    over ``from os.path import join`` while ``--fix`` rewrote it. One function
+    answering both questions is what keeps "the fixer only rewrites what check
+    calls `CP001`" true by construction rather than by review.
+
+    It lives here rather than in a module of its own because it is phrased in
+    `ImportUnit` and `FileRecord`, which this module owns, and `rewrite`
+    already depends on this module; a separate one would have to import them
+    back from here.
+    """
+
+    def __init__(
+        self, rec: FileRecord, resolver: resolver_lib.Resolver, config: config.Config
+    ) -> None:
+        self._rec = rec
+        self._resolver = resolver
+        self._config = config
+
+    def decide(
+        self, unit: ImportUnit, line: int, never_read: frozenset[str] = frozenset()
+    ) -> Decision:
+        """Decide *unit*, an import found on *line* of the record's file.
+
+        *never_read* holds the names this import binds that nothing in the file
+        reads -- see `rewrite._Fixer._unread_names`. Only the fixer can work
+        that out, so a plain ``check`` passes nothing.
+
+        The order of the chain is the reported order. A skip rule *replaces*
+        a finding; it does not add one. So it is resolved up front but applied
+        only where a finding is actually produced, never before the filters
+        that would report nothing at all -- `CP004` for a compliant ``from pkg
+        import module``, or for an exempt ``typing`` import, would pad the one
+        count the docs offer as the way to see how much a rule swallowed. The
+        two line-wide reasons (a skip covering the line, an unreachable
+        replacement) precede the per-name ones, and never-read comes *last*,
+        because reaching it means every other reason to keep the name was
+        already false.
+        """
+        skipped = self._rec.skipped
+        rule = skipped.covers(line) or (
+            None if unit.star else skipped.pin(unit.asname or unit.name)
+        )
+        if unit.star:
+            return _overridden(rule, Decision(model.Status.SKIPPED, _WILDCARD))
+        parent = unit.parent
+        if parent is None:
+            return _overridden(rule, Decision(model.Status.UNRESOLVED, _UNANCHORED))
+        if self._config.is_exempt(parent, unit.name) or (
+            self._config.scope == "first-party" and not self._resolver.is_first_party(parent)
+        ):
+            return COMPLIANT
+        verdict = self._resolver.is_module(parent, unit.name)
+        if verdict is True:
+            return COMPLIANT  # importing a module -> compliant
+        if rule is not None:
+            return Decision(model.Status.SKIPPED_BY_CONFIG, rule.describe())
+        if verdict is None:
+            return Decision(model.Status.UNRESOLVED, self._resolver.reason(parent, unit.name))
+        return self._declined(unit, parent, never_read) or VIOLATION
+
+    def _declined(
+        self, unit: ImportUnit, parent: str, never_read: frozenset[str]
+    ) -> Decision | None:
+        """The `CP003` for a proven object the fixer must still leave alone."""
+        unreachable = self._resolver.replacement_unreachable(parent)
+        if unreachable is not None:
+            return Decision(model.Status.SKIPPED, unreachable)
+        if _imports.is_explicit_reexport(unit.name, unit.asname):
+            return Decision(model.Status.SKIPPED, _REEXPORT)
+        bound = unit.asname or unit.name
+        qualname = self._rec.qualname
+        if qualname and self._resolver.is_load_bearing(qualname, bound):
+            return Decision(
+                model.Status.SKIPPED,
+                f"another file imports '{bound}' from '{qualname}'; "
+                "rewriting this import would remove that attribute",
+            )
+        if bound in never_read:
+            return Decision(model.Status.SKIPPED, _UNREAD, unread=True)
+        return None
 
 
 def analyze_record(
@@ -305,149 +435,27 @@ def analyze_record(
     ``--fix`` the fixer has already paid for the answer, and passing it here is
     what turns "cleanporter did not fix this and did not say why" into a
     `CP003` that does.
+
+    Every decision is `Decider.decide`'s, the same call the fixer makes.
     """
     positions = rec.positions
-    skipped = rec.skipped
+    decider = Decider(rec, resolver, config)
     findings: list[model.Finding] = []
     for unit in rec.units:
         pos = positions[unit.node].start
-        line, col = pos.line, pos.column
-
-        # A skip *replaces* a finding; it does not add one. So it is resolved
-        # up front but applied at each point a finding is actually produced,
-        # never before the filters that would have reported nothing at all --
-        # `CP004` for a compliant `from pkg import module`, or for an exempt
-        # `typing` import, would pad the one count the docs offer as the way
-        # to see how much a rule swallowed.
-        rule = skipped.covers(line) or (
-            None if unit.star else skipped.pin(unit.asname or unit.name)
-        )
-        if unit.star:
-            findings.append(
-                _skippable(
-                    rule,
-                    model.Finding(
-                        rec.path,
-                        line,
-                        col,
-                        unit.parent or "?",
-                        "*",
-                        model.Status.SKIPPED,
-                        "wildcard import cannot be rewritten to a module import",
-                    ),
-                )
-            )
-            continue
-        if unit.parent is None:
-            findings.append(
-                _skippable(
-                    rule,
-                    model.Finding(
-                        rec.path,
-                        line,
-                        col,
-                        "?",
-                        unit.name,
-                        model.Status.UNRESOLVED,
-                        "relative import could not be anchored to a package",
-                    ),
-                )
-            )
-            continue
-        if config.is_exempt(unit.parent, unit.name):
-            continue
-        if config.scope == "first-party" and not resolver.is_first_party(unit.parent):
-            continue
-
-        verdict = resolver.is_module(unit.parent, unit.name)
-        if verdict is True:
-            continue  # importing a module -> compliant
-        if rule is not None:
-            findings.append(
-                model.Finding(
-                    rec.path,
-                    line,
-                    col,
-                    unit.parent,
-                    unit.name,
-                    model.Status.SKIPPED_BY_CONFIG,
-                    rule.describe(),
-                )
-            )
-            continue
-        if verdict is None:
-            findings.append(
-                model.Finding(
-                    rec.path,
-                    line,
-                    col,
-                    unit.parent,
-                    unit.name,
-                    model.Status.UNRESOLVED,
-                    resolver.reason(unit.parent, unit.name),
-                )
-            )
-            continue
-        unreachable = resolver.replacement_unreachable(unit.parent)
-        if unreachable is not None:
-            findings.append(
-                model.Finding(
-                    rec.path,
-                    line,
-                    col,
-                    unit.parent,
-                    unit.name,
-                    model.Status.SKIPPED,
-                    unreachable,
-                )
-            )
-            continue
-        if _imports.is_explicit_reexport(unit.name, unit.asname):
-            findings.append(
-                model.Finding(
-                    rec.path,
-                    line,
-                    col,
-                    unit.parent,
-                    unit.name,
-                    model.Status.SKIPPED,
-                    "explicit re-export ('as' aliasing the name to itself); "
-                    "rewriting it would remove a public name",
-                )
-            )
-            continue
-        bound = unit.asname or unit.name
-        if rec.qualname and resolver.is_load_bearing(rec.qualname, bound):
-            findings.append(
-                model.Finding(
-                    rec.path,
-                    line,
-                    col,
-                    unit.parent,
-                    unit.name,
-                    model.Status.SKIPPED,
-                    f"another file imports '{bound}' from '{rec.qualname}'; "
-                    "rewriting this import would remove that attribute",
-                )
-            )
-            continue
-        if bound in unread:
-            findings.append(
-                model.Finding(
-                    rec.path,
-                    line,
-                    col,
-                    unit.parent,
-                    unit.name,
-                    model.Status.SKIPPED,
-                    "the imported name is never read in this file, so rewriting the import "
-                    "would only remove the binding -- and something outside this file "
-                    "(a pytest fixture, an entry point) may be reading it",
-                )
-            )
+        decision = decider.decide(unit, pos.line, unread)
+        if decision.status is None:
             continue
         findings.append(
-            model.Finding(rec.path, line, col, unit.parent, unit.name, model.Status.VIOLATION)
+            model.Finding(
+                rec.path,
+                pos.line,
+                pos.column,
+                unit.parent or "?",
+                unit.name,
+                decision.status,
+                decision.detail,
+            )
         )
     return findings
 
