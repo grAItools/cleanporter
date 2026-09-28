@@ -69,11 +69,13 @@ imports are then missing from the evidence, which the warning says).
 
 Consequences worth knowing:
 
-- **A `pyproject.toml` is required.** The project is the one above the
-  first listed file that has one, whatever order pre-commit lists files in;
-  a symlink is placed by where it sits, not by its target. When no listed
-  file has one there is no telling where the project starts, and the run
-  exits `2` rather than treat a file's directory as the whole tree. Override
+- **A `pyproject.toml` is required, and only one.** The project is the
+  `pyproject.toml` the listed files sit under; a symlink is placed by where
+  it sits, not by its target. When no listed file has one there is no
+  telling where the project starts, and when they sit under *different*
+  ones there is no single project to judge them on: either way the run
+  exits `2` rather than pick one, whatever order pre-commit lists files in.
+  A file under no `pyproject.toml` at all is analysed alongside. Override
   the hook's `entry` (`entry: cleanporter`) if your project has none.
 - **`exclude` is honoured for the files pre-commit passes.** A changed file
   that `exclude` (or a skipped directory such as `build/`) leaves out of the
@@ -91,10 +93,35 @@ Consequences worth knowing:
   tree read is what you are committing, plus any untracked files.
 - **`pyproject.toml` not at the repository root? Add a `files:` pattern.**
   pre-commit passes every changed Python file in the repository. A file
-  outside the project (a `scripts/` beside it, another project) is analysed
-  and reported under this project's configuration, with a warning. Scope the
-  hook to the project, `files: ^myproject/.*\.py$`, and in a monorepo add the
-  hook once per project, each with its own pattern.
+  under no `pyproject.toml` (a `scripts/` beside the project) is analysed and
+  reported under this project's configuration, with a warning; a file of
+  another project stops the run (below). Scope the hook to the project,
+  `files: ^myproject/.*\.py$`.
+
+## Several projects in one repository
+
+A commit that touches files of two projects — a monorepo, or a nested
+`examples/` or `benchmarks/` directory with its own `pyproject.toml` inside
+your project — makes a `--whole-project` run exit `2` with the projects
+named: one run judges one project. Split the hook so each entry sees one
+project's files:
+
+```yaml
+repos:
+  - repo: https://github.com/grAItools/cleanporter
+    rev: vX.Y.Z
+    hooks:
+      # The outer project, without the nested one.
+      - id: cleanporter
+        exclude: ^examples/ex/
+      # The nested project, on its own (drop this entry to not check it).
+      - id: cleanporter
+        name: cleanporter (examples/ex)
+        files: ^examples/ex/.*\.py$
+```
+
+The `files:` given here replaces the hook's own `\.py$`, so keep the
+suffix in the pattern.
 
 ## Evidence stops at the nearest `pyproject.toml`
 

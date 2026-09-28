@@ -36,7 +36,10 @@ Breaking under the pre-1.0 policy above:
   it from whatever is installed under that name. The new `--whole-project`
   flag (`run(..., whole_project=True)` in the library) reads the whole
   project — the directory of the `pyproject.toml` — for evidence and fixes,
-  reports and counts only the listed files; both hooks use it. Documented
+  reports and counts only the listed files; both hooks use it. Listed files
+  from two `pyproject.toml` projects (a nested `examples/` project, say) are
+  refused with exit `2` rather than judged on one project's evidence; split
+  the hook with `files:`/`exclude:` per project. Documented
   under [pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
 - **cleanporter finds the project's interpreter by itself.** Installed with
   `pipx` or `uv tool`, cleanporter runs in an environment without the target

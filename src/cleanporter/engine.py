@@ -57,9 +57,10 @@ another project (a sibling uv workspace member, say) is as invisible as it
 is to any run. The root is walked like any directory, so a listed file the
 configuration excludes (or one in a skipped directory) is not reported: a
 hook handed every changed file honours ``exclude`` as ``cleanporter .`` run
-from the project root does. A file elsewhere in the tree that cannot be read or parsed is a
-warning rather than an error, since the run does not report on it -- but
-its imports are then missing from the evidence, and the warning says so.
+from the project root does. A file elsewhere in the tree that cannot be read
+or parsed is a warning rather than an error, since the run does not report on
+it -- but its imports are then missing from the evidence, and the warning
+says so.
 """
 
 from __future__ import annotations
@@ -273,6 +274,8 @@ def run(
     if mismatch is not None:
         tally.warn(mismatch)
     analysed, reported = _scope(paths, config, tally) if whole_project else (paths, None)
+    # Warmed with the whole tree's pairs, not just the reported files': probe
+    # verdicts can depend on the batch they are asked in (`Resolver.warm`).
     project = project_lib.build(analysed, config)
     for note in project.notes:
         tally.note(note)

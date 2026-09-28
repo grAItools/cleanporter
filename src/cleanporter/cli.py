@@ -167,20 +167,53 @@ class _Printer(engine.Listener):
 
 def _project_anchor(
     paths: list[pathlib.Path],
-) -> tuple[pathlib.Path, list[pathlib.Path]] | None:
+) -> tuple[pathlib.Path, list[pathlib.Path]] | str:
     """For `--whole-project`: the project directory, and *paths* with its path first.
 
-    The project is that of the first listed path with a pyproject.toml above
-    it -- looked up from the path as written, not from a symlink's target --
-    so the answer does not depend on the order pre-commit lists files in. That
-    path goes first because the engine names the first path's configuration
-    in its mismatch warning. ``None`` when no path has one.
+    Each listed path's nearest pyproject.toml is looked up from the path as
+    written, not from a symlink's target. Every path that has one must share
+    it: that is the project, whatever order pre-commit lists files in. A path
+    under none rides along as an outside file. Two projects are refused, not
+    reconciled: picking one leaves the other's consumers out of the evidence,
+    and a file of the other would be fixed as an outside file on none of its
+    own project's evidence -- the re-export a consumer there imports deleted.
+
+    The project's first path goes first because the engine names the first
+    path's configuration in its mismatch warning. Returns the error message
+    when there is no project, or more than one.
     """
+    owners: dict[pathlib.Path, list[pathlib.Path]] = {}
     for path in paths:
         pyproject = config_lib.find_pyproject(path, resolve=False)
-        if pyproject is not None:
-            return pyproject.parent, [path, *(p for p in paths if p is not path)]
-    return None
+        if pyproject is None:
+            continue
+        # Two spellings of one file (a case-insensitive filesystem) agree.
+        same = next((known for known in owners if known.samefile(pyproject)), pyproject)
+        owners.setdefault(same, []).append(path)
+    if not owners:
+        return _NO_PROJECT
+    if len(owners) > 1:
+        return _several_projects(owners)
+    [(pyproject, listed)] = owners.items()
+    first = listed[0]
+    return pyproject.parent, [first, *(p for p in paths if p is not first)]
+
+
+def _several_projects(owners: dict[pathlib.Path, list[pathlib.Path]]) -> str:
+    """The `--whole-project` refusal for listed paths from several projects."""
+    shown = 3
+    projects = "; ".join(
+        f"{pyproject} ({', '.join(str(p) for p in listed[:shown])}"
+        + (f" and {len(listed) - shown} more" if len(listed) > shown else "")
+        + ")"
+        for pyproject, listed in owners.items()
+    )
+    return (
+        f"--whole-project judges one project per run, but the listed paths belong to "
+        f"{len(owners)}: {projects}. Run once per project: in pre-commit, one hook entry "
+        "per project with its own `files:` pattern, or `exclude:` a nested project "
+        "(examples/, benchmarks/) from the outer one's hook"
+    )
 
 
 def run(args: argparse.Namespace) -> int:
@@ -188,10 +221,11 @@ def run(args: argparse.Namespace) -> int:
     anchor = paths[0].resolve()
     if args.whole_project:
         found = _project_anchor(paths)
-        if found is None:
-            # Without one, the "project" would be the first path's directory:
-            # a partial tree presented as the whole, which the flag exists to avoid.
-            print(f"cleanporter: error: {_NO_PROJECT}", file=sys.stderr)
+        if isinstance(found, str):
+            # With none, the "project" would be the first path's directory: a
+            # partial tree presented as the whole, which the flag exists to
+            # avoid. With several, any one of them is.
+            print(f"cleanporter: error: {found}", file=sys.stderr)
             return _EXIT_ERROR
         anchor, paths = found
     try:

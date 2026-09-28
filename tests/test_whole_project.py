@@ -212,6 +212,41 @@ def test_a_symlink_to_a_file_outside_the_project_belongs_to_the_project(
     assert rc == 1
 
 
+@pytest.mark.parametrize("nested_first", [True, False])
+def test_files_from_two_projects_are_refused(
+    tree: pathlib.Path, monkeypatch, capsys, *, nested_first: bool
+) -> None:
+    """A nested project's file must not decide the project -- nor be outvoted.
+
+    Anchored on ``examples/ex``, ``demo/__init__.py`` became an outside file,
+    ``consumer.py`` was never read, and ``--fix`` deleted the re-export it
+    imports. Either order is refused, and nothing is written.
+    """
+    nested = tree / "examples" / "ex"
+    nested.mkdir(parents=True)
+    (nested / "pyproject.toml").write_text('[project]\nname = "ex"\n', encoding="utf-8")
+    (nested / "a.py").write_text("import os\n", encoding="utf-8")
+    monkeypatch.chdir(tree)
+    listed = ["examples/ex/a.py", "demo/__init__.py"]
+    rc = cli.main(["--whole-project", "--fix", *(listed if nested_first else listed[::-1])])
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "judges one project per run" in err
+    assert str(tree / "pyproject.toml") in err
+    assert str(nested / "pyproject.toml") in err
+    assert "files:" in err
+    assert (tree / "demo" / "__init__.py").read_text(encoding="utf-8") == _REEXPORT
+
+
+def test_relative_and_absolute_paths_of_one_project_are_one_project(
+    tree: pathlib.Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tree)
+    rc = cli.main(["--whole-project", "demo/__init__.py", str(tree / "consumer.py")])
+    assert "checked 2 file(s)" in capsys.readouterr().out
+    assert rc == 1
+
+
 # -- .pre-commit-hooks.yaml -------------------------------------------------
 
 
