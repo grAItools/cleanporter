@@ -15,6 +15,15 @@ If no `pyproject.toml` is found anywhere above the first path argument,
 cleanporter runs entirely on defaults, with the project root set to that path
 (or its parent, if it is a file).
 
+One run uses one configuration. If you pass several paths and a later one's
+nearest `pyproject.toml` is a *different* file — another project, or a nested
+one with its own `pyproject.toml` — that path is still analysed, but under the
+first path's configuration. cleanporter says so with a warning naming the
+configuration in use and each path whose own configuration it is ignoring
+(alongside the other warnings: on stdout in check mode, on stderr under
+`--diff` or `--fix`). Which configuration wins does not change; to apply each
+project's own, run cleanporter once per project.
+
 An unknown key inside `[tool.cleanporter]`, a value of the wrong type, or a
 `scope` outside the allowed set is a hard error: the run stops and exits `2`
 rather than silently ignoring the mistake.
@@ -47,7 +56,7 @@ skip = [
 | `treat_unresolved_as_error` | `false` | When `true`, `CP002` (unresolved) findings count toward the failure exit code, so a run that could not classify something exits `1`. |
 | `exempt_modules` | `["typing", "typing_extensions", "collections.abc", "__future__"]` | `from MODULE import X` is allowed when `MODULE` — or any ancestor of it — is in this set. Configured values are **added to** the built-in defaults; they never replace them. |
 | `exempt_names` | `[]` | Individual bound names that are always allowed, whatever module they came from. Checked before the module is even looked at. |
-| `python` | absent (the current interpreter) | Path to the interpreter used for the stdlib/third-party classification probe. Must be a string; omit the key to use the interpreter running cleanporter. |
+| `python` | absent (the current interpreter) | The interpreter used for the stdlib/third-party classification probe: a non-empty string; omit the key to use the interpreter running cleanporter. A value containing a path separator is a path, and a *relative* one is read against the `pyproject.toml` directory, like every other path here — so `".venv/bin/python"` works from any subdirectory. A value with no separator (`"python3"`) is a command name, looked up on `PATH` as usual. A leading `~` or `~user` is expanded first (an unknown user, or no home directory, is an error). Environment variables are *not* expanded, and symlinks are not resolved. A Windows drive also makes the value a path: `'C:\venv\Scripts\python.exe'` and `'\\server\share\python.exe'` are used as written, while a drive with no root, `'C:python.exe'`, is an error — it is relative to that drive's current directory, which the project root cannot stand in for. Drives are recognised on every platform, so a configuration means the same everywhere — which means a single letter followed by a colon reads as a drive even on Linux and macOS: `'a:b/python'` is drive `a:` with no root, and so an error, not a relative path under a directory called `a:b`. |
 | `skip` | `[]` | Regions of your code the tool must not analyse or rewrite, as a list of rule tables. See [`skip` rules](#skip-rules) below. |
 
 !!! tip "`exempt_modules` matches ancestors"
@@ -85,7 +94,7 @@ having to restate what the project already declares.
 | `--exempt MODULE` | Added to `exempt_modules` (which already contains the built-in defaults). |
 | `--root PATH` | Appended to `source_roots`. Relative values resolve against the project root, i.e. the `pyproject.toml` directory. |
 | `--strict` | OR-ed into `treat_unresolved_as_error`. `--strict` can turn it on; it can never turn it off. |
-| `--python PATH` | **Overrides** the `python` key, but only when the flag is actually given. |
+| `--python PATH` | **Overrides** the `python` key, but only when the flag is actually given. Like any path on the command line, a relative value is read against the current directory, not the project root. An empty value (`--python ""`) is an error (exit `2`). |
 
 There is no flag that removes an exemption, drops a source root, or relaxes
 `treat_unresolved_as_error` back to `false`. If you need that, change the

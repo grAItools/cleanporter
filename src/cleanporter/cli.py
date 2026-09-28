@@ -43,6 +43,14 @@ _EXIT_VIOLATIONS = 1
 _EXIT_ERROR = 2
 
 
+def _non_empty(value: str) -> str:
+    """An argument that must say something: ``--python ""`` was silently ignored."""
+    if not value:
+        msg = "must not be empty; omit the flag to use the current interpreter"
+        raise argparse.ArgumentTypeError(msg)
+    return value
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cleanporter",
@@ -72,7 +80,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "(ignored if --fix is also given: --fix wins and writes)",
     )
     parser.add_argument(
-        "--python", default=None, help="interpreter used to classify stdlib/third-party names"
+        "--python",
+        default=None,
+        type=_non_empty,
+        help="interpreter used to classify stdlib/third-party names",
     )
     parser.add_argument(
         "--exempt",
@@ -140,6 +151,9 @@ def run(args: argparse.Namespace) -> int:
     report = sys.stderr if (args.fix or args.diff) else sys.stdout
 
     paths = [pathlib.Path(p) for p in args.paths]
+    mismatch = config_lib.mismatch_warning(paths)
+    if mismatch is not None:
+        print(f"cleanporter: warning: {mismatch}", file=report)
     records, resolver, parse_errors, warnings = analyze.build(paths, config)
     for warning in warnings:
         print(f"cleanporter: warning: {warning}", file=report)

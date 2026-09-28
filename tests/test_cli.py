@@ -986,6 +986,70 @@ def test_a_failed_probe_is_explained_in_a_warning(project, monkeypatch, capsys):
     assert rc == 0
 
 
+def _broken_interpreter(path: pathlib.Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\necho 'stub interpreter ran' >&2\nexit 1\n", encoding="utf-8")
+    path.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_a_relative_python_in_config_is_found_from_a_subdirectory(project, monkeypatch, capsys):
+    """``python = "tools/py"`` means next to pyproject.toml, wherever the run starts.
+
+    The stub fails on purpose so the warning proves which file was executed.
+    """
+    _broken_interpreter(project / "tools" / "py")
+    with (project / "pyproject.toml").open("a", encoding="utf-8") as fh:
+        fh.write('[tool.cleanporter]\npython = "tools/py"\n')
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from functools import partial\nf = partial(print)\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project / "src")
+    cli.main(["demo"])
+    out = capsys.readouterr().out
+    assert f"interpreter probe '{project / 'tools' / 'py'}'" in out
+    assert "stub interpreter ran" in out
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_the_python_flag_stays_relative_to_the_cwd(project, monkeypatch, capsys):
+    """A CLI path argument means what the shell means; only the config key is anchored."""
+    _broken_interpreter(project / "src" / "tools" / "py")
+    (project / "src" / "demo" / "consumer.py").write_text(
+        "from functools import partial\nf = partial(print)\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(project / "src")
+    cli.main(["--python", "tools/py", "demo"])
+    out = capsys.readouterr().out
+    assert "stub interpreter ran" in out
+
+
+def test_an_empty_python_flag_is_an_error(project, capsys):
+    """It used to be silently ignored, and the configured or current interpreter used."""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--python", "", str(project / "src")])
+    assert exc.value.code == 2
+    assert "argument --python: must not be empty" in capsys.readouterr().err
+
+
+def test_paths_from_different_projects_warn_which_config_is_used(project, tmp_path, capsys):
+    other = tmp_path / "other"
+    (other / "lib").mkdir(parents=True)
+    (other / "pyproject.toml").write_text('[tool.cleanporter]\nscope = "first-party"\n', "utf-8")
+    (other / "lib" / "mod.py").write_text("import os\n", encoding="utf-8")
+    cli.main([str(project / "src"), str(other / "lib")])
+    out = capsys.readouterr().out
+    assert "cleanporter: warning: the paths belong to different pyproject.toml files" in out
+    assert str(project / "pyproject.toml") in out
+    assert f"{other / 'lib'} (nearest: {other / 'pyproject.toml'})" in out
+
+
+def test_no_config_warning_for_paths_in_one_project(project, monkeypatch, capsys):
+    monkeypatch.chdir(project)
+    cli.main(["--diff", "src", "src/demo/consumer.py"])
+    assert "different pyproject.toml" not in capsys.readouterr().err
+
+
 def test_a_submodule_missing_from_the_checkout_is_never_rewritten(project, capsys):
     """A generated ``_version.py`` is absent from the tree, not an object.
 

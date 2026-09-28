@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import importlib
+import os
 import pathlib
+import subprocess
 import sys
+import venv
+
+import pytest
 
 from cleanporter import firstparty, resolver
 
@@ -216,3 +221,68 @@ def test_a_stdlib_replacement_is_reachable(tmp_path):
     r = resolver.Resolver(firstparty.ModuleMap([_pkg(tmp_path)]))
     assert r.replacement_unreachable("os.path") is None
     assert r.replacement_unreachable("collections.abc") is None
+
+
+# -- which interpreter is "this one" -------------------------------------------
+
+
+def test_this_interpreter_is_its_own_executable_path():
+    assert resolver._is_this_interpreter(sys.executable) is True
+
+
+def test_a_symlink_to_this_interpreter_is_not_this_interpreter(tmp_path):
+    """A venv's ``bin/python`` is exactly such a symlink, to another environment."""
+    link = tmp_path / "python"
+    link.symlink_to(sys.executable)
+    assert resolver._is_this_interpreter(str(link)) is False
+
+
+def test_a_path_through_dotdot_is_not_this_interpreter():
+    """``..`` after a symlinked directory runs something else; never collapse it."""
+    here = pathlib.Path(sys.executable)
+    spelled = str(here.parent / ".." / here.parent.name / here.name)
+    assert resolver._is_this_interpreter(spelled) is False
+
+
+def test_a_bare_command_name_is_not_this_interpreter(monkeypatch):
+    """Even from the interpreter's own directory: a subprocess looks it up on PATH."""
+    here = pathlib.Path(sys.executable)
+    monkeypatch.chdir(here.parent)
+    assert resolver._is_this_interpreter(here.name) is False
+
+
+def _venv_with_onlyhere(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A real venv, built from this Python's base, holding a package cleanporter lacks."""
+    target = tmp_path / "tv"
+    try:
+        venv.create(target, with_pip=False, symlinks=os.name != "nt")
+    except (OSError, subprocess.CalledProcessError) as exc:  # pragma: no cover - platform
+        pytest.skip(f"cannot create a virtual environment: {exc}")
+    python = target / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    purelib = subprocess.run(
+        [str(python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    package = pathlib.Path(purelib) / "onlyhere"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("def helper():\n    pass\n", encoding="utf-8")
+    return python
+
+
+def test_another_venv_of_the_same_python_is_probed_in_its_own_environment(tmp_path):
+    """Its interpreter resolves to the same base binary as ours; its packages do not.
+
+    Comparing resolved paths probed it in process, against cleanporter's own
+    ``sys.path``: ``onlyhere`` (only in the target) came back "not
+    importable", and ``libcst`` (only in cleanporter's) came back classified.
+    """
+    python = _venv_with_onlyhere(tmp_path)
+    r = resolver.Resolver(firstparty.ModuleMap([]), python=str(python))
+    r.warm([("onlyhere", "helper"), ("libcst", "parse_module")])
+    assert r.is_module("onlyhere", "helper") is False
+    assert r.is_module("libcst", "parse_module") is None
+    assert r.reason("libcst", "parse_module") == (
+        "'libcst' is not importable in the target interpreter"
+    )

@@ -96,6 +96,122 @@ def test_plain_config_still_constructs_with_no_arguments():
     assert config.Config().scope == "all"
 
 
+# -- python ------------------------------------------------------------------
+
+
+def _python_value(tmp_path: pathlib.Path, value: str) -> str:
+    """*value* as a TOML literal string, so a backslash stays one backslash."""
+    cfg = config.load_config(_project(tmp_path, f"[tool.cleanporter]\npython = '{value}'\n"))
+    assert cfg.python is not None
+    return cfg.python
+
+
+def test_a_relative_python_path_is_read_against_the_pyproject_directory(tmp_path, monkeypatch):
+    """Not against the cwd, which would name a different file from a subdirectory."""
+    sub = _project(tmp_path, "[tool.cleanporter]\npython = '.venv/bin/python'\n") / "pkg"
+    monkeypatch.chdir(sub)
+    assert config.load_config(pathlib.Path()).python == str(tmp_path / ".venv" / "bin" / "python")
+
+
+def test_a_relative_python_path_keeps_its_symlinks_and_dotdots(tmp_path):
+    """A venv interpreter is a symlink whose location matters; nothing is resolved."""
+    got = _python_value(tmp_path, "../envs/py/bin/python")
+    assert got == str(tmp_path / ".." / "envs" / "py" / "bin" / "python")
+
+
+def test_a_bare_python_command_is_left_for_the_path_lookup(tmp_path):
+    """No separator means a command name: anchoring it would change its meaning."""
+    assert _python_value(tmp_path, "python3") == "python3"
+
+
+def test_an_absolute_python_path_is_unchanged(tmp_path):
+    absolute = str(tmp_path / "venv" / "bin" / "python")
+    assert _python_value(tmp_path, absolute) == absolute
+
+
+def test_a_leading_tilde_in_python_is_expanded(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    assert _python_value(tmp_path, "~/venv/bin/python") == str(home / "venv" / "bin" / "python")
+
+
+def test_environment_variables_in_python_are_not_expanded(tmp_path, monkeypatch):
+    monkeypatch.setenv("CP_TEST_VENV", "/elsewhere")
+    got = _python_value(tmp_path, "$CP_TEST_VENV/bin/python")
+    assert got == str(tmp_path / "$CP_TEST_VENV" / "bin" / "python")
+
+
+@pytest.mark.parametrize("value", [r"C:\venv\Scripts\python.exe", r"\\server\share\python.exe"])
+def test_a_python_path_with_a_drive_and_a_root_is_unchanged(tmp_path, value):
+    """Recognised on every platform: a separator test alone misses ``\\`` off Windows."""
+    assert _python_value(tmp_path, value) == value
+
+
+@pytest.mark.parametrize(
+    ("table", "message"),
+    [
+        ("[tool.cleanporter]\npython = 3\n", "must be a string"),
+        ('[tool.cleanporter]\npython = ""\n', "must not be empty"),
+        ("[tool.cleanporter]\npython = 'C:python.exe'\n", "relative to its drive"),
+        ("[tool.cleanporter]\npython = '~no-such-user-cp/bin/python'\n", "cannot expand"),
+    ],
+)
+def test_malformed_python_raises(tmp_path, table, message):
+    with pytest.raises(config.ConfigError, match=message):
+        config.load_config(_project(tmp_path, table))
+
+
+# -- paths from different projects ---------------------------------------------
+
+
+def test_no_mismatch_warning_for_paths_in_one_project(tmp_path):
+    _project(tmp_path)
+    (tmp_path / "tests").mkdir()
+    assert config.mismatch_warning([tmp_path / "pkg", tmp_path / "tests"]) is None
+    assert config.mismatch_warning([]) is None
+
+
+def test_mismatch_warning_names_the_config_used_and_the_paths_it_ignores(tmp_path):
+    (tmp_path / "one").mkdir()
+    (tmp_path / "two").mkdir()
+    first = _project(tmp_path / "one")
+    second = _project(tmp_path / "two")
+    nested = first / "pkg" / "inner"
+    nested.mkdir()
+    (nested / "pyproject.toml").write_text("", encoding="utf-8")
+    warning = config.mismatch_warning([first / "pkg", second / "pkg", nested, first])
+    assert warning is not None
+    assert str(first / "pyproject.toml") in warning
+    assert f"{second / 'pkg'} (nearest: {second / 'pyproject.toml'})" in warning
+    assert f"{nested} (nearest: {nested / 'pyproject.toml'})" in warning
+    assert f"{first} (nearest" not in warning  # the path that agrees is not listed
+
+
+def test_two_spellings_of_one_pyproject_do_not_warn(tmp_path, monkeypatch):
+    """As on a case-insensitive filesystem, where ``Proj`` and ``proj`` are one file."""
+    (tmp_path / "real").mkdir()
+    real = _project(tmp_path / "real")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    spellings = {"a": real / "pyproject.toml", "b": alias / "pyproject.toml"}
+    monkeypatch.setattr(config, "find_pyproject", lambda path: spellings[path.name])
+    assert config.mismatch_warning([pathlib.Path("a"), pathlib.Path("b")]) is None
+
+
+def test_mismatch_warning_when_the_first_path_has_no_pyproject(tmp_path):
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    (tmp_path / "other").mkdir()
+    other = _project(tmp_path / "other")
+    if config.find_pyproject(bare) is not None:  # pragma: no cover - a pyproject above tmp
+        pytest.skip("a pyproject.toml above the temporary directory")
+    warning = config.mismatch_warning([bare, other])
+    assert warning is not None
+    assert "built-in defaults" in warning
+    assert f"{other} (nearest: {other / 'pyproject.toml'})" in warning
+
+
 #: One non-default value per known key. The test below fails if a key is added
 #: without one, which is the point: the sample is what proves the parser does
 #: something with the key rather than merely accepting it.
