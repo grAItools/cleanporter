@@ -682,3 +682,67 @@ def test_fix_never_introduces_a_cp006(project: pathlib.Path, source: str) -> Non
     # And a fresh check of what was written agrees.
     assert _run(project).alias_mismatches == 0
     assert target.read_text(encoding="utf-8") != source
+
+
+# -- a new binding must not capture a builtin the scope reads -----------------------
+
+
+def _list_module(project: pathlib.Path) -> None:
+    (project / "src" / "demo" / "list.py").write_text(HELPERS, encoding="utf-8", newline="\n")
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (
+            "from demo.list import go\n\nx = list(go())\n",
+            "from demo import list as list_2\n\nx = list(list_2.go())\n",
+        ),
+        (
+            "from demo.list import go\n\n\ndef f():\n    return list(go())\n",
+            "from demo import list as list_2\n\n\ndef f():\n    return list(list_2.go())\n",
+        ),
+        (
+            "from demo.list import go\n\nx = undefined_list_name\nlist = go\n",
+            "from demo import list as list_2\n\nx = undefined_list_name\nlist = list_2.go\n",
+        ),
+    ],
+    ids=["same_scope", "nested_function", "assigned"],
+)
+def test_without_a_rule_a_read_builtin_is_suffixed(
+    project: pathlib.Path, source: str, expected: str
+) -> None:
+    _configure(project, "")
+    _list_module(project)
+    text, _codes = _fix(project, source)
+    assert text == expected
+
+
+def test_a_builtin_read_only_outside_the_binding_scope_is_free(project: pathlib.Path) -> None:
+    _configure(project, "")
+    _list_module(project)
+    source = "def f():\n    from demo.list import go\n    return go()\n\n\nx = list()\n"
+    text, _codes = _fix(project, source)
+    assert text == "def f():\n    from demo import list\n    return list.go()\n\n\nx = list()\n"
+
+
+def test_an_unbound_read_is_taken_too(project: pathlib.Path) -> None:
+    _configure(project, "")
+    source = "from demo.helpers import go\n\n\ndef f():\n    return helpers, go()\n"
+    text, _codes = _fix(project, source)
+    assert text.startswith("from demo import helpers as helpers_2\n")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from json import dumps\n\nx = str(dumps(1))\n",
+        "from json import dumps\n\n\ndef f():\n    return str(dumps(1))\n",
+    ],
+    ids=["same_scope", "nested_function"],
+)
+def test_with_a_rule_a_read_builtin_declines(project: pathlib.Path, source: str) -> None:
+    _configure(project, '[[tool.cleanporter.alias]]\nmodule = "json"\nas = "str"\n')
+    text, codes = _fix(project, source)
+    assert text == source
+    assert "CP003" in codes

@@ -166,6 +166,9 @@ class _Fixer(cst.CSTTransformer):
         #: ``id`` of every `libcst.ImportAlias` planned for a rewrite, so
         #: `_suppression_moved` knows which names the output no longer imports.
         self.rewritten_aliases: set[int] = set()
+        #: ``(scope, name)`` for every read that resolves to a builtin or to
+        #: nothing; see `_free_names_below`. Built on first use.
+        self._free_reads: list[tuple[metadata.Scope, str]] | None = None
         #: The alias conventions every new binding follows (`_allocate_token`).
         self._conventions = config.conventions
 
@@ -785,6 +788,44 @@ class _Fixer(cst.CSTTransformer):
         self._module_binding[key] = bind
         return bind, True
 
+    def _free_names_below(self, scope: metadata.Scope) -> set[str]:
+        """Names read in *scope*, or a scope nested in it, that no assignment in the file binds.
+
+        A read of ``str`` or ``list`` resolves to the builtin -- or, for a
+        name nothing binds, to nothing -- and a new binding of that name in
+        *scope* would capture it: ``from demo.list import go`` rewritten to
+        ``from demo import list`` turned ``list(go())`` into
+        ``list(list.go())``. `_names_in_scope` sees only assignments, and
+        builtins are deliberately not assignments there (avoiding every
+        builtin would alias needlessly), so the names actually *read* where
+        the binding would be visible are collected here instead. A read in a
+        nested class body counts too, which only ever over-avoids.
+        """
+        if self._free_reads is None:
+            scopes = {
+                s
+                for s in self.metadata[metadata.ScopeProvider].values()
+                if isinstance(s, metadata.Scope)
+            }
+            self._free_reads = [
+                (access.scope, access.node.value)
+                for each in scopes
+                for access in each.accesses
+                if isinstance(access.node, cst.Name)
+                and all(isinstance(r, metadata.BuiltinAssignment) for r in access.referents)
+            ]
+        found: set[str] = set()
+        for where, name in self._free_reads:
+            current: metadata.Scope | None = where
+            while current is not None:
+                if current is scope:
+                    found.add(name)
+                    break
+                if isinstance(current, metadata.GlobalScope):
+                    break
+                current = current.parent
+        return found
+
     def _submodule_slots(self, parent: str) -> set[str]:
         """Names a module-scope binding of *parent* must not occupy.
 
@@ -872,7 +913,7 @@ class _Fixer(cst.CSTTransformer):
         no rule the leaf is suffixed as it always has been.
         """
         token = parent.rsplit(".", 1)[-1]
-        taken = self._names_in_scope(scope) | extra_avoid
+        taken = self._names_in_scope(scope) | extra_avoid | self._free_names_below(scope)
         if isinstance(scope, metadata.GlobalScope):
             taken = taken | self._submodule_slots(parent)
         expectation = self._expectation(parent)

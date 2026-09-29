@@ -50,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cleanporter rule. Ruff's built-in default table is not assumed. The new
   `ruff_aliases = false` turns this off.
 
+### Fixed
+
+- `--fix` could bind a new module import under the name of a builtin that
+  the same scope, or a scope nested in it, reads: `from demo.list import go`
+  with `x = list(go())` became `from demo import list` with
+  `list(list.go())`, which calls the module. A name read where the new
+  binding would be visible and bound nowhere in the file (a builtin, or an
+  undefined name) now counts as taken, so the binding is suffixed
+  (`list_2`) -- or, under an alias rule asking for that name, the file is
+  declined with a `CP003`.
+
 ## [0.5.0] - 2026-09-29
 
 Breaking under the pre-1.0 policy above:
