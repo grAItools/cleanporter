@@ -9,6 +9,11 @@ and [prek](https://prek.j178.dev/), in its
 | `cleanporter` | `cleanporter --whole-project FILES` | a changed file has a `CP001` or `CP003` (or a `CP002` under `--strict`), or cannot be read or parsed. |
 | `cleanporter-fix` | `cleanporter --whole-project --fix FILES` | it rewrote a file (the rewrite is left in your working tree to review and stage), or something it could not rewrite remains. |
 
+With a [baseline](usage.md#adopting-cleanporter-on-an-existing-codebase)
+configured, `cleanporter` is the hook that gates only *new* findings;
+`cleanporter-fix` does not apply the baseline (a baseline describes check
+runs), so it rewrites and reports the backlog in every file it is handed.
+
 Add one of them to your project's `.pre-commit-config.yaml`:
 
 ```yaml

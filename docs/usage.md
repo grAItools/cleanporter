@@ -108,7 +108,7 @@ because an import of it from your package depends on what it is.
 |-----:| --- |
 | `0` | Clean — nothing remains to report. |
 | `1` | Violations found (or left behind after `--fix`). |
-| `2` | Operational error: a file that could not be read, decoded, parsed or (under `--fix`) written, a malformed `[tool.cleanporter]` table, a usage error (an unknown `--select` / `--ignore` code, say), or a baseline file that is missing or malformed. |
+| `2` | Operational error: a file that could not be read, decoded, parsed or (under `--fix`) written, a malformed `[tool.cleanporter]` table, a usage error (an unknown `--select` / `--ignore` code, say), a baseline file that is missing or malformed, or `--baseline` / `--write-baseline` (or a configured `baseline`) with no `pyproject.toml` above the first path. |
 
 In short: 0 = clean, 1 = violations, 2 = operational error.
 
@@ -442,7 +442,9 @@ So a finding stays recorded when:
   into several or joined back, a backslash continuation;
 - its statement's names are reordered, or another name is added to it (only
   the new name is reported);
-- a relative import is spelled absolutely, or the other way round.
+- a relative import is spelled absolutely, or the other way round;
+- its alias changes (`as h`, or none), or it moves to another scope in the
+  same file — from module level into a function, say.
 
 It comes back when the import changes what it imports — another name or
 another module — or moves to another file.

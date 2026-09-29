@@ -55,6 +55,7 @@ nothing to accept.
 from __future__ import annotations
 
 import collections
+import contextlib
 import dataclasses
 import json
 import os
@@ -153,11 +154,19 @@ def dumps(baseline: list[Entry]) -> str:
 def write(path: pathlib.Path, baseline: list[Entry]) -> None:
     r"""Write *baseline* to *path*, atomically, with ``\n`` newlines everywhere.
 
-    Replacing an existing file is atomic (`_source.write_atomic`); a new
-    one is created empty first, since the atomic write replaces a file.
+    Replacing an existing file is atomic (`_source.write_atomic`). A new
+    one is created empty first, since the atomic write replaces a file, and
+    removed again if the write fails, so a failure leaves nothing behind.
     """
+    created = not path.exists()
     path.touch(exist_ok=True)
-    _source.write_atomic(path, dumps(baseline).encode("utf-8"))
+    try:
+        _source.write_atomic(path, dumps(baseline).encode("utf-8"))
+    except BaseException:
+        if created:
+            with contextlib.suppress(OSError):
+                path.unlink()
+        raise
 
 
 def loads(text: str) -> list[Entry]:

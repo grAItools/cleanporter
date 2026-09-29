@@ -7,7 +7,7 @@ import pathlib
 
 import pytest
 
-from cleanporter import baseline, cli, config, engine
+from cleanporter import _source, baseline, cli, config, engine
 
 _CONSUMER = "from demo.helpers import THING\ntotal = THING\n"
 #: A CP001 and a CP002 (a module no interpreter has).
@@ -520,3 +520,30 @@ def test_write_baseline_replaces_an_existing_file(project: pathlib.Path) -> None
     _write(project / "baseline.json", "stale contents\n")
     assert _write_baseline() == 0
     assert _baseline(project)["version"] == 1
+
+
+def test_a_failed_write_leaves_no_new_file_behind(
+    project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(path: pathlib.Path, data: bytes) -> None:
+        raise OSError(28, "No space left on device", str(path))
+
+    monkeypatch.setattr(_source, "write_atomic", fail)
+    assert _write_baseline() == 2
+    assert not (project / "baseline.json").exists()
+
+
+@pytest.mark.parametrize(
+    "rewritten",
+    [
+        "from demo.helpers import THING as T\ntotal = T\n",
+        "def f():\n    from demo.helpers import THING\n    return THING\n",
+    ],
+    ids=["alias", "scope"],
+)
+def test_an_alias_or_a_scope_change_keeps_the_finding_baselined(
+    project: pathlib.Path, rewritten: str
+) -> None:
+    assert _write_baseline() == 0
+    _write(_consumer(project), rewritten)
+    assert cli.main(["--baseline", "baseline.json", "src"]) == 0
