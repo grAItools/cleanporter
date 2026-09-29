@@ -28,6 +28,13 @@ the diff.
 
 A file that cannot be read, decoded, parsed or written is reported with its
 path and makes the exit code 2, and every other file is still processed.
+
+``--select`` / ``--ignore`` (and ``select`` / ``ignore`` in the
+configuration) choose which codes are reported and counted; the engine
+applies them after the fixer, so ``--fix`` rewrites exactly what it would
+have without them. ``--baseline`` (or ``baseline``) then takes the findings a
+baseline file accepts out of the result (`baseline.apply`), and
+``--write-baseline`` records a check run's findings instead of reporting them.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ from typing import TextIO
 
 import cleanporter
 from cleanporter import _report, engine, model
+from cleanporter import baseline as baseline_lib
 from cleanporter import config as config_lib
 
 #: Printed to stderr after `--fix` writes anything (see `run`).
@@ -67,6 +75,18 @@ def _non_empty(value: str) -> str:
         msg = "must not be empty; omit the flag to detect the project's interpreter"
         raise argparse.ArgumentTypeError(msg)
     return value
+
+
+def _codes(value: str) -> frozenset[str]:
+    """A comma-separated list of finding codes: ``--select`` and ``--ignore``."""
+    try:
+        codes = config_lib.parse_codes([value])
+    except config_lib.ConfigError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not codes:
+        msg = "must name at least one finding code, as in CP001,CP003"
+        raise argparse.ArgumentTypeError(msg)
+    return codes
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -138,6 +158,38 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="list the imports a [tool.cleanporter.skip] rule took out (CP004)",
     )
     parser.add_argument(
+        "--select",
+        action="append",
+        type=_codes,
+        metavar="CODES",
+        help="report and count only these finding codes (comma-separated, e.g. CP001,CP003); "
+        "replaces the configured select. Reporting only: --fix rewrites the same either way",
+    )
+    parser.add_argument(
+        "--ignore",
+        action="append",
+        type=_codes,
+        metavar="CODES",
+        help="neither report nor count these finding codes (comma-separated); replaces the "
+        "configured ignore. Reporting only, like --select",
+    )
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        type=_non_empty_path,
+        metavar="FILE",
+        help="leave out the findings recorded in this baseline file (replaces the configured "
+        "baseline); a recorded finding that is gone is a note, never a failure",
+    )
+    parser.add_argument(
+        "--write-baseline",
+        default=None,
+        type=_non_empty_path,
+        metavar="FILE",
+        help="record the current findings (as --select/--ignore report them) in FILE and "
+        "exit 0; check mode only",
+    )
+    parser.add_argument(
         "--format",
         choices=_FORMATS,
         default="text",
@@ -150,13 +202,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _non_empty_path(value: str) -> pathlib.Path:
+    """A file argument that must name something."""
+    if not value:
+        msg = "must not be empty"
+        raise argparse.ArgumentTypeError(msg)
+    return pathlib.Path(value)
+
+
+def _union(values: list[frozenset[str]] | None) -> frozenset[str] | None:
+    """Repeated ``--select`` / ``--ignore`` values as one set; ``None`` when not given."""
+    return frozenset().union(*values) if values else None
+
+
 def _apply_overrides(config: config_lib.Config, args: argparse.Namespace) -> config_lib.Config:
+    select = _union(args.select)
+    ignore = _union(args.ignore)
     return dataclasses.replace(
         config,
         exempt_modules=config.exempt_modules | frozenset(args.exempt),
         source_roots=config.source_roots + tuple(args.root),
         python=args.python or config.python,
         treat_unresolved_as_error=config.treat_unresolved_as_error or args.strict,
+        select=select if select is not None else config.select,
+        ignore=ignore if ignore is not None else config.ignore,
+        baseline=args.baseline or config.baseline,
     )
 
 
@@ -286,6 +356,15 @@ def run(args: argparse.Namespace) -> int:
     except config_lib.ConfigError as exc:
         print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
         return _EXIT_ERROR
+    # Read before the run, so a missing or broken baseline costs nothing. A
+    # run that writes one records every current finding, so it reads none.
+    accepted: list[baseline_lib.Entry] | None = None
+    if config.baseline is not None and args.write_baseline is None:
+        try:
+            accepted = baseline_lib.load(config.baseline)
+        except baseline_lib.BaselineError as exc:
+            print(f"cleanporter: error: {exc}", file=sys.stderr)
+            return _EXIT_ERROR
 
     mode = _mode(args)
     structured = args.format != "text"
@@ -296,6 +375,12 @@ def run(args: argparse.Namespace) -> int:
     listener = _StructuredPrinter() if structured else _Printer(report)
     result = engine.run(paths, config, mode, listener=listener, whole_project=args.whole_project)
     strict = config.treat_unresolved_as_error
+    if args.write_baseline is not None:
+        return _write_baseline(args.write_baseline, result, config)
+    if accepted is not None:
+        result = baseline_lib.apply(result, accepted, config)
+        if result.stale_baseline:
+            listener.note(baseline_lib.stale_note(result.stale_baseline))
 
     if result.wrote:
         # What the tool still cannot check: a literal dotted path in another
@@ -333,6 +418,26 @@ def run(args: argparse.Namespace) -> int:
     return result.exit_code(strict=strict)
 
 
+def _write_baseline(path: pathlib.Path, result: engine.RunResult, config: config_lib.Config) -> int:
+    """``--write-baseline``: record *result*'s findings in *path*, unless a file failed.
+
+    A file that could not be read or parsed has no findings to record, so a
+    baseline written without it would let every one of them through later
+    as new; nothing is written and the exit code is 2.
+    """
+    if result.errors:
+        print(
+            f"cleanporter: error: baseline not written: {len(result.errors)} file(s) could "
+            "not be processed, so their findings are unknown",
+            file=sys.stderr,
+        )
+        return _EXIT_ERROR
+    recorded = baseline_lib.entries(result, config.root)
+    baseline_lib.write(path, recorded)
+    print(f"cleanporter: wrote {len(recorded)} finding(s) to {path}", file=sys.stderr)
+    return 0
+
+
 def _summary(result: engine.RunResult) -> str:
     """The closing ``checked N file(s): ...`` line."""
     return (
@@ -340,6 +445,7 @@ def _summary(result: engine.RunResult) -> str:
         + (f", fixed {result.changed}" if result.mode is engine.Mode.FIX else "")
         + f": {result.violations} violation(s), {result.skipped} not rewritten, "
         f"{result.unresolved} unresolved, {result.skipped_by_config} skipped by config"
+        + (f", {result.baselined} in the baseline" if result.baselined is not None else "")
     )
 
 
@@ -363,6 +469,12 @@ def _write_patch(data: bytes) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    if args.write_baseline is not None and (args.fix or args.diff):
+        # A baseline records what a check run reports; under --fix the
+        # findings are what is left *after* rewriting, and --diff's differ.
+        parser.error(
+            "--write-baseline records a check run; it cannot be combined with --fix or --diff"
+        )
     if args.format in _PATCHLESS_FORMATS and args.diff:
         # Exits 2, as every other usage error does.
         parser.error(

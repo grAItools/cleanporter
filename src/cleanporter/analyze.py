@@ -772,6 +772,7 @@ def analyze_record(
                 decision.status,
                 decision.detail,
                 _module_import(rec, unit) if decision.rewrite else "",
+                rec.tree.code_for_node(unit.node),
             )
         )
     return findings

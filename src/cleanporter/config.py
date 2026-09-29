@@ -18,6 +18,7 @@ import re
 import tomllib
 from collections.abc import Sequence
 
+from cleanporter import model
 from cleanporter import skip as skip_lib
 
 # Modules whose members may be imported directly by name.
@@ -29,11 +30,40 @@ _VALID_SCOPES = ("all", "first-party")
 
 _LIST_KEYS = ("exclude", "source_roots", "exempt_modules", "exempt_names")
 _BOOL_KEYS = ("treat_unresolved_as_error",)
-_KNOWN_KEYS = frozenset(_LIST_KEYS + _BOOL_KEYS + ("scope", "python", "skip"))
+_CODE_KEYS = ("select", "ignore")
+_KNOWN_KEYS = frozenset(
+    _LIST_KEYS + _BOOL_KEYS + _CODE_KEYS + ("scope", "python", "skip", "baseline")
+)
 
 
 class ConfigError(ValueError):
     """Raised when [tool.cleanporter] is malformed."""
+
+
+def known_codes() -> frozenset[str]:
+    """Every finding code there is (``CP001``, ...): one per `model.Status`.
+
+    Read off `model.Finding.code` rather than listed here, so a new status
+    is selectable the moment it has a code.
+    """
+    return frozenset(model.Finding(pathlib.Path(), 0, 0, "", "", s).code for s in model.Status)
+
+
+def parse_codes(values: Sequence[str]) -> frozenset[str]:
+    """*values*, finding codes, upper-cased and checked; `ConfigError` on an unknown one.
+
+    Each value may itself be comma-separated (``"CP001,CP003"``), as
+    ``--select`` and ``--ignore`` take them; blanks around a comma are
+    ignored.
+    """
+    codes = frozenset(
+        part.strip().upper() for value in values for part in value.split(",") if part.strip()
+    )
+    unknown = sorted(codes - known_codes())
+    if unknown:
+        known = ", ".join(sorted(known_codes()))
+        raise ConfigError(f"unknown finding code(s) {', '.join(unknown)}; known: {known}")
+    return codes
 
 
 @dataclasses.dataclass(frozen=True)
@@ -64,6 +94,19 @@ class Config:
     python: str | None = None
     #: Regions the author declared off-limits; see `cleanporter.skip`.
     skip: tuple[skip_lib.Rule, ...] = ()
+    #: The finding codes a run reports and counts; ``None`` is every code.
+    #: Reporting only: the fixer rewrites what it would have either way.
+    select: frozenset[str] | None = None
+    #: Finding codes a run neither reports nor counts, applied after `select`.
+    ignore: frozenset[str] = frozenset()
+    #: The baseline file of findings not to report (`cleanporter.baseline`);
+    #: read by the command line, which a library caller applies itself. A
+    #: relative path read from pyproject.toml arrives joined to ``root``.
+    baseline: pathlib.Path | None = None
+
+    def reports(self, code: str) -> bool:
+        """Whether a finding with *code* is reported and counted (`select`, `ignore`)."""
+        return (self.select is None or code in self.select) and code not in self.ignore
 
     def is_exempt(self, parent: str, name: str) -> bool:
         if name in self.exempt_names:
@@ -85,6 +128,26 @@ def _scope(table: dict[str, object]) -> str:
     if not isinstance(value, str) or value not in _VALID_SCOPES:
         raise ConfigError(f"tool.cleanporter.scope must be one of {_VALID_SCOPES}, got {value!r}")
     return value
+
+
+def _codes(table: dict[str, object], key: str) -> frozenset[str]:
+    codes = _str_list(table, key)
+    if key == "select" and not codes:
+        raise ConfigError(
+            "tool.cleanporter.select must name at least one code; omit it to report every code"
+        )
+    try:
+        return parse_codes(codes)
+    except ConfigError as exc:
+        raise ConfigError(f"tool.cleanporter.{key}: {exc}") from exc
+
+
+def _baseline(table: dict[str, object], root: pathlib.Path) -> pathlib.Path:
+    """The ``baseline`` key, relative to *root* (the pyproject.toml's directory)."""
+    value = table["baseline"]
+    if not isinstance(value, str) or not value:
+        raise ConfigError("tool.cleanporter.baseline must be a non-empty string (a file path)")
+    return root / value
 
 
 def _python(table: dict[str, object], root: pathlib.Path) -> str:
@@ -262,6 +325,9 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
     scope = _scope(table) if "scope" in table else defaults.scope
     python = _python(table, root) if "python" in table else defaults.python
     skip = _skip_rules(table) if "skip" in table else defaults.skip
+    select = _codes(table, "select") if "select" in table else defaults.select
+    ignore = _codes(table, "ignore") if "ignore" in table else defaults.ignore
+    baseline = _baseline(table, root) if "baseline" in table else defaults.baseline
     # Validating the boolean keys stays driven by _BOOL_KEYS, but every one of
     # them has to be applied by name below; `test_every_known_key_reaches_the
     # _config` is what stops a new key being validated and then dropped.
@@ -278,6 +344,9 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
         exempt_names=exempt_names,
         python=python,
         skip=skip,
+        select=select,
+        ignore=ignore,
+        baseline=baseline,
     )
 
 

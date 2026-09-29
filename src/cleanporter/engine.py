@@ -144,6 +144,13 @@ class RunResult:
     #: Every note, in the order it arose: which interpreter was detected for
     #: the probe, and why (see `Config.python`). Informational, never a failure.
     notes: tuple[str, ...] = ()
+    #: The files counted by `files_checked`, in discovery order.
+    checked: tuple[pathlib.Path, ...] = ()
+    #: With a baseline applied (`cleanporter.baseline.apply`), how many
+    #: findings it took out of `findings`; ``None`` when none was.
+    baselined: int | None = None
+    #: With a baseline applied, how many of its entries matched no finding.
+    stale_baseline: int | None = None
 
     def _count(self, status: model.Status) -> int:
         return sum(f.status is status for f in self.findings)
@@ -189,7 +196,9 @@ class RunResult:
         2 when any file could not be read, decoded, parsed or written;
         otherwise 1 when a `CP001` or `CP003` remains -- or, under *strict*
         (``--strict`` / ``treat_unresolved_as_error``), a `CP002`; otherwise 0.
-        `CP004` never counts.
+        `CP004` never counts. Only `findings` count, so a code
+        `Config.select` / `Config.ignore` left out, or a finding a baseline
+        took out, cannot fail the run.
         """
         if self.errors:
             return 2
@@ -273,7 +282,9 @@ def run(
     applied to it (see `config.load_config` for reading ``[tool.cleanporter]``).
     Raises what reading the paths themselves can raise (`OSError`); a file
     that cannot be read, parsed or written is a `RunResult.errors` entry
-    instead, and the run goes on.
+    instead, and the run goes on. `Config.select` and `Config.ignore` filter
+    the findings reported, never what is fixed; `Config.baseline` is not read
+    here (see `cleanporter.baseline.apply`).
 
     With *whole_project*, the whole tree under ``config.root`` is read for
     evidence and only the files under *paths* are fixed, reported and counted;
@@ -331,15 +342,19 @@ def run(
     for warning in project.resolver.take_warnings():
         tally.warn(warning)
 
-    tally.findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
+    # `select` / `ignore` choose what is reported and counted, and nothing
+    # else: the fixer above has already rewritten what it would have anyway.
+    findings = [f for f in tally.findings if config.reports(f.code)]
+    findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
     return RunResult(
         mode,
         len(records),
-        tuple(tally.findings),
+        tuple(findings),
         tuple(tally.patches),
         tuple(tally.errors),
         tuple(tally.warnings),
         tuple(tally.notes),
+        tuple(r.path for r in records),
     )
 
 

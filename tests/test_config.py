@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from cleanporter import config
+from cleanporter import config, model
 
 
 def _project(tmp_path: pathlib.Path, table: str = "") -> pathlib.Path:
@@ -57,6 +57,9 @@ exempt_modules = ["attrs"]
 exempt_names = ["annotations"]
 python = "python3"
 skip = [{ decorator = 'gtx\\.field_operator', reason = "DSL body" }]
+select = ["CP001", "cp003"]
+ignore = ["CP002"]
+baseline = "ci/baseline.json"
 """,
         )
     )
@@ -69,6 +72,9 @@ skip = [{ decorator = 'gtx\\.field_operator', reason = "DSL body" }]
     assert [(r.index, r.decorator, r.reason) for r in cfg.skip] == [
         (1, r"gtx\.field_operator", "DSL body")
     ]
+    assert cfg.select == frozenset({"CP001", "CP003"})
+    assert cfg.ignore == frozenset({"CP002"})
+    assert cfg.baseline == tmp_path / "ci" / "baseline.json"
 
 
 def test_exempt_modules_extends_rather_than_replaces_defaults(tmp_path):
@@ -237,6 +243,9 @@ _SAMPLES = {
     "python": "python3",
     "treat_unresolved_as_error": True,
     "skip": [{"decorator": "gtx\\.field_operator"}],
+    "select": ["CP001"],
+    "ignore": ["CP002"],
+    "baseline": "cleanporter-baseline.json",
 }
 
 
@@ -349,3 +358,36 @@ def test_a_rule_naming_definitions_does_not_take_whole_files(tmp_path):
     rules = _skip(tmp_path, "skip = [{ file = 'a', symbol = 's' }, { decorator = 'd' }]\n").skip
     assert not rules[0].whole_file
     assert not rules[1].whole_file
+
+
+# -- select / ignore / baseline ----------------------------------------------
+
+
+def test_reports_follows_select_then_ignore(tmp_path: pathlib.Path) -> None:
+    cfg = config.Config(
+        root=tmp_path, select=frozenset({"CP001", "CP003"}), ignore=frozenset({"CP003"})
+    )
+    assert [c for c in ("CP001", "CP002", "CP003", "CP004") if cfg.reports(c)] == ["CP001"]
+    assert all(config.Config(root=tmp_path).reports(c) for c in config.known_codes())
+
+
+@pytest.mark.parametrize("key", ["select", "ignore"])
+def test_an_unknown_code_is_a_config_error(tmp_path: pathlib.Path, key: str) -> None:
+    match = rf"tool\.cleanporter\.{key}: unknown finding code\(s\) CP999"
+    with pytest.raises(config.ConfigError, match=match):
+        config.load_config(_project(tmp_path, f'[tool.cleanporter]\n{key} = ["CP001", "CP999"]\n'))
+
+
+def test_an_empty_select_is_a_config_error(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(config.ConfigError, match="at least one code"):
+        config.load_config(_project(tmp_path, "[tool.cleanporter]\nselect = []\n"))
+
+
+def test_an_empty_baseline_is_a_config_error(tmp_path: pathlib.Path) -> None:
+    with pytest.raises(config.ConfigError, match="baseline must be a non-empty string"):
+        config.load_config(_project(tmp_path, '[tool.cleanporter]\nbaseline = ""\n'))
+
+
+def test_known_codes_are_one_per_status() -> None:
+    assert len(config.known_codes()) == len(model.Status)
+    assert {"CP001", "CP002", "CP003", "CP004"} <= config.known_codes()

@@ -18,7 +18,11 @@ is shown and what it means:
   ``--strict``; `CP004` never fails a run, so it is a note;
 * a file that could not be processed is not a finding, in the text report
   or here: it is listed apart (``errors`` in JSON, a tool execution
-  notification in SARIF) and it is what makes the exit code 2.
+  notification in SARIF) and it is what makes the exit code 2;
+* the result is the one the exit code is computed from: a code ``--select``
+  / ``--ignore`` left out, or a finding a baseline accepted, is in no format
+  and in no count (JSON adds ``baselined`` and ``stale_baseline`` counts
+  when a baseline was applied).
 
 Columns: `model.Finding.column` is 0-based, counted in code points as libcst
 counts and as the text report prints it, and so is JSON's ``column``. SARIF
@@ -169,21 +173,27 @@ def _dump(document: Json) -> str:
 
 
 def _json(result: engine.RunResult, options: _Options) -> str:
+    counts: dict[str, Json] = {
+        "files_checked": result.files_checked,
+        "changed": result.changed,
+        "violations": result.violations,
+        "not_rewritten": result.skipped,
+        "unresolved": result.unresolved,
+        "skipped_by_config": result.skipped_by_config,
+        "errors": len(result.errors),
+    }
+    # Only with a baseline applied: absent, not 0, when there was none.
+    if result.baselined is not None:
+        counts["baselined"] = result.baselined
+    if result.stale_baseline is not None:
+        counts["stale_baseline"] = result.stale_baseline
     document: dict[str, Json] = {
         "tool": {"name": "cleanporter", "version": cleanporter.__version__},
         "format_version": JSON_FORMAT_VERSION,
         "mode": result.mode.value,
         "strict": options.strict,
         "exit_code": result.exit_code(strict=options.strict),
-        "counts": {
-            "files_checked": result.files_checked,
-            "changed": result.changed,
-            "violations": result.violations,
-            "not_rewritten": result.skipped,
-            "unresolved": result.unresolved,
-            "skipped_by_config": result.skipped_by_config,
-            "errors": len(result.errors),
-        },
+        "counts": counts,
         "findings": [_json_finding(f, strict=options.strict) for f in _shown(result, options)],
         "errors": [_json_error(e) for e in result.errors],
         "warnings": list[Json](result.warnings),
