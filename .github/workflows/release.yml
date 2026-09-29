@@ -249,13 +249,19 @@ jobs:
   # Secrets and variables > Actions > Variables). Without it the job is
   # skipped, not failed, and the GitHub release above still happens.
   #
+  # Last, after the GitHub release: an upload to PyPI can never be taken back,
+  # so a version reaches PyPI only once its tag and GitHub release exist -- in
+  # particular a tag a dispatch asked for, which the GitHub-release job
+  # creates. `if` without a status function implies success(), so a failed
+  # GitHub release skips this job.
+  #
   # Trusted publishing: no token is stored anywhere. PyPI trusts an OIDC token
   # minted for this repository, this workflow file (release.yml) and the
   # `pypi` environment -- the publisher configured on pypi.org must name all
   # three, and the environment is where required reviewers can be added.
   pypi:
     name: PyPI
-    needs: build
+    needs: [build, github-release]
     if: vars.PUBLISH_TO_PYPI == 'true'
     runs-on: ubuntu-latest
     environment:

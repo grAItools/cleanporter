@@ -265,6 +265,8 @@ def test_pypi_is_opt_in_and_uses_trusted_publishing() -> None:
     environment = pypi["environment"]
     assert isinstance(environment, dict)
     assert environment["name"] == "pypi"
+    # Last: an upload can never be undone, so only once the tag and release exist.
+    assert pypi["needs"] == ["build", "github-release"]
     assert "if" not in jobs["github-release"]
     assert jobs["github-release"]["permissions"] == {"contents": "write"}
     assert "permissions" not in jobs["build"]  # the workflow's `contents: read`

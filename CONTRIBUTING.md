@@ -346,18 +346,19 @@ The workflow then, in one `build` job that stops at the first failure:
   there that git does not ignore; the notes are written outside it);
 - builds the sdist and wheel once, with `uv build --no-sources`.
 
-Only after all of that succeeds do two jobs start, side by side and
-independent of each other:
+Only after all of that succeeds do two jobs run, one after the other:
 
-- the GitHub release for the tag, with those notes and both files attached
-  (marked a pre-release for an `rc`, `a`, `b` or `dev` version), creating
-  the tag first when a dispatch named a new one;
-- the upload of the same files to PyPI — **only if PyPI publishing is
-  enabled**.
+1. the GitHub release for the tag, with those notes and both files attached
+   (marked a pre-release for an `rc`, `a`, `b` or `dev` version), creating
+   the tag first when a dispatch named a new one;
+2. then, and only once that release exists, the upload of the same files to
+   PyPI — **only if PyPI publishing is enabled**.
 
-So a failed check publishes nothing anywhere, but once the build is done a
-PyPI failure does not hold back the GitHub release, nor the other way round;
-re-run the failed job from the Actions tab.
+PyPI comes last because an upload there can never be undone: a version
+reaches PyPI only once its tag and GitHub release exist. So a failed check
+publishes nothing anywhere, a failed GitHub release publishes nothing to
+PyPI, and a PyPI failure leaves the GitHub release in place; re-run the
+failed job from the Actions tab.
 
 The tag and notes checks are `.github/scripts/release.py`, which you can run
 before tagging:
