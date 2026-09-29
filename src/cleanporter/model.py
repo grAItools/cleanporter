@@ -47,6 +47,12 @@ class Status(enum.Enum):
     #: toward the failure exit code: a stale suppression would otherwise
     #: silently swallow the next finding to land on its line.
     UNUSED_SUPPRESSION = "unused-suppression"
+    #: A module bound under a name its alias convention does not allow
+    #: (``[[tool.cleanporter.alias]]``; see `cleanporter.aliases`). Counts
+    #: toward the failure exit code. Report-only: ``--fix`` never renames an
+    #: existing binding, though every binding it *creates* follows the
+    #: convention.
+    ALIAS_MISMATCH = "alias-mismatch"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -74,6 +80,7 @@ class Finding:
             Status.SKIPPED: "CP003",
             Status.SKIPPED_BY_CONFIG: "CP004",
             Status.UNUSED_SUPPRESSION: "CP005",
+            Status.ALIAS_MISMATCH: "CP006",
         }[self.status]
 
     @property
@@ -101,6 +108,9 @@ class Finding:
             return f"{self._subject()} skipped by configuration: {self.detail}"
         if self.status is Status.UNUSED_SUPPRESSION:
             return f"unused suppression: {self.detail}"
+        if self.status is Status.ALIAS_MISMATCH:
+            # ``parent`` is the module, ``name`` the name it is bound under.
+            return f"module '{self.parent}' is bound as '{self.name}': {self.detail}"
         return f"{self._subject()} not rewritten: {self.detail}"
 
     def format(self) -> str:

@@ -14,6 +14,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Module alias conventions (`[[tool.cleanporter.alias]]`) and `CP006`.** An
+  ordered list of rules, first match wins, says which name a module must be
+  bound under: `module` (an exact dotted name, or a pattern whose components
+  may be `*` for one component and `**` for one or more), `as` (an
+  identifier, a template using `{leaf}` for the module's last component, or
+  `false` for the module's own name), and optionally `importer` / `file`
+  regexes (both `re.fullmatch`, both must match) scoping the rule to the
+  importing module or file, and a `reason`. A binding that breaks its rule --
+  `import M as N`, `import M`, `import a.b.c` (judged as `a` and as the chain
+  `a.b.c`), or `from P import L [as N]` when the resolver proves `P.L` is a
+  module -- is reported as `CP006` and makes the run exit `1`. It is
+  report-only; module-level imports in a package `__init__.py`, `__future__`
+  and wildcard imports, and (under `scope = "first-party"`) modules outside
+  the analysis roots are not judged. `CP006` works with `--select` /
+  `--ignore`, inline `# cleanporter: ignore[CP006]` (which a plain `import`
+  line can now carry), baselines (keyed by path, module and bound name),
+  SARIF (a new rule), JSON (`alias_mismatches` in `counts`) and the summary
+  line (`, N alias mismatch(es)` when there are any). For the library,
+  `Config.alias`, `Config.ruff_aliases`, `Config.conventions`,
+  `RunResult.alias_mismatches` and `model.Status.ALIAS_MISMATCH`.
+- **`--fix` names new bindings by the conventions.** `from numpy import array`
+  becomes `import numpy as np` under a rule saying so, and `from P.L import X`
+  becomes `from P import L as E` (relative imports stay relative). When the
+  configured name is taken in the scope the whole file is declined with a
+  `CP003` rather than written with a suffixed name, so `--fix` never
+  introduces a `CP006`. Existing bindings are reused as before, whatever they
+  are called. With no rules the output is unchanged.
+- **Ruff's `flake8-import-conventions` aliases as defaults.** `aliases` and
+  `extend-aliases` from `[tool.ruff.lint.flake8-import-conventions]` (or the
+  legacy `[tool.ruff.flake8-import-conventions]`) in the same
+  `pyproject.toml` are read as unconditional rules ranked after every
+  cleanporter rule. Ruff's built-in default table is not assumed. The new
+  `ruff_aliases = false` turns this off.
+
 ## [0.5.0] - 2026-09-29
 
 Breaking under the pre-1.0 policy above:

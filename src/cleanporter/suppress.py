@@ -17,9 +17,10 @@ around each allowed), ``]``, and then either nothing or whitespace followed
 by any text. ``#cleanporter:ignore[CP001]`` and ``# cleanporter:
 ignore[CP001, CP002]  -- vendored`` are accepted; ``# Cleanporter:
 ignore[CP001]``, ``# cleanporter : ignore[CP001]``, ``ignore [CP001]`` and
-``ignore[cp001]`` are not. Only `CP001`, `CP002` and `CP003` can be named --
-the findings a suppression can replace. A bare ``ignore`` is refused for the reason the repository
-refuses a bare ``# noqa``: it would silence findings nobody has seen yet.
+``ignore[cp001]`` are not. Only `CP001`, `CP002`, `CP003` and `CP006` can be
+named -- the findings a suppression can replace. A bare ``ignore`` is refused
+for the reason the repository refuses a bare ``# noqa``: it would silence
+findings nobody has seen yet.
 `CP004` is already the author's own decision, and `CP005` is the report that
 a suppression did nothing, which silencing would defeat. A comment that breaks
 any of these rules suppresses **nothing** and is reported as a warning naming
@@ -28,18 +29,21 @@ the run is still sound -- the findings it would have suppressed are reported.
 
 **Attachment is by physical line**, and a comment covers:
 
-1. every name imported by a ``from`` statement that *starts* on its line, and
+1. every name imported by a ``from`` or ``import`` statement that *starts* on
+   its line, and
 2. every imported name *written* on its line.
 
 So a trailing comment on a one-line import covers the whole statement; in a
 parenthesised import spanning lines, a comment on the ``from ... import (``
 line covers the whole statement, and one ending a later line covers only the
 names on that line. A comment on a line of its own, on the closing ``)``, or
-on anything that is not a ``from`` import covers nothing -- and so is always
-reported as unused. Lines are counted as libcst counts them, which is how
+on anything that is not an import covers nothing -- and so is always
+reported as unused. A plain ``import`` statement can only ever have a `CP006`
+(an alias convention it breaks) to suppress. Lines are counted as libcst counts them, which is how
 every other line in a report is counted.
 
-What a match does is `analyze.Decider.decide`'s business: the finding the
+What a match does is `analyze.Decider.decide`'s business (`analyze`'s
+alias check, for a `CP006`): the finding the
 decision would have reported becomes a `CP004`, exactly as a skip rule's
 does, so the fixer keeps the name on the path a skip already takes and the
 all-or-nothing contract is untouched. What never matched anything becomes a
@@ -63,6 +67,7 @@ CODES: Mapping[model.Status, str] = {
     model.Status.VIOLATION: "CP001",
     model.Status.UNRESOLVED: "CP002",
     model.Status.SKIPPED: "CP003",
+    model.Status.ALIAS_MISMATCH: "CP006",
 }
 
 #: What a comment piece starts with when it is meant as a directive: loose on
@@ -108,7 +113,7 @@ class Suppressions:
     #: ``(line, message)`` for each comment that suppresses nothing because
     #: it is malformed; `warnings` spells them for a run.
     problems: tuple[tuple[int, str], ...] = ()
-    #: The line each ``from`` statement starts on, and the line each of its
+    #: The line each import statement starts on, and the line each of its
     #: imported names is written on. Only filled in when `comments` is not
     #: empty: without a suppression there is nothing to look up.
     lines: Mapping[cst.CSTNode, int] = dataclasses.field(default_factory=dict)
@@ -121,7 +126,7 @@ class Suppressions:
         object.__setattr__(self, "by_line", {s.line: s for s in self.comments})
 
     def covering(
-        self, node: cst.ImportFrom, alias: cst.ImportAlias | None
+        self, node: cst.Import | cst.ImportFrom, alias: cst.ImportAlias | None
     ) -> tuple[Suppression, ...]:
         """The suppressions covering the name *alias* of *node* (see the module docstring)."""
         if not self.by_line:
@@ -134,7 +139,9 @@ class Suppressions:
                 found.append(hit)
         return tuple(found)
 
-    def match(self, node: cst.ImportFrom, alias: cst.ImportAlias | None, code: str) -> Hit | None:
+    def match(
+        self, node: cst.Import | cst.ImportFrom, alias: cst.ImportAlias | None, code: str
+    ) -> Hit | None:
         """The `Hit` when a suppression covering this name lists *code*, else None."""
         by = tuple(s for s in self.covering(node, alias) if code in s.codes)
         return Hit(code, by) if by else None
@@ -241,3 +248,8 @@ class _Collector(cst.CSTVisitor):
         if not isinstance(node.names, cst.ImportStar):
             for alias in node.names:
                 self.lines[alias] = self._positions[alias].start.line
+
+    def visit_Import(self, node: cst.Import) -> None:
+        self.lines[node] = self._positions[node].start.line
+        for alias in node.names:
+            self.lines[alias] = self._positions[alias].start.line

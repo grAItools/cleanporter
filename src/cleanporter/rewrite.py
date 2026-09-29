@@ -38,6 +38,15 @@ because a mechanical rewrite could change runtime behaviour):
 Multiple object names sharing one module reuse a single new binding; compliant
 names in a mixed statement are kept in place.
 
+A *new* binding is named by the project's alias conventions when one applies
+(`cleanporter.aliases`): ``from numpy import array`` becomes ``import numpy as
+np`` under a rule saying so. A configured name that is taken in the scope
+declines the whole file rather than falling back to ``np_2``, which would be a
+``CP006`` of the fixer's own making; without a rule the leaf is used, suffixed
+when taken, exactly as before. An existing binding is reused whatever it is
+called -- renaming one is not this fixer's business, and a non-conforming one
+is already reported.
+
 A relative import is rewritten to a relative import: ``from .sub.mod import C``
 becomes ``from .sub import mod``. Its absolute name is still what the resolver
 classifies, but that name is only as good as the import root inferred for the
@@ -81,7 +90,7 @@ import re
 import libcst as cst
 from libcst import metadata
 
-from cleanporter import analyze, config, model, resolver, skip, suppress
+from cleanporter import aliases, analyze, config, model, resolver, skip, suppress
 
 from . import _annotations, _imports, _nodes, _source, _type_checking, guards
 
@@ -157,6 +166,8 @@ class _Fixer(cst.CSTTransformer):
         #: ``id`` of every `libcst.ImportAlias` planned for a rewrite, so
         #: `_suppression_moved` knows which names the output no longer imports.
         self.rewritten_aliases: set[int] = set()
+        #: The alias conventions every new binding follows (`_allocate_token`).
+        self._conventions = config.conventions
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
@@ -516,7 +527,7 @@ class _Fixer(cst.CSTTransformer):
         # new statements: one module import per (deduped) parent, plus kept names
         new_lines: list[cst.BaseStatement] = []
         bind, need_new_line = self._binding_for(
-            scope, (parent, spelling[0].startswith(".")), extra_avoid
+            scope, (parent, spelling[0].startswith(".")), extra_avoid, self._line_of(imp)
         )
         if need_new_line:
             new_lines.append(_module_import_stmt(spelling, bind))
@@ -685,7 +696,7 @@ class _Fixer(cst.CSTTransformer):
         return names
 
     def _binding_for(
-        self, scope: metadata.Scope, module: tuple[str, bool], extra_avoid: set[str]
+        self, scope: metadata.Scope, module: tuple[str, bool], extra_avoid: set[str], line: int
     ) -> tuple[str, bool]:
         """Token to qualify *this line's* references through.
 
@@ -719,6 +730,9 @@ class _Fixer(cst.CSTTransformer):
         when the line is relative, except for a top-level package's ``from .
         import C`` under a declared root, spelled ``import pkg``. Only a
         binding spelled the same way is reused -- see `_build_existing`.
+
+        *line* is where the import being rewritten sits, for the blocker
+        `_allocate_token` raises when a configured alias is taken.
         """
         parent, relative = module
         key = (scope, parent, relative)
@@ -726,7 +740,7 @@ class _Fixer(cst.CSTTransformer):
         if memoized is not None:
             if memoized not in extra_avoid:
                 return memoized, False
-            return self._allocate_token(scope, parent, extra_avoid), True
+            return self._allocate_token(scope, parent, extra_avoid, line), True
 
         existing = self._existing.get(module)
         if existing is not None:
@@ -767,7 +781,7 @@ class _Fixer(cst.CSTTransformer):
                 self._module_binding[key] = existing
                 return existing, False
 
-        bind = self._allocate_token(scope, parent, extra_avoid)
+        bind = self._allocate_token(scope, parent, extra_avoid, line)
         self._module_binding[key] = bind
         return bind, True
 
@@ -816,7 +830,9 @@ class _Fixer(cst.CSTTransformer):
         """
         return len(list(scope.globals[name])) > 1
 
-    def _allocate_token(self, scope: metadata.Scope, parent: str, extra_avoid: set[str]) -> str:
+    def _allocate_token(
+        self, scope: metadata.Scope, parent: str, extra_avoid: set[str], line: int
+    ) -> str:
         """Pick a fresh, collision-free token for a new import of *parent* in *scope*.
 
         Records the choice in the live name set(s) `_names_in_scope` reads
@@ -847,21 +863,46 @@ class _Fixer(cst.CSTTransformer):
         and never rewritten, so no module-scope token is allocated in an
         ``__init__`` any more. It is kept, and documented, so that the rule
         cannot silently lose this protection if that decision ever changes.
+
+        When an alias convention applies to *parent* in this file
+        (`cleanporter.aliases`), the token is the name it asks for -- the
+        configured one, or the leaf for ``as = false`` -- and nothing else.
+        If that name is in the same *taken* set, the file is declined with a
+        blocker at *line*: ``np_2`` would be a ``CP006`` the fixer wrote. With
+        no rule the leaf is suffixed as it always has been.
         """
         token = parent.rsplit(".", 1)[-1]
         taken = self._names_in_scope(scope) | extra_avoid
         if isinstance(scope, metadata.GlobalScope):
             taken = taken | self._submodule_slots(parent)
-        bind = token
-        counter = 2
-        while bind in taken:
-            bind = f"{token}_{counter}"
-            counter += 1
+        expectation = self._expectation(parent)
+        if expectation is not None:
+            bind = expectation.binding
+            if bind in taken:
+                reason = (
+                    f"configured alias '{bind}' for {parent} is taken in this scope "
+                    f"({expectation.rule.describe()}); a different name would break the "
+                    "convention"
+                )
+                self.blockers.append((line, reason))
+        else:
+            bind = token
+            counter = 2
+            while bind in taken:
+                bind = f"{token}_{counter}"
+                counter += 1
         if isinstance(scope, metadata.GlobalScope):
             self._global_names.add(bind)
         else:
             self._local_names(scope).add(bind)
         return bind
+
+    def _expectation(self, parent: str) -> aliases.Expectation | None:
+        """What this file's alias conventions say a binding of *parent* is called."""
+        if not self._conventions:
+            return None
+        path = skip.file_candidates(self._rec.path, self._rec.root)[0]
+        return self._conventions.expected(parent, self._rec.qualname, path)
 
     # -- application -------------------------------------------------------
     def leave_SimpleStatementLine(
@@ -1108,6 +1149,12 @@ def _coverage(
     rewritten would compare equal before and after while the comment moved
     onto the first ``mystery``. Relative parents resolve the same way on both
     sides, since the file's package does not change.
+
+    A plain ``import`` counts too, as ``(module, "", asname)``: a comment can
+    cover one (for its `CP006`), and the module import a rewrite writes can be
+    one -- ``import numpy as np`` under an alias convention -- so a trailing
+    comment carried onto it has moved just as surely as onto ``from P import
+    L``. The fixer never rewrites a plain import, so none is in *rewritten*.
     """
     covered: dict[suppress.Suppression, collections.Counter[tuple[str, str, str | None]]] = {
         s: collections.Counter() for s in rec.suppressions.comments
@@ -1117,6 +1164,12 @@ def _coverage(
             continue
         for s in rec.suppressions.covering(unit.node, unit.alias):
             covered[s][unit.parent or "?", unit.name, unit.asname] += 1
+    for node in rec.facts.plain_imports:
+        for alias in node.names:
+            as_node = alias.asname.name if alias.asname is not None else None
+            asname = as_node.value if isinstance(as_node, cst.Name) else None
+            for s in rec.suppressions.covering(node, alias):
+                covered[s][_imports.dotted(alias.name), "", asname] += 1
     return [covered[s] for s in rec.suppressions.comments]
 
 

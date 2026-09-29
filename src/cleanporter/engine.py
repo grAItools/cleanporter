@@ -181,6 +181,11 @@ class RunResult:
         return self._count(model.Status.UNUSED_SUPPRESSION)
 
     @property
+    def alias_mismatches(self) -> int:
+        """`CP006` findings."""
+        return self._count(model.Status.ALIAS_MISMATCH)
+
+    @property
     def write_errors(self) -> tuple[model.Finding, ...]:
         """The `errors` that are failed writes under `Mode.FIX`, in file order."""
         return tuple(p.write_error for p in self.patches if p.write_error is not None)
@@ -199,7 +204,7 @@ class RunResult:
         """The command's exit code for this result: 0 clean, 1 violations, 2 errors.
 
         2 when any file could not be read, decoded, parsed or written;
-        otherwise 1 when a `CP001`, `CP003` or `CP005` remains -- or, under
+        otherwise 1 when a `CP001`, `CP003`, `CP005` or `CP006` remains -- or, under
         *strict* (``--strict`` / ``treat_unresolved_as_error``), a `CP002`;
         otherwise 0. `CP004` never counts. Only `findings` count, so a code
         `Config.select` / `Config.ignore` left out, or a finding a baseline
@@ -211,6 +216,7 @@ class RunResult:
             self.violations
             + self.skipped
             + self.unused_suppressions
+            + self.alias_mismatches
             + (self.unresolved if strict else 0)
         )
         return 1 if hard else 0

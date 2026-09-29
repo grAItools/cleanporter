@@ -283,3 +283,39 @@ def test_record_facts_are_collected_once() -> None:
     rec = analyze.FileRecord(pathlib.Path("a.py"), source, cst.parse_module(source), "")
     assert rec.facts is rec.facts
     assert rec.import_starts is rec.import_starts
+
+
+def _plain_starts_from_metadata(tree: cst.Module) -> dict[cst.Import, tuple[int, int]]:
+    positions = metadata.MetadataWrapper(tree, unsafe_skip_copy=True).resolve(
+        metadata.PositionProvider
+    )
+    return {
+        node: (positions[node].start.line, positions[node].start.column)
+        for node in analyze.collect_facts(tree).plain_imports
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        *TRICKY.values(),
+        "import a\nx = 1; import b as c\n",
+        "é = 'ñ'; import a.b\n",
+        "def f():\n    import a\n",
+        "\x0cimport a\n",
+        "import a\r\nimport b\r\n",
+        "x = 1 + \\\n    2; import a\nimport \\\n  b\n",
+    ],
+)
+def test_plain_import_starts_are_libcsts(source: str) -> None:
+    """`FileRecord.plain_import_starts` takes the same fast path, and gives libcst's answer."""
+    tree = cst.parse_module(source)
+    rec = analyze.FileRecord(pathlib.Path("a.py"), source, tree, "")
+    assert dict(rec.plain_import_starts) == _plain_starts_from_metadata(tree)
+
+
+def test_nested_plain_imports_are_recorded() -> None:
+    facts = analyze.collect_facts(
+        cst.parse_module("import a\n\n\ndef f():\n    import b\n\n\nclass C:\n    import c\n")
+    )
+    assert [n in facts.nested_plain_imports for n in facts.plain_imports] == [False, True, True]

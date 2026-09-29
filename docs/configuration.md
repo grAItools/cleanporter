@@ -42,11 +42,16 @@ exempt_names = ["THING"]
 # select = ["CP001", "CP003"]     # omit = every code
 ignore = []
 # baseline = "cleanporter-baseline.json"   # written by --write-baseline
+ruff_aliases = true               # read ruff's flake8-import-conventions aliases as defaults
 
 skip = [
     { decorator = 'field_operator|scan_operator|program', reason = "GT4Py re-parses these bodies" },
     { file = '.*conftest\.py', reason = "pytest collects fixtures from this namespace" },
 ]
+
+[[tool.cleanporter.alias]]
+module = "numpy"
+as = "np"
 ```
 
 ## Reference
@@ -63,6 +68,8 @@ skip = [
 | `skip` | `[]` | Regions of your code the tool must not analyse or rewrite, as a list of rule tables. See [`skip` rules](#skip-rules) below. |
 | `select` | absent (every code) | The finding codes reported and counted, as a list (`["CP001", "CP003"]`); must name at least one. Reporting only: `--fix` rewrites exactly what it would have without it, and the exit code follows only what is reported (a selected `CP002` still fails the run only under `treat_unresolved_as_error`). An unknown code is an error. Replaced by `--select`. |
 | `ignore` | `[]` | Finding codes neither reported nor counted, applied after `select`. Reporting only, like `select`. Replaced by `--ignore`. |
+| `alias` | `[]` | Which name a module must be bound under, as an ordered list of rule tables (`[[tool.cleanporter.alias]]`); the first matching rule wins. A binding that breaks its rule is a `CP006`, and every binding `--fix` creates follows the rules. See [`alias` rules](#alias-rules) below. |
+| `ruff_aliases` | `true` | Also read `aliases` and `extend-aliases` from `[tool.ruff.lint.flake8-import-conventions]` (or the legacy `[tool.ruff.flake8-import-conventions]`) in the same `pyproject.toml`, as unconditional rules ranked after every `alias` rule. `false` ignores ruff's table entirely, malformed or not. See [Ruff's aliases as defaults](#ruffs-aliases-as-defaults). |
 | `baseline` | absent | A baseline file (written by `--write-baseline`) whose findings are left out of the report and the exit code, relative to the `pyproject.toml` directory. The file must exist. Applied by check runs only: under `--fix` or `--diff` it is skipped, with a note. Replaced by `--baseline`. See [Adopting cleanporter on an existing codebase](usage.md#adopting-cleanporter-on-an-existing-codebase). |
 
 !!! tip "`exempt_modules` matches ancestors"
@@ -462,7 +469,7 @@ piece is, in order:
 2. `cleanporter:` — exactly, lowercase, with no space before the colon;
 3. optional whitespace, then `ignore[`;
 4. one or more codes, separated by commas, each with optional whitespace
-   around it; each code is `CP001`, `CP002` or `CP003`, in capitals;
+   around it; each code is `CP001`, `CP002`, `CP003` or `CP006`, in capitals;
 5. `]`;
 6. nothing more, or whitespace followed by any text — a reason, say.
 
@@ -482,7 +489,7 @@ are, for example:
 
 - `# cleanporter: ignore` with no codes — a bare ignore would silence findings
   nobody has seen yet, which is why the rule exists — and `ignore[]`;
-- a code that is not one of the three: an unknown one (`CP009`), a lowercase
+- a code that is not one of the four: an unknown one (`CP009`), a lowercase
   one (`cp001`), `CP004` (already your own decision) or `CP005` (the report
   that a suppression did nothing);
 - a near miss: `# Cleanporter: ignore[CP001]`, `# cleanporter : ignore[CP001]`,
@@ -504,7 +511,8 @@ reported `CP005`, whose message under `--fix` points to `CP001`.
 
 Attachment is by **physical line**. A suppression comment covers
 
-1. every name imported by a `from` statement that **starts** on its line, and
+1. every name imported by a `from` or `import` statement that **starts** on
+   its line, and
 2. every imported name **written** on its line.
 
 ```python
@@ -521,8 +529,9 @@ from pkg.shapes import (
 )
 ```
 
-A comment on a line of its own, on the closing `)`, or on anything but a
-`from` import covers nothing. It applies only to findings about an imported
+A comment on a line of its own, on the closing `)`, or on anything but an
+import covers nothing. A plain `import` statement can only have a `CP006` to
+suppress (`import numpy as npy  # cleanporter: ignore[CP006]`). It applies only to findings about an imported
 name: a file-level `CP003` (the fixer declining a whole file) cannot be
 suppressed.
 
@@ -573,3 +582,106 @@ public surface is decided before any comment is read, so the comment cannot
 change it. A suppression on an import *inside a function* in `__init__.py`
 works as it does in any module, since that import is reported and fixed like
 any other.
+
+## `alias` rules
+
+A project that writes `import numpy as np` everywhere can say so, and
+cleanporter will hold every file to it:
+
+```toml
+[[tool.cleanporter.alias]]          # an ordered list: the first matching rule wins
+module   = "gt4py.next"             # required: a dotted name or pattern
+as       = false                    # required: a name, a {leaf} template, or false
+importer = 'gt4py\.next(\..*)?'     # optional: the importing module's dotted name
+file     = 'src/.*'                 # optional: the importing file's path
+reason   = "the package's own code imports itself by name"
+
+[[tool.cleanporter.alias]]
+module = "gt4py.next.*"
+as     = "gtx_{leaf}"
+
+[[tool.cleanporter.alias]]
+module = "gt4py.next"
+as     = "gtx"
+```
+
+Two things follow from a rule:
+
+1. **Checking.** A binding of the module under any other name is reported as
+   `CP006`, and fails the run like a `CP001`. It is report-only: `--fix` does
+   not rename a binding you wrote.
+2. **Fixing.** Every binding `--fix` *creates* is named by the rule:
+   `from numpy import array` becomes `import numpy as np`, and `from
+   gt4py.next.ffront import field_operator` becomes `from gt4py.next import
+   ffront as gtx_ffront`. A relative import stays relative (`from . import
+   helpers as h`). An existing binding of the module is reused whatever it is
+   called — it is already reported, if it breaks the rule.
+
+### Keys
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `module` | yes | The module the rule is about: dotted components, where a component `*` matches exactly one component and `**` one or more. `numpy` matches `numpy` only; `gt4py.next.*` matches `gt4py.next.ffront` but neither `gt4py.next` nor `gt4py.next.ffront.decorator`; `gt4py.**` matches both of those. There is no other wildcard: `num*` is an error. |
+| `as` | yes | The name: an identifier (`"np"`); a template in which `{leaf}` stands for the last component of the matched module (`"gtx_{leaf}"`); or `false`, the module's **own name** — `import M` for a top-level module, `from P import L` for a submodule (a binding named after its leaf). Any other `{...}` field, a conversion or format spec, a stray brace, or a result that is not an identifier or is a keyword, is an error. |
+| `importer` | no | A regex, `re.fullmatch`ed against the importing file's dotted module name (`gt4py.next.ffront.decorator`). A file whose module name cannot be determined never matches it. |
+| `file` | no | A regex, `re.fullmatch`ed against the importing file's path relative to the project root, POSIX-spelled (`src/gt4py/next/ffront/decorator.py`) — the same candidate a `skip` rule's `file` is matched against. |
+| `reason` | no | Free text, echoed in every `CP006` and `CP003` the rule causes. |
+
+When both `importer` and `file` are given, both must match. There is no
+negation key: "everyone but `gt4py.next` itself" is spelled by putting the
+`importer`-scoped rule *first*, as above — inside the package the first rule
+matches and asks for the own name; everywhere else it does not, and the next
+rule applies. An unknown key, a value of the wrong type, a malformed pattern or
+template, an uncompilable regex, and a second rule with neither `importer` nor
+`file` whose `module` repeats an earlier such rule's exactly (it could never
+apply) are all configuration errors (exit `2`).
+
+### What is a binding of a module
+
+| Statement | Binds |
+| --- | --- |
+| `import M as N` | `N`, to `M` |
+| `import M` (no dot) | `M`, to `M` |
+| `import a.b.c` | `a`, to `a` — so a rule for `a` judges it — and the chain `a.b.c`: compliant only with a rule whose `as` is `false`; an identifier rule for `a.b.c` asks for `import a.b.c as NAME` |
+| `from P import L [as N]` | `N` (or `L`), to `P.L` — **only when the resolver proves `P.L` is a module**. An object, or a name it cannot classify, is `CP001`'s or `CP002`'s business and never a `CP006`. A relative import is matched on the absolute name it resolves to. |
+
+Never judged: `from __future__` and wildcard imports; a module-level import in
+a package's `__init__.py` (its [public surface](#a-packages-__init__py), as for
+`CP001`; an import inside a function there is judged); and, under
+`scope = "first-party"`, any module outside your analysis roots — the scope is
+applied as it is to every other finding, so nothing is classified for it.
+
+A `skip` rule covering the import's line, or pinning the bound name, turns a
+`CP006` into a `CP004`, as it does a `CP001`; so does an inline
+`# cleanporter: ignore[CP006]` on the import's line. `--select`, `--ignore` and
+baselines treat `CP006` like any other code; a baseline records it by path,
+module and bound name.
+
+### When `--fix` cannot follow a rule
+
+Without a rule, a new binding whose name is taken in its scope gets a numeric
+suffix (`helpers_2`). With one, a suffixed name would be a `CP006` the fixer
+wrote itself, so when the configured name — or, for `as = false`, the leaf — is
+taken in the scope (by any name the scope or an enclosing one binds, or one a
+nested scope using the new binding would shadow), the **whole file** is left
+unchanged and reported `CP003`: *configured alias 'np' for numpy is taken in
+this scope*. Rename the conflicting name, or change the rule. `--fix` never
+introduces a `CP006`.
+
+### Ruff's aliases as defaults
+
+If your `pyproject.toml` configures ruff's `flake8-import-conventions`
+(`ICN001`), cleanporter reads its `aliases` and `extend-aliases` from
+`[tool.ruff.lint.flake8-import-conventions]` — or, when that table is absent,
+from the legacy `[tool.ruff.flake8-import-conventions]` — and appends each
+`module = "alias"` entry as an unconditional, exact rule **after** every
+`[[tool.cleanporter.alias]]` rule, so your own rules always win. An entry in
+`extend-aliases` replaces one for the same module in `aliases`. Its `CP006`
+names the ruff key it came from.
+
+Only what is written in that `pyproject.toml` is read: not `ruff.toml` or
+`.ruff.toml`, and not ruff's built-in default table (`numpy = "np"`, `pandas =
+"pd"`, ...), which changes between ruff versions — an alias cleanporter
+enforces is one somebody wrote down. A malformed entry (an alias that is not a
+string, or not an identifier) is a configuration error naming the ruff key.
+Set `ruff_aliases = false` to ignore ruff's table altogether.

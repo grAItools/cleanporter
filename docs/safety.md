@@ -228,6 +228,16 @@ each import separately (the same name imported twice is two imports), and any
 comment whose coverage changes — other than losing the names the rewrite takes
 away — declines the file.
 
+### A configured alias is taken in the scope
+
+When an [`alias` rule](configuration.md#alias-rules) applies to the module a
+rewrite would bind, the new binding must have the configured name (or, for
+`as = false`, the module's own leaf). If that name is already taken where the
+binding would go — the same set of names that makes an unconfigured rewrite
+fall back to `helpers_2` — no other name will do: a suffixed one breaks the
+convention, and `--fix` never introduces a `CP006`. The file is declined, with
+a `CP003` naming the alias, the module and the rule.
+
 ### The file's encoding cannot hold the rewrite unchanged
 
 The rewrite is written back in the encoding the file was read in. If the file

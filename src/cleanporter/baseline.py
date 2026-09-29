@@ -23,7 +23,9 @@ moving, and any reformatting of its statement: parentheses, line breaks,
 backslash continuations, the order of its names, another name added to it,
 or a relative spelling swapped for the absolute one. It comes back when the
 import changes what it imports (another module or name) or moves to another
-file.
+file. A `CP006` is keyed the same way, its ``parent`` being the module and its
+``name`` the name that module is bound under, so it comes back when the
+binding is renamed to another non-conforming name.
 
 `CP001` and `CP003` are one class for matching (`_matching_code`): whether
 the fixer would decline an import can depend on cross-file evidence -- a
