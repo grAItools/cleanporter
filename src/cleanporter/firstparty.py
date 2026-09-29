@@ -92,6 +92,23 @@ def _root_for(path: pathlib.Path) -> pathlib.Path:
     return d.parent if (d / "__init__.py").is_file() else d
 
 
+def _inside_a_package(root: pathlib.Path, project_root: pathlib.Path) -> bool:
+    """Whether *root*, or a directory above it, holds an ``__init__.py``.
+
+    The walk stops at *project_root*, inclusive, when *root* lies under it,
+    and at the filesystem root otherwise -- a directory above the project is
+    not the project's to be a package, and one above an outside root is all
+    there is to go on.
+    """
+    stop = project_root if root.is_relative_to(project_root) else None
+    for directory in (root, *root.parents):
+        if (directory / "__init__.py").is_file():
+            return True
+        if directory == stop:
+            break
+    return False
+
+
 def _nesting_warnings(roots: list[pathlib.Path]) -> list[str]:
     """One warning per pair of inferred roots where one contains the other.
 
@@ -850,7 +867,7 @@ class ModuleMap:
         return None if anchor is None else anchor[1]
 
     def root_for_absolute_spelling(
-        self, path: pathlib.Path, relative_level: int = 0
+        self, path: pathlib.Path, relative_level: int = 0, *, project_root: pathlib.Path
     ) -> pathlib.Path | None:
         """The root *path* is anchored in, when it could vouch for ``import pkg``.
 
@@ -864,9 +881,15 @@ class ModuleMap:
         otherwise:
 
         * the file really anchors there (rules 1 and 1b of `qualname_for`);
-        * the root is not itself a package directory (no ``__init__.py``):
-          ``--root src/pkg`` puts a package's *inside* on ``sys.path``, and
-          ``import sub`` there can name some other top-level ``sub``;
+        * neither the root nor any directory above it, up to and including
+          *project_root* (up to the filesystem root for a root outside it), is
+          a regular package (holds an ``__init__.py``): ``--root src/pkg``
+          puts a package's *inside* on ``sys.path``, and so does
+          ``--root lib/vendor`` under a ``lib/__init__.py`` that imports
+          ``.vendor.toppkg`` -- ``toppkg`` is then ``lib.vendor.toppkg``, and
+          ``import toppkg`` can name some other top-level ``toppkg``. This is
+          read from the disk, not from the run's roots, so it does not depend
+          on which paths the run was given;
         * it neither nests inside nor contains another root, declared or
           inferred -- the case `_nesting_warnings` already warns about, where
           the same file has two dotted names;
@@ -887,7 +910,7 @@ class ModuleMap:
         top = dotted.split(".", 1)[0]
         if not top or (path.name == "__init__.py" and "." not in dotted):
             return None
-        if (root / "__init__.py").is_file():
+        if _inside_a_package(root, project_root.resolve()):
             return None
         for other in self.roots:
             if other == root or other in self._demoted:

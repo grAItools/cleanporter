@@ -351,9 +351,12 @@ configuration would have forbidden. Prefer the bare last-component spelling
     writes `import pkg` plus `pkg.C`. A declaration is taken at its word
     only when it is not self-evidently wrong, so the `CP003` stays when:
 
-    - the declared directory is itself a package (it holds an
-      `__init__.py`): `source_roots = ["src/pkg"]` puts a package's inside on
-      `sys.path`, where `import utils` can reach some other top-level `utils`;
+    - the declared directory, or any directory above it up to the project
+      root, is a package (holds an `__init__.py`): `source_roots =
+      ["src/pkg"]`, or `["lib/vendor"]` under a `lib/__init__.py`, puts a
+      package's inside on `sys.path`, where `import utils` can reach some
+      other top-level `utils`. This is read from the disk, whatever paths the
+      run is given;
     - it nests inside, or contains, another import root, declared or
       inferred — the layout cleanporter already warns about ("import roots
       nest"), where one file has two dotted names; a `tests/__init__.py`
@@ -361,7 +364,8 @@ configuration would have forbidden. Prefer the bare last-component spelling
     - another root holds a top-level `pkg` as well, so which one `import pkg`
       finds depends on `sys.path` order;
     - the file is `pkg/__init__.py` itself, where `import pkg` would only bind
-      the package to a name inside itself;
+      the package to a name inside itself (this one has its own reason, since
+      no declaration changes it);
     - `pkg` is named like a standard-library module: this interpreter's
       `sys.stdlib_module_names`, plus the top-level modules removed in 3.12 and
       3.13 (`imp`, `distutils`, `asyncore`, `cgi`, `telnetlib`, …) and added
@@ -373,6 +377,10 @@ configuration would have forbidden. Prefer the bare last-component spelling
     names it — "if `<root>` is where Python imports it from, declaring it
     with `--root` or `source_roots` lets `--fix` write `import pkg`". Declare
     it only if that is true: the declaration is the whole of the evidence.
+    Some trust in it is irreducible — a PEP 420 namespace parent above the
+    root leaves nothing on disk to show that the package is really imported
+    under a longer name, so no check here can catch that declaration being
+    wrong.
 
     A relative and an absolute import of the same module in one file are
     given separate module bindings (one of them aliased, `mod_2`): they are

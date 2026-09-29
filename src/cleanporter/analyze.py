@@ -682,6 +682,10 @@ class Decider:
             return Decision(model.Status.UNRESOLVED, self._resolver.reason(parent, unit.name))
         return self._declined(unit, parent, never_read) or VIOLATION
 
+    def own_init(self, parent: str) -> bool:
+        """Whether the record's file is *parent*'s own ``__init__.py``."""
+        return self._rec.path.name == "__init__.py" and self._rec.qualname == parent
+
     def _declined(
         self, unit: ImportUnit, parent: str, never_read: frozenset[str]
     ) -> Decision | None:
@@ -699,7 +703,9 @@ class Decider:
         if spelling is None:
             return Decision(
                 model.Status.SKIPPED,
-                _imports.unspellable_reason(unit.node, parent, root_hint=self._rec.root_hint),
+                _imports.unspellable_reason(
+                    unit.node, parent, root_hint=self._rec.root_hint, own_init=self.own_init(parent)
+                ),
             )
         unreachable = self._resolver.replacement_unreachable(
             parent, _imports.render_import(spelling)

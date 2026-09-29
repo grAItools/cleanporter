@@ -385,7 +385,7 @@ def _sound_root(
 ) -> pathlib.Path | None:
     files = sorted(root.rglob("*.py"))
     mm = firstparty.ModuleMap.from_paths(files, declared=tuple(root / d for d in declared))
-    return mm.root_for_absolute_spelling(root / file, level)
+    return mm.root_for_absolute_spelling(root / file, level, project_root=root)
 
 
 def test_a_plain_source_root_can_vouch_for_the_absolute_spelling(tmp_path):
@@ -408,6 +408,34 @@ def test_a_root_inside_a_package_cannot_vouch(tmp_path):
         tmp_path, {"src/toppkg/utils/__init__.py": "", "src/toppkg/utils/cli.py": ""}
     )
     assert _sound_root(root, "src/toppkg/utils/cli.py", "src/toppkg") is None
+
+
+def test_a_root_below_a_package_cannot_vouch(tmp_path):
+    """``lib/vendor`` has no ``__init__.py``, but ``lib`` does.
+
+    So ``toppkg`` is really ``lib.vendor.toppkg``.
+    """
+    _write(
+        tmp_path,
+        {
+            "lib/__init__.py": "from .vendor.toppkg import cli\n",
+            "lib/vendor/toppkg/__init__.py": "",
+            "lib/vendor/toppkg/cli.py": "",
+        },
+    )
+    cli = tmp_path / "lib/vendor/toppkg/cli.py"
+    # Given only the subtree, the map never sees `lib/__init__.py`: the disk does.
+    mm = firstparty.ModuleMap.from_paths([cli], declared=(tmp_path / "lib/vendor",))
+    assert mm.root_for_absolute_spelling(cli, 1, project_root=tmp_path) is None
+    assert _sound_root(tmp_path, "lib/vendor/toppkg/cli.py", "lib/vendor") is None
+
+
+def test_the_walk_above_a_root_stops_at_the_project_root(tmp_path):
+    """A package *around* the project is not the project's business."""
+    project = tmp_path / "outer" / "project"
+    _write(tmp_path, {"outer/__init__.py": ""})
+    _regular_src(project)
+    assert _sound_root(project, "src/toppkg/cli.py", "src") == (project / "src").resolve()
 
 
 def test_nested_roots_cannot_vouch(tmp_path):

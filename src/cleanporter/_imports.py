@@ -176,7 +176,9 @@ def is_stdlib_name(name: str) -> bool:
     return name in sys.stdlib_module_names or name in _OTHER_VERSIONS_STDLIB
 
 
-def unspellable_reason(node: cst.ImportFrom, parent: str, *, root_hint: str = "") -> str:
+def unspellable_reason(
+    node: cst.ImportFrom, parent: str, *, root_hint: str = "", own_init: bool = False
+) -> str:
     """Why *node*, for which `module_import_spelling` is ``None``, is kept.
 
     *root_hint* is the inferred import root the file is anchored in, when
@@ -185,8 +187,19 @@ def unspellable_reason(node: cst.ImportFrom, parent: str, *, root_hint: str = ""
     so, conditionally -- declaring a root is a statement about where Python
     imports the package from, not a switch to flip. It is left out for a
     standard-library name, which no declaration unlocks.
+
+    *own_init* says the file is *parent*'s own ``__init__``, where the only
+    spelling would be ``import pkg`` inside ``pkg`` itself -- binding the
+    package to a name in its own namespace. No declaration unlocks that
+    either, so it has a reason of its own.
     """
     dots = "." * relative_level(node)
+    if own_init:
+        return (
+            f"`from {dots} import` in '{parent}''s own __init__ names the package itself; "
+            f"its only replacement would be 'import {parent}' inside '{parent}', binding "
+            "the package to a name in its own namespace"
+        )
     if is_stdlib_name(parent):
         return (
             f"`from {dots} import` names the top-level package '{parent}' itself, whose "

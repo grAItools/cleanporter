@@ -605,7 +605,9 @@ class _Fixer(cst.CSTTransformer):
             imp, parent, declared_root=self._rec.declared_root
         )
         if spelling is None:
-            return _imports.unspellable_reason(imp, parent, root_hint=self._rec.root_hint)
+            return _imports.unspellable_reason(
+                imp, parent, root_hint=self._rec.root_hint, own_init=self._decider.own_init(parent)
+            )
         return spelling
 
     def _local_names(self, scope: metadata.Scope) -> set[str]:

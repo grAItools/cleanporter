@@ -1228,3 +1228,46 @@ def test_the_hint_names_the_inferred_root_and_not_for_a_stdlib_name(tmp_path):
     detail = next(f.detail for f in result.findings if f.path.name == "deep.py")
     assert "standard library's 'cgi'" in detail
     assert "declaring" not in detail
+
+
+_R10 = {
+    "lib/__init__.py": "from .vendor.toppkg import cli\n",
+    "lib/vendor/toppkg/__init__.py": 'def helper():\n    return "vendored"\n',
+    "lib/vendor/toppkg/cli.py": "from . import helper\ndef main():\n    return helper()\n",
+    "site/toppkg/__init__.py": 'def helper():\n    return "OTHER COPY"\n',
+}
+
+
+def test_a_declared_root_below_a_package_keeps_the_cp003_whatever_the_run_is_given(tmp_path):
+    """``source_roots = ["lib/vendor"]`` under a ``lib/__init__.py``.
+
+    ``toppkg`` is really ``lib.vendor.toppkg``; ``import toppkg`` would bind
+    whichever ``toppkg`` is on ``sys.path``. Refused in a run over the
+    subtree -- which never reads ``lib/__init__.py`` -- as in one over all.
+    """
+    for label, paths in (("subtree", ["lib/vendor"]), ("all", ["."])):
+        work = tmp_path / label
+        _write_tree(work, _R10)
+        before = {p: p.read_bytes() for p in work.rglob("*.py")}
+        cfg = config._parse_table({"source_roots": ["lib/vendor"]}, work)
+        for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+            result = engine.run([work / p for p in paths], cfg, mode)
+            found = [f.code for f in result.findings if f.path.name == "cli.py"]
+            assert found == ["CP003"], (label, mode, result.findings)
+        assert {p: p.read_bytes() for p in work.rglob("*.py")} == before, label
+
+
+def test_a_package_own_init_has_its_own_reason(tmp_path):
+    _write_tree(
+        tmp_path,
+        {
+            "src/toppkg/__init__.py": (
+                "def helper():\n    return 1\n\nfrom . import helper as again\n\nx = again()\n"
+            ),
+        },
+    )
+    tables: list[dict[str, object]] = [{}, {"source_roots": ["src"]}]
+    for table in tables:
+        detail = _stays_cp003(tmp_path, table, "src/toppkg/__init__.py")[0]
+        assert "'toppkg''s own __init__ names the package itself" in detail, table
+        assert "declaring" not in detail

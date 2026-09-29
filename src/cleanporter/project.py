@@ -161,7 +161,7 @@ def _records(
         level = p.facts.max_relative_level()
         # A root that could vouch for `import pkg`: allowed when declared,
         # offered in the CP003 message when inferred.
-        sound = module_map.root_for_absolute_spelling(p.path, level)
+        sound = module_map.root_for_absolute_spelling(p.path, level, project_root=config.root)
         declared = sound is not None and sound in module_map.declared
         records.append(
             analyze.FileRecord(

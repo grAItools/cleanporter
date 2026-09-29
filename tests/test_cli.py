@@ -706,7 +706,8 @@ def test_importing_from_a_top_level_package_itself_keeps_that_line(
     captured = capsys.readouterr()
     report = captured.out + captured.err
     assert "CP003" in report
-    assert "names the package 'pkg' itself" in report
+    own_init = "in 'pkg''s own __init__ names the package itself"
+    assert (own_init if filename == "__init__.py" else "names the package 'pkg' itself") in report
     assert target.read_text(encoding="utf-8") == (
         head + "from . import VERSION as V\nfrom os import path\nprint(V, path.join('a'))\n"
     )
