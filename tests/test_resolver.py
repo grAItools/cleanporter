@@ -17,8 +17,8 @@ from cleanporter import firstparty, resolver
 def _pkg(tmp_path: pathlib.Path) -> pathlib.Path:
     root = tmp_path / "src"
     (root / "amb").mkdir(parents=True)
-    (root / "amb" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "amb" / "mod.py").write_text("Q = 1\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (root / "amb" / "mod.py").write_text("Q = 1\n", encoding="utf-8", newline="\n")
     return root
 
 
@@ -39,7 +39,9 @@ def test_first_party_name_that_is_nowhere_is_unresolved(tmp_path):
 
 def test_warm_carries_the_first_party_reason(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("from . import _version\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text(
+        "from . import _version\n", encoding="utf-8", newline="\n"
+    )
     r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     r.warm([("amb", "_version")])
     assert r.is_module("amb", "_version") is None
@@ -52,7 +54,7 @@ def test_warm_carries_the_first_party_reason(tmp_path):
 
 def _reexporting(tmp_path: pathlib.Path, init: str) -> resolver.Resolver:
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text(init, encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text(init, encoding="utf-8", newline="\n")
     return resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
 
 
@@ -100,8 +102,8 @@ def test_an_ambiguous_third_party_origin_leaves_the_reexport_unresolved(tmp_path
     site = tmp_path / "site"
     shadow = site / "resolver_shadow_pkg"
     shadow.mkdir(parents=True)
-    (shadow / "__init__.py").write_text("from .leaf import leaf\n", encoding="utf-8")
-    (shadow / "leaf.py").write_text("def leaf(): ...\n", encoding="utf-8")
+    (shadow / "__init__.py").write_text("from .leaf import leaf\n", encoding="utf-8", newline="\n")
+    (shadow / "leaf.py").write_text("def leaf(): ...\n", encoding="utf-8", newline="\n")
     monkeypatch.syspath_prepend(str(site))
     for dotted in ("resolver_shadow_pkg", "resolver_shadow_pkg.leaf"):
         monkeypatch.delitem(sys.modules, dotted, raising=False)
@@ -135,7 +137,7 @@ def test_stdlib_falls_through_to_the_probe(tmp_path):
 
 def test_ambiguous_is_unresolved_with_an_explanatory_reason(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text('mod = "shadow"\n', encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text('mod = "shadow"\n', encoding="utf-8", newline="\n")
     r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     assert r.is_module("amb", "mod") is None
     assert "both a submodule" in r.reason("amb", "mod")
@@ -156,7 +158,7 @@ def test_warm_batches_and_matches_individual_lookups(tmp_path):
 
 def test_warm_then_reason_agree_for_an_ambiguous_pair(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text('mod = "shadow"\n', encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text('mod = "shadow"\n', encoding="utf-8", newline="\n")
     r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     r.warm([("amb", "mod")])
     assert r.is_module("amb", "mod") is None
@@ -179,7 +181,9 @@ def test_a_top_level_parent_needs_no_replacement_check(tmp_path):
 
 def test_a_replacement_the_parents_init_shadows_is_unreachable(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("from amb.mod import mod\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text(
+        "from amb.mod import mod\n", encoding="utf-8", newline="\n"
+    )
     r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     reason = r.replacement_unreachable("amb.mod")
     assert reason is not None
@@ -190,8 +194,10 @@ def test_a_replacement_the_parents_init_shadows_is_unreachable(tmp_path):
 def test_a_replacement_a_star_import_shadows_is_unreachable(tmp_path):
     """``from ._impl import *`` rebinds ``helpers`` just as ``helpers = ...`` would."""
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("from ._impl import *\n", encoding="utf-8")
-    (root / "amb" / "_impl.py").write_text("def mod(): ...\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text(
+        "from ._impl import *\n", encoding="utf-8", newline="\n"
+    )
+    (root / "amb" / "_impl.py").write_text("def mod(): ...\n", encoding="utf-8", newline="\n")
     r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     assert r.is_module("amb", "mod") is None
     reason = r.replacement_unreachable("amb.mod")
@@ -209,7 +215,7 @@ def test_a_replacement_the_run_cannot_see_is_unreachable(tmp_path):
 
 def test_a_replacement_the_parent_binds_to_an_object_is_unreachable(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("def gone(): ...\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text("def gone(): ...\n", encoding="utf-8", newline="\n")
     r = resolver.Resolver(firstparty.ModuleMap([root]), evidence=resolver.NO_EVIDENCE)
     reason = r.replacement_unreachable("amb.gone")
     assert reason is not None
@@ -242,7 +248,9 @@ def _venv_with_onlyhere(tmp_path: pathlib.Path) -> pathlib.Path:
     ).stdout.strip()
     package = pathlib.Path(purelib) / "onlyhere"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text("def helper():\n    pass\n", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "def helper():\n    pass\n", encoding="utf-8", newline="\n"
+    )
     return python
 
 

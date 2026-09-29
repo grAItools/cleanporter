@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import sys
 
 import pytest
 
@@ -11,10 +12,10 @@ from cleanporter import config
 
 def _project(tmp_path: pathlib.Path, table: str = "") -> pathlib.Path:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0"\n' + table, encoding="utf-8"
+        '[project]\nname = "demo"\nversion = "0"\n' + table, encoding="utf-8", newline="\n"
     )
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     return tmp_path
 
 
@@ -37,7 +38,7 @@ def test_search_walks_upward_from_a_file(tmp_path):
     _project(tmp_path)
     deep = tmp_path / "pkg" / "deep" / "mod.py"
     deep.parent.mkdir(parents=True)
-    deep.write_text("", encoding="utf-8")
+    deep.write_text("", encoding="utf-8", newline="\n")
     assert config.find_pyproject(deep) == tmp_path / "pyproject.toml"
     assert config.load_config(deep).root == tmp_path
 
@@ -54,7 +55,7 @@ treat_unresolved_as_error = true
 source_roots = ["src"]
 exempt_modules = ["attrs"]
 exempt_names = ["annotations"]
-python = "/usr/bin/python3"
+python = "python3"
 skip = [{ decorator = 'gtx\\.field_operator', reason = "DSL body" }]
 """,
         )
@@ -63,7 +64,7 @@ skip = [{ decorator = 'gtx\\.field_operator', reason = "DSL body" }]
     assert cfg.scope == "first-party"
     assert cfg.treat_unresolved_as_error is True
     assert cfg.source_roots == ("src",)
-    assert cfg.python == "/usr/bin/python3"
+    assert cfg.python == "python3"
     assert cfg.exempt_names == frozenset({"annotations"})
     assert [(r.index, r.decorator, r.reason) for r in cfg.skip] == [
         (1, r"gtx\.field_operator", "DSL body")
@@ -154,7 +155,16 @@ def test_a_python_path_with_a_drive_and_a_root_is_unchanged(tmp_path, value):
         ("[tool.cleanporter]\npython = 3\n", "must be a string"),
         ('[tool.cleanporter]\npython = ""\n', "must not be empty"),
         ("[tool.cleanporter]\npython = 'C:python.exe'\n", "relative to its drive"),
-        ("[tool.cleanporter]\npython = '~no-such-user-cp/bin/python'\n", "cannot expand"),
+        pytest.param(
+            "[tool.cleanporter]\npython = '~no-such-user-cp/bin/python'\n",
+            "cannot expand",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32",
+                # ntpath.expanduser guesses a sibling of the current home
+                # directory for any ~user, without asking whether it exists.
+                reason="Windows expands an unknown ~user instead of failing",
+            ),
+        ),
     ],
 )
 def test_malformed_python_raises(tmp_path, table, message):
@@ -179,7 +189,7 @@ def test_mismatch_warning_names_the_config_used_and_the_paths_it_ignores(tmp_pat
     second = _project(tmp_path / "two")
     nested = first / "pkg" / "inner"
     nested.mkdir()
-    (nested / "pyproject.toml").write_text("", encoding="utf-8")
+    (nested / "pyproject.toml").write_text("", encoding="utf-8", newline="\n")
     warning = config.mismatch_warning([first / "pkg", second / "pkg", nested, first])
     assert warning is not None
     assert str(first / "pyproject.toml") in warning
@@ -193,7 +203,10 @@ def test_two_spellings_of_one_pyproject_do_not_warn(tmp_path, monkeypatch):
     (tmp_path / "real").mkdir()
     real = _project(tmp_path / "real")
     alias = tmp_path / "alias"
-    alias.symlink_to(real, target_is_directory=True)
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError:  # pragma: no cover - e.g. Windows without the privilege
+        pytest.skip("cannot create a symlink here")
     spellings = {"a": real / "pyproject.toml", "b": alias / "pyproject.toml"}
     monkeypatch.setattr(config, "find_pyproject", lambda path, **_: spellings[path.name])
     assert config.mismatch_warning([pathlib.Path("a"), pathlib.Path("b")]) is None
@@ -221,7 +234,7 @@ _SAMPLES = {
     "exempt_modules": ["attrs"],
     "exempt_names": ["annotations"],
     "scope": "first-party",
-    "python": "/usr/bin/python3",
+    "python": "python3",
     "treat_unresolved_as_error": True,
     "skip": [{"decorator": "gtx\\.field_operator"}],
 }

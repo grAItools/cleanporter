@@ -291,7 +291,7 @@ def _match_parts(pattern: tuple[str, ...], parts: tuple[str, ...]) -> bool:
 
 def _venv_python(venv: pathlib.Path) -> pathlib.Path:
     """The interpreter of the virtual environment at *venv*."""
-    if os.name == "nt":  # pragma: no cover - platform
+    if os.name == "nt":
         return venv / "Scripts" / "python.exe"
     return venv / "bin" / "python"
 

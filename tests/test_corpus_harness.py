@@ -55,8 +55,10 @@ def test_a_finding_that_only_moved_is_not_new(tmp_path):
     body = "def f():\n    return missing\n"
     (tmp_path / "before").mkdir()
     (tmp_path / "after").mkdir()
-    (tmp_path / "before" / "m.py").write_text(f"import os\nimport sys\n\n{body}", encoding="utf-8")
-    (tmp_path / "after" / "m.py").write_text(body, encoding="utf-8")
+    (tmp_path / "before" / "m.py").write_text(
+        f"import os\nimport sys\n\n{body}", encoding="utf-8", newline="\n"
+    )
+    (tmp_path / "after" / "m.py").write_text(body, encoding="utf-8", newline="\n")
 
     before = harness._undefined_names(tmp_path / "before")
     after = harness._undefined_names(tmp_path / "after")
@@ -75,9 +77,13 @@ def test_an_extra_occurrence_of_a_known_name_is_still_new(tmp_path):
     """
     (tmp_path / "before").mkdir()
     (tmp_path / "after").mkdir()
-    (tmp_path / "before" / "m.py").write_text("def f():\n    return missing\n", encoding="utf-8")
+    (tmp_path / "before" / "m.py").write_text(
+        "def f():\n    return missing\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "after" / "m.py").write_text(
-        "def f():\n    return missing\n\n\ndef g():\n    return missing\n", encoding="utf-8"
+        "def f():\n    return missing\n\n\ndef g():\n    return missing\n",
+        encoding="utf-8",
+        newline="\n",
     )
 
     new = harness._undefined_names(tmp_path / "after") - harness._undefined_names(
@@ -239,9 +245,11 @@ def test_fix_still_announces_each_rewritten_file_on_stderr(tmp_path):
     """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("", encoding="utf-8")
-    (pkg / "sub.py").write_text("THING = 1\n", encoding="utf-8")
-    (pkg / "user.py").write_text("from pkg.sub import THING\n\nx = THING\n", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (pkg / "sub.py").write_text("THING = 1\n", encoding="utf-8", newline="\n")
+    (pkg / "user.py").write_text(
+        "from pkg.sub import THING\n\nx = THING\n", encoding="utf-8", newline="\n"
+    )
 
     proc = subprocess.run(
         [sys.executable, "-m", "cleanporter", "--fix", "."],

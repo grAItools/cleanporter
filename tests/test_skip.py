@@ -49,8 +49,11 @@ def test_a_file_pattern_is_matched_in_full_not_searched():
 
 
 def test_a_file_outside_the_project_root_offers_its_absolute_path():
-    candidates = skip.file_candidates(pathlib.Path("/elsewhere/mod.py"), ROOT)
-    assert candidates == ("/elsewhere/mod.py",)
+    outside = pathlib.Path("/elsewhere/mod.py")
+    candidates = skip.file_candidates(outside, ROOT)
+    # `resolve()` puts the current drive in front on Windows: ``C:/elsewhere/mod.py``.
+    assert candidates == (outside.resolve().as_posix(),)
+    assert candidates[0].endswith("/elsewhere/mod.py")
 
 
 def test_a_file_inside_the_root_offers_only_the_relative_path():
