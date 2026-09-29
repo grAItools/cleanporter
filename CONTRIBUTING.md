@@ -327,8 +327,10 @@ A release is a version tag; `.github/workflows/release.yml` does the rest.
      exactly as pushing it would have — which is also how a tag pushed before
      the workflow existed (`v0.4.0`) gets its release.
 
-A dispatch from any branch but `main` is refused, and so is a tag that
-already has a GitHub release: nothing is overwritten. Either way the release
+A dispatch from any branch but `main` is refused, and so is a tag that is not
+`v` + a version, or that already has a GitHub release: nothing is
+overwritten. A tag the workflow creates is an annotated tag, made atomically:
+if the tag appears in the meantime, creating it fails. Either way the release
 machinery — `.github/scripts/release.py` and the notes file — is read from
 the workflow's own revision (the tag on a push, `main` on a dispatch), while
 what is tested and built is the tag's tree, with its own lockfile.
@@ -360,6 +362,23 @@ publishes nothing anywhere, a failed GitHub release publishes nothing to
 PyPI, and a PyPI failure leaves the GitHub release in place; re-run the
 failed job from the Actions tab.
 
+**If a dispatch that creates the tag fails in the GitHub-release job**, do
+not use *Re-run failed jobs* once the tag exists: tag creation refuses an
+existing tag, by design. Clean up first, then run the workflow again:
+
+- if the tag was created but the release was not, run the workflow again
+  with the same tag — the tag now exists, so it is released as it stands;
+- if a partial release was also made (say, an asset upload failed), delete
+  that release (`gh release delete vX.Y.Z`, keeping the tag) and run the
+  workflow again — a tag with a release is refused;
+- if the tag is wrong and must go, delete the release and the tag
+  (`gh release delete vX.Y.Z --cleanup-tag`) and run it again from `main`.
+
+**Releasing an older version makes it "Latest".** A non-pre-release is always
+marked GitHub's latest release, even when it is older than the newest one —
+for example, releasing `v0.4.0` after `v0.5.0` exists. Afterwards, mark the
+newest release latest again: `gh release edit vX.Y.Z --latest`.
+
 The tag and notes checks are `.github/scripts/release.py`, which you can run
 before tagging:
 `uv run --no-project python .github/scripts/release.py check-tag vX.Y.Z` and
@@ -376,11 +395,15 @@ token is stored anywhere. To turn it on:
    *pending* publisher, before the first upload) with owner `grAItools`,
    repository `cleanporter`, workflow `release.yml` and environment `pypi`.
 2. In the GitHub repository settings, create an environment named `pypi`
-   (add required reviewers there if a release should wait for approval).
+   (add required reviewers there if a release should wait for approval). If
+   you restrict its deployment branches and tags, allow both the `v*` tags
+   (a pushed tag runs on the tag) and the `main` branch (a dispatch runs on
+   `main`), or one of the two ways to release is refused at the PyPI job.
 3. Under *Settings → Secrets and variables → Actions → Variables*, add the
    repository variable `PUBLISH_TO_PYPI` with the value `true`.
 
-The next tag pushed is then published to PyPI as well. A version already on
+The next release, whether from a pushed tag or a dispatch, is then published
+to PyPI as well. A version already on
 PyPI can never be uploaded again, which is why the tag check comes first.
 
 ## Reporting bugs

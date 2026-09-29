@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -129,6 +130,22 @@ def test_the_current_version_has_release_notes() -> None:
     assert "CHANGELOG.md" in done.stdout  # the full record is a link away
 
 
+def test_the_current_version_has_a_changelog_section_the_notes_link_to() -> None:
+    """The notes summarise; CHANGELOG.md is the record, and the link must land on it."""
+    version = _version()
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = re.search(
+        rf"^## (\[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}})$", changelog, re.MULTILINE
+    )
+    assert heading, f"CHANGELOG.md has no '## [{version}] - DATE' section"
+    # GitHub's heading slug: lower-cased, punctuation but `-` and `_` dropped,
+    # each space a hyphen. `[0.4.0] - 2026-09-28` -> `040---2026-09-28`.
+    slug = re.sub(r"[^\w\- ]", "", heading.group(1).lower()).replace(" ", "-")
+    notes = (ROOT / ".github" / "release-notes" / f"{version}.md").read_text(encoding="utf-8")
+    anchors = re.findall(r"/blob/main/CHANGELOG\.md#([^)\s]+)", notes)
+    assert anchors == [slug]
+
+
 def test_release_notes_over_the_cap_fail(tmp_path: pathlib.Path) -> None:
     """A summary long enough to hit the cap has stopped being one."""
     at_cap = "x" * 4000
@@ -174,9 +191,28 @@ def test_the_workflow_runs_every_check_before_building() -> None:
         assert next(i for i, run in enumerate(runs) if check in run) < build, check
     steps = _jobs()["build"]["steps"]
     assert isinstance(steps, list)
-    checkout = steps[0]
-    assert isinstance(checkout, dict)
+    [checkout] = [
+        s
+        for s in steps
+        if isinstance(s, dict) and str(s.get("uses")).startswith("actions/checkout")
+    ]
     assert checkout["with"] == {"fetch-depth": 0}  # or origin/main is not there to compare
+
+
+def test_the_tag_shape_is_checked_before_the_tag_is_used() -> None:
+    """On a dispatch the tag is free text: the job's first step pins its shape."""
+    steps = _jobs()["build"]["steps"]
+    assert isinstance(steps, list)
+    first = steps[0]
+    assert isinstance(first, dict)
+    run = str(first["run"])
+    assert "[[ $TAG =~ ^v[0-9]+" in run
+    assert run.rstrip().endswith("fi")
+    pattern = run[run.index("^v") : run.index("$ ]]") + 1]
+    for good in ("v0.4.0", "v0.5.0rc1", "v1.0.0b2", "v0.5.0.post1", "v0.5.0.dev0", "v1"):
+        assert re.fullmatch(pattern, good), good
+    for bad in ("0.4.0", "v0.4.0-rc1", "v0.4.0+x", "v0.4.0/../x", "v0.4.0 -x", "--help", "v"):
+        assert not re.fullmatch(pattern, bad), bad
 
 
 def test_the_workflow_can_be_dispatched_with_a_tag() -> None:
@@ -227,17 +263,24 @@ def test_a_missing_tag_is_created_on_the_dispatched_commit() -> None:
     outputs = jobs["build"]["outputs"]
     assert isinstance(outputs, dict)
     assert "create-tag" in outputs
-    steps = jobs["github-release"]["steps"]
-    assert isinstance(steps, list)
-    [create] = [
-        s for s in steps if isinstance(s, dict) and "gh release create" in str(s.get("run"))
-    ]
-    run = str(create["run"])
-    assert 'target=(--target "$GITHUB_SHA")' in run
-    assert "target=(--verify-tag)" in run
-    env = create["env"]
-    assert isinstance(env, dict)
-    assert env["CREATE_TAG"] == "${{ needs.build.outputs.create-tag }}"
+    all_steps = jobs["github-release"]["steps"]
+    assert isinstance(all_steps, list)
+    steps = [s for s in all_steps if isinstance(s, dict)]
+    names = [s.get("name") for s in steps]
+    tag, release = steps[names.index("Create the tag")], steps[names.index("Create the release")]
+    assert names.index("Create the tag") < names.index("Create the release")
+    assert tag["if"] == "needs.build.outputs.create-tag == 'true'"
+    run = str(tag["run"])
+    # An annotated tag object, then the ref: creating the ref is atomic and
+    # fails if the tag exists, so there is no check-then-act.
+    assert run.index('"repos/$GITHUB_REPOSITORY/git/tags"') < run.index(
+        '"repos/$GITHUB_REPOSITORY/git/refs"'
+    )
+    assert '-f object="$GITHUB_SHA"' in run
+    assert '-f ref="refs/tags/$TAG"' in run
+    assert "git/ref/" not in run  # no lookup first
+    assert "--verify-tag" in str(release["run"])
+    assert "--target" not in str(release["run"])
 
 
 def test_the_release_notes_are_written_outside_the_checkout() -> None:

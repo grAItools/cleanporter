@@ -55,6 +55,17 @@ jobs:
       commit: ${{ steps.subject.outputs.commit }}
       create-tag: ${{ steps.subject.outputs.create-tag }}
     steps:
+      # First, before the tag reaches any command or URL: on a dispatch it is
+      # free text. The shape is `v` + a normalised public version (check-tag
+      # below holds the exact rule and compares it with project.version), so
+      # nothing in it can be read as an option, a path or a URL part.
+      - name: The tag is a version tag
+        run: |
+          if ! [[ $TAG =~ ^v[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+            echo "release: '$TAG' is not a version tag such as v0.5.0 or v0.5.0rc1" >&2
+            exit 1
+          fi
+
       # Full history and every tag, so the tag can be found and checked
       # against main. This checks out $GITHUB_SHA; the step that settles what
       # is released checks out the tag's tree.
@@ -78,10 +89,6 @@ jobs:
         run: |
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" != refs/heads/main ]]; then
             echo "release: run this workflow from main, not $GITHUB_REF" >&2
-            exit 1
-          fi
-          if ! git check-ref-format "refs/tags/$TAG"; then
-            echo "release: '$TAG' is not a valid tag name" >&2
             exit 1
           fi
           machinery="$RUNNER_TEMP/machinery"
@@ -208,41 +215,52 @@ jobs:
           name: notes
           path: notes
 
+      # Only when a dispatch named a tag that did not exist: an annotated tag
+      # on $GITHUB_SHA, the commit of main the build checked. Creating the ref
+      # is the atomic step -- it fails (HTTP 422) if the tag exists by then,
+      # whoever made it and wherever it points, so there is no window between
+      # a check and the act. A tag created with GITHUB_TOKEN does not trigger
+      # workflows, so this does not start a second, push-triggered run of this
+      # workflow.
+      - name: Create the tag
+        if: needs.build.outputs.create-tag == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          object=$(gh api -X POST "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="$TAG" \
+            -f message="cleanporter ${TAG#v}" \
+            -f object="$GITHUB_SHA" \
+            -f type=commit \
+            --jq .sha)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" \
+            -f sha="$object" \
+            > /dev/null
+          echo "release: created $TAG on $GITHUB_SHA"
+
       # A PEP 440 pre- or dev-release (0.5.0rc1, 1.0.0b2, 0.5.0.dev0,
       # 0.5.0rc1.post1, 0.5.0.post1.dev0) is marked as a pre-release, so it
       # is never shown as "Latest". check-tag has already required the
       # normalised form, so a, b, rc or dev anywhere after the release
-      # numbers makes one; only `.postN` alone does not.
+      # numbers makes one; only `.postN` alone does not. Any other release is
+      # made "Latest", even of a version older than the newest release.
       #
-      # An existing tag must still be there (--verify-tag). A missing one is
-      # created on $GITHUB_SHA, the commit of main the build checked -- unless
-      # it has appeared since, pointing who knows where. A tag created with
-      # GITHUB_TOKEN does not trigger workflows, so creating it here does not
-      # start a second, push-triggered run of this workflow.
+      # The tag always exists by now (--verify-tag): pushed, or created above.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-          CREATE_TAG: ${{ needs.build.outputs.create-tag }}
         run: |
           prerelease=()
           [[ "${TAG#v}" =~ ^[0-9]+(\.[0-9]+)*(.*)$ ]]
           if [[ "${BASH_REMATCH[2]}" =~ (a|b|rc|dev)[0-9] ]]; then
             prerelease=(--prerelease)
           fi
-          if [[ "$CREATE_TAG" == true ]]; then
-            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" > /dev/null 2>&1; then
-              echo "release: $TAG was created after the build checked it; run again" >&2
-              exit 1
-            fi
-            target=(--target "$GITHUB_SHA")
-          else
-            target=(--verify-tag)
-          fi
           gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TAG" \
             --notes-file notes/notes.md \
-            "${target[@]}" \
+            --verify-tag \
             "${prerelease[@]}"
 
   # Off unless the repository variable PUBLISH_TO_PYPI is 'true' (Settings >
