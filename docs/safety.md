@@ -37,7 +37,9 @@ in the body of its module or function (not under an `if`, `try`, `with`,
 loop or `match`; `if not TYPE_CHECKING:` counts as direct, since it always
 runs) and ends textually before every one of those reads. Otherwise the line
 gets its own import, aliased (`json_2`) if the name is taken. The same holds
-for a binding one rewritten line creates and a later one would share.
+for a binding one rewritten line creates and a later one would share — with
+one more safe case: two lines in the same block (the same `if` body, say)
+share it, since the second only runs after the first.
 
 Formatting survives because libCST is a *concrete* syntax tree: it round-trips
 the source, so what the fixer does not deliberately change is reproduced

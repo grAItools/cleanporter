@@ -79,8 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NameError`. The same held for a binding the fix itself wrote inside an
   `if` and then reused for a later line. A binding is now reused only when it
   sits directly in the body of its module or function (or under `if not
-  TYPE_CHECKING:`) and ends before every read it would serve; otherwise the
-  line gets its own import, aliased if the name is taken.
+  TYPE_CHECKING:`) and ends before every read it would serve, or sits
+  earlier in the same block as the line reusing it; otherwise the line gets
+  its own import, aliased if the name is taken. The corpus had real cases,
+  such as Django's `admin_urls.py`, where `if to_field:` reused an import
+  the fix had written under a sibling `if popup:`.
 - `--fix` could bind a module under a name a wildcard import rebinds:
   `from json import dumps` / `from demo.star import *` became `import json`
   followed by the star import, and a `json` the star module exports then

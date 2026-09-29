@@ -835,7 +835,7 @@ class _Fixer(cst.CSTTransformer):
         memoized = self._module_binding.get(key)
         if memoized is not None:
             if memoized not in extra_avoid and self._holds_before(
-                self._module_binding_at[key], self._owner(scope), site.reads
+                self._module_binding_at[key], self._owner(scope), site
             ):
                 return memoized, False
             return self._allocate_token(scope, parent, extra_avoid, site.line), True
@@ -845,7 +845,7 @@ class _Fixer(cst.CSTTransformer):
         if (
             existing is not None
             and not self._has_star
-            and self._holds_before(self._existing_at[module], self._module_node, site.reads)
+            and self._holds_before(self._existing_at[module], self._module_node, site)
         ):
             # A module-level import is visible from nested scopes unless
             # *this* scope or an enclosing function/class scope assigns
@@ -902,16 +902,16 @@ class _Fixer(cst.CSTTransformer):
             else self._module_node
         )
 
-    def _holds_before(
-        self, stmt: cst.CSTNode, owner: cst.CSTNode, reads: tuple[metadata.Access, ...]
-    ) -> bool:
-        """Whether the binding *stmt* makes is in place whenever one of *reads* runs.
+    def _holds_before(self, stmt: cst.CSTNode, owner: cst.CSTNode, site: _Site) -> bool:
+        """Whether the binding *stmt* makes is in place whenever one of *site*'s reads runs.
 
-        Proven only for the one shape that needs no flow analysis: *stmt*
-        sits directly in the body of *owner* -- the module, or the function
-        or class whose scope it binds in -- so nothing (``if``, ``try``,
-        ``with``, a loop, ``match``) decides whether it runs, and it ends
-        textually before every read. A read in a function defined above the
+        Proven for two shapes that need no flow analysis. Either *stmt* is
+        *site*'s own line, or sits earlier in the same block: then it has run
+        whenever *site*'s import has, and a read of what *site* imports only
+        ever ran after that. Or *stmt* sits directly in the body of *owner* --
+        the module, or the function or class whose scope it binds in -- so
+        nothing (``if``, ``try``, ``with``, a loop, ``match``) decides whether
+        it runs, and it ends textually before every read. A read in a function defined above the
         import could still run after it, but that is exactly what cannot be
         shown without following calls, so it counts as before. Anything
         else is not reused: ``from json import dumps`` / ``x = dumps(1)`` /
@@ -922,6 +922,8 @@ class _Fixer(cst.CSTTransformer):
         line = stmt if isinstance(stmt, cst.SimpleStatementLine) else self._parent(stmt)
         if line is None:
             return False
+        if line is site.stmt or self._earlier_in_block(line, site.stmt):
+            return True
         anchor: cst.CSTNode = line
         container = self._parent(anchor)
         # `if not TYPE_CHECKING:` always runs its body (`_type_checking`).
@@ -943,11 +945,20 @@ class _Fixer(cst.CSTTransformer):
         if span is None:
             return False
         end = span.end
-        for read in reads:
+        for read in site.reads:
             start = self.get_metadata(metadata.PositionProvider, read.node, None)
             if start is None or (start.start.line, start.start.column) < (end.line, end.column):
                 return False
         return True
+
+    def _earlier_in_block(self, first: cst.CSTNode, then: cst.CSTNode) -> bool:
+        """Whether *first* and *then* are statements of one block, *first* above *then*."""
+        block = self._parent(first)
+        if block is None or block is not self._parent(then):
+            return False
+        a = self.get_metadata(metadata.PositionProvider, first, None)
+        b = self.get_metadata(metadata.PositionProvider, then, None)
+        return a is not None and b is not None and a.end.line <= b.start.line
 
     def _free_names_below(self, scope: metadata.Scope) -> tuple[set[str], bool]:
         """Names read in *scope*, or a scope nested in it, that no assignment in the file binds.

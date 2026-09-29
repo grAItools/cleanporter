@@ -2015,6 +2015,39 @@ def test_an_unconditional_earlier_binding_is_still_reused():
     assert result.source == "import json\nx = json.dumps(1)\n"
 
 
+def test_lines_in_one_block_share_the_binding_the_first_writes():
+    src = (
+        "import sys\n"
+        "if sys.version_info >= (3, 0):\n"
+        "    from json import dumps\n    from json import loads\n"
+        "    print(dumps(1), loads('1'))\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "import sys\n"
+        "if sys.version_info >= (3, 0):\n"
+        "    import json\n    print(json.dumps(1), json.loads('1'))\n"
+    )
+
+
+def test_lines_in_sibling_blocks_do_not_share_a_binding():
+    # One `if` may run without the other: sharing the first block's import
+    # would leave the second one's reads with nothing bound.
+    src = (
+        "def f(a, b):\n"
+        "    if a:\n        from json import dumps\n        return dumps(1)\n"
+        "    if b:\n        from json import loads\n        return loads('1')\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "def f(a, b):\n"
+        "    if a:\n        import json\n        return json.dumps(1)\n"
+        "    if b:\n        import json as json_2\n        return json_2.loads('1')\n"
+    )
+
+
 # -- a wildcard import can rebind a module-level name --------------------------------
 
 
