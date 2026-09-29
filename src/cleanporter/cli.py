@@ -44,7 +44,8 @@ from cleanporter import config as config_lib
 
 #: Printed to stderr after `--fix` writes anything (see `run`).
 _CROSS_FILE_NOTE = (
-    "cleanporter: note: --fix cannot see dotted references from other files; re-run your tests"
+    "cleanporter: note: --fix cannot see dynamic or getattr() references, or ones in files "
+    "outside the run or in config other than pyproject.toml; re-run your tests"
 )
 
 #: `--whole-project` with no pyproject.toml to say where the project starts.

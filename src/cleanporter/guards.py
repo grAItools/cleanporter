@@ -32,6 +32,12 @@ can reach: a regex literal, a payload assembled rather than written out, a
 fragment that is not valid Python on its own, source for another Python
 version. Those are listed in the fixer-safety documentation; keep the two in
 step.
+
+Every guard here sees one file. A string in *another* file that names a
+binding by its whole dotted path (``monkeypatch.setattr("pkg.mod.helper",
+...)``) is cross-file evidence instead: `dotted_reference` recognises it
+while each file's facts are collected, and `resolver.Resolver.named_by`
+declines the one import it would make stale.
 """
 
 from __future__ import annotations
@@ -74,6 +80,44 @@ def _reference_path(content: str) -> set[str]:
     if parts and all(p.isidentifier() for p in parts):
         return set(parts)
     return set()
+
+
+#: A dotted path (``a.b.c``) or an entry-point spec (``a.b:c`` / ``a.b:c.d``),
+#: written out whole: nothing before or after it, no whitespace inside it.
+_DOTTED_PATH = re.compile(r"[^\W\d]\w*(?:\.[^\W\d]\w*)*(?::[^\W\d]\w*(?:\.[^\W\d]\w*)*)?")
+
+
+def dotted_reference(content: str) -> tuple[str, ...] | None:
+    """The components of *content* if it is a whole dotted or entry-point path.
+
+    ``"pkg.mod.helper"`` and ``"pkg.mod:helper"`` are both ``("pkg", "mod",
+    "helper")``: the colon only says where the module part ends, and the
+    caller asks every split (`cross_file_pairs`), so it need not know. Anything
+    else -- one component, surrounding text, whitespace, a component that is
+    not an identifier -- is ``None``.
+
+    This is the *cross-file* reading of a string, and it is deliberately
+    narrower than `string_references`: it runs over every string of every file
+    in the run, and it only ever names what that string could be addressing
+    in some *other* module, so prose and code fragments are not candidates at
+    all.
+    """
+    if _DOTTED_PATH.fullmatch(content) is None:
+        return None
+    parts = tuple(content.replace(":", ".").split("."))
+    return parts if len(parts) >= 2 else None  # noqa: PLR2004 -- a module and a name
+
+
+def cross_file_pairs(parts: tuple[str, ...]) -> list[tuple[str, str]]:
+    """Every ``(module, name)`` a dotted reference *parts* could be reading.
+
+    ``pkg.mod.helper.attr`` reads ``helper`` from ``pkg.mod`` -- and, as far
+    as a string can say, ``mod`` from ``pkg`` and ``attr`` from
+    ``pkg.mod.helper``: which prefix is the module is not spelled out, so each
+    split is a candidate, and the caller keeps the ones that are real
+    first-party re-exports.
+    """
+    return [(".".join(parts[:i]), parts[i]) for i in range(1, len(parts))]
 
 
 def _parse_or_none(source: str) -> ast.Module | None:

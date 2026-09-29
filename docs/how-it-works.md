@@ -285,9 +285,21 @@ cache is in memory only: a very large third-party surface re-pays the
 (batched) probe cost on every invocation.
 
 Each file is parsed once by libcst, and a check walks its syntax tree once: that
-single pass collects every import, every `module.attribute` read and every
-star import, and everything else the analysis needs is read off what it
-collected. Where each import starts is taken from a parse with Python's own
+single pass collects every import, every `module.attribute` read, every
+star import and every string literal that is a whole dotted path (`a.b.c`) or
+entry-point spec (`a.b:c`), and everything else the analysis needs is read off
+what it collected.
+
+Those four are the run's cross-file evidence. Before any file is judged, the
+whole run's uses of `module.name` are gathered, together with the strings that
+name one by path and the dotted string values (entry points, plugin
+addresses) of the `pyproject.toml` in use. A
+first-party module that only *re-exports* a name something else uses or names
+keeps that import as written and reports it `CP003`, in every mode: rewriting
+it would delete the attribute the other file depends on (see
+[the load-bearing and string-named re-export guards](safety.md#known-limitations)).
+A string is looked up only when it would decline a rewrite, so its line costs
+position metadata for that one file, once. Where each import starts is taken from a parse with Python's own
 `ast` rather than from libcst's position metadata, which would cost a second
 full pass over the tree. That parse is used only where it provably gives
 libcst's answer.

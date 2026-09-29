@@ -38,7 +38,7 @@ from cleanporter import config, firstparty, model
 from cleanporter import resolver as resolver_lib
 from cleanporter import skip as skip_lib
 
-from . import _imports
+from . import _imports, guards
 
 
 @dataclasses.dataclass
@@ -274,6 +274,12 @@ class FileFacts:
     #: "b")``). Reads through a call or a subscript are not dotted names and
     #: are not recorded.
     attribute_reads: frozenset[tuple[str, str]]
+    #: Every string literal whose whole text is a dotted or entry-point path
+    #: (`guards.dotted_reference`), with that text and its components, in
+    #: source order: a plain string, an f-string with no placeholders, or an
+    #: implicit concatenation of those (`_literal_text`). The raw material
+    #: for the cross-file string evidence (`project._named`).
+    path_strings: tuple[tuple[cst.BaseExpression, str, tuple[str, ...]], ...] = ()
 
     @property
     def import_froms(self) -> tuple[cst.ImportFrom, ...]:
@@ -351,6 +357,29 @@ class FileFacts:
         return found
 
 
+def _literal_text(node: cst.SimpleString | cst.FormattedString) -> str | None:
+    """The runtime text of *node* when it is written out literally, else ``None``.
+
+    A path has no escapes, so text holding a backslash is not one, and
+    without one the raw text *is* the value -- no evaluation needed. An
+    f-string counts only with no placeholders (``f"pkg.mod.helper"``); a
+    brace means a placeholder or an escaped brace, neither of which a path
+    has. Bytes are not paths anything imports by.
+    """
+    if "b" in node.prefix.lower():
+        return None
+    if isinstance(node, cst.SimpleString):
+        text = node.raw_value
+    else:
+        pieces: list[str] = []
+        for part in node.parts:
+            if not isinstance(part, cst.FormattedStringText):
+                return None
+            pieces.append(part.value)
+        text = "".join(pieces)
+    return None if "\\" in text or "{" in text or "}" in text else text
+
+
 class _FactCollector(cst.CSTVisitor):
     """The one walk `collect_facts` makes. Every hook returns ``None``: descend."""
 
@@ -358,6 +387,46 @@ class _FactCollector(cst.CSTVisitor):
         super().__init__()
         self.imports: list[cst.Import | cst.ImportFrom] = []
         self.attribute_reads: set[tuple[str, str]] = set()
+        self.path_strings: list[tuple[cst.BaseExpression, str, tuple[str, ...]]] = []
+        #: Ids of strings that are parts of a concatenation, read with it.
+        self._string_parts: set[int] = set()
+
+    def visit_SimpleString(self, node: cst.SimpleString) -> None:
+        if id(node) not in self._string_parts:
+            self._path_string(node, _literal_text(node))
+
+    def visit_FormattedString(self, node: cst.FormattedString) -> None:
+        if id(node) not in self._string_parts:
+            self._path_string(node, _literal_text(node))
+
+    def visit_ConcatenatedString(self, node: cst.ConcatenatedString) -> None:
+        # ``"pkg.mod." "helper"`` is one string at runtime, so it is read
+        # whole, once: its parts -- nested concatenations included -- are
+        # marked so their own visits do not read a fragment as a path.
+        # Descent is not cut short: an f-string's expressions still hold
+        # attribute reads.
+        if id(node) in self._string_parts:
+            return
+        texts: list[str | None] = []
+        pending: list[cst.BaseExpression] = [node.left, node.right]
+        while pending:
+            part = pending.pop(0)
+            self._string_parts.add(id(part))
+            if isinstance(part, cst.ConcatenatedString):
+                pending[:0] = [part.left, part.right]
+            elif isinstance(part, (cst.SimpleString, cst.FormattedString)):
+                texts.append(_literal_text(part))
+            else:  # pragma: no cover - libcst admits nothing else here
+                texts.append(None)
+        if all(t is not None for t in texts):
+            self._path_string(node, "".join(t for t in texts if t is not None))
+
+    def _path_string(self, node: cst.BaseExpression, text: str | None) -> None:
+        if text is None:
+            return
+        parts = guards.dotted_reference(text)
+        if parts is not None:
+            self.path_strings.append((node, text, parts))
 
     def visit_Import(self, node: cst.Import) -> None:
         self.imports.append(node)
@@ -379,7 +448,11 @@ def collect_facts(tree: cst.Module) -> FileFacts:
     """Walk *tree* once and return every `FileFacts` the analysis needs."""
     collector = _FactCollector()
     tree.visit(collector)
-    return FileFacts(tuple(collector.imports), frozenset(collector.attribute_reads))
+    return FileFacts(
+        tuple(collector.imports),
+        frozenset(collector.attribute_reads),
+        tuple(collector.path_strings),
+    )
 
 
 def iter_units(tree: cst.Module, base_pkg: str) -> Iterator[ImportUnit]:
@@ -629,6 +702,15 @@ class Decider:
                 model.Status.SKIPPED,
                 f"another file imports '{bound}' from '{qualname}'; "
                 "rewriting this import would remove that attribute",
+            )
+        named = (
+            self._resolver.named_by(qualname, bound, outside=self._rec.path) if qualname else None
+        )
+        if named is not None:
+            return Decision(
+                model.Status.SKIPPED,
+                f"'{qualname}.{bound}' is named by the string '{named.text}' at "
+                f"{named.where()}; rewriting this import would remove that attribute",
             )
         if bound in never_read:
             return Decision(model.Status.SKIPPED, _UNREAD, unread=True)

@@ -26,6 +26,21 @@ Breaking under the pre-1.0 policy above:
 
 ### Added
 
+- **A cross-file string guard.** A string literal in another analysed file
+  that spells a first-party binding's dotted path out whole —
+  `monkeypatch.setattr("pkg.mod.helper", ...)`, `mock.patch("pkg.mod.helper")`,
+  `"pkg.mod:helper"`, including an implicit concatenation or a
+  placeholder-free f-string — or a string value anywhere in the
+  `pyproject.toml` in use (`[project.scripts]`, `[project.entry-points.*]`,
+  `[tool.poetry.scripts]`, ...) now keeps the import that binds it, when that import is a re-export
+  the rewrite would remove. The import is reported `CP003` in every mode, with
+  the string and where it is (`... at tests/test_x.py:12`); the rest of the
+  file is still fixed. Before, such a reference could silently go stale
+  after `--fix`. The `--fix` note on stderr now names what is still unguarded:
+  dynamic strings, lookups through a module object (`getattr(module, "name")`,
+  `monkeypatch.setattr(module, "name", ...)`, `mock.patch.object`), files
+  outside the run, and config other than `pyproject.toml`. `resolver.Evidence` gains a `named` field and
+  `resolver.Resolver` a `named_by` method.
 - **pre-commit hooks, and `--whole-project` to make them safe.** The
   repository now publishes a `.pre-commit-hooks.yaml` with two hooks,
   `cleanporter` (check) and `cleanporter-fix` (`--fix`), for pre-commit and

@@ -635,6 +635,7 @@ class _RecordingFixer(rewrite._Fixer):
 #: One package reaching every finding the decision can produce -- stdlib and
 #: first-party objects, modules, exemptions, a wildcard, an unresolvable and
 #: an unanchorable parent, relative, aliased, re-exported, load-bearing,
+#: named-by-a-string,
 #: never-read, unreachable-replacement, no-relative-spelling, function-local, TYPE_CHECKING-gated,
 #: skip-pinned, skip-covered and guard-blocked imports.
 _AGREEMENT_TREE = {
@@ -653,6 +654,9 @@ _AGREEMENT_TREE = {
     "near.py": "from . import THING\n\nx = THING\n",
     "relay.py": "from app.helpers import go\n\ndef run():\n    return go()\n",
     "consumer.py": "from app.relay import go\n\nvalue = go()\n",
+    # Nothing imports `go` from `app.named`, but a string names it by path.
+    "named.py": "from app.helpers import go\n\ndef run():\n    return go()\n",
+    "patcher.py": 'TARGET = "app.named.go"\n',
     "skipped.py": (
         "from app.helpers import Widget\n"
         "\n"
@@ -785,6 +789,8 @@ def _rung(finding: model.Finding) -> str:
         return "CP003 no relative spelling"
     if finding.detail.startswith("another file imports"):
         return "CP003 load-bearing"
+    if "is named by the string" in finding.detail:
+        return "CP003 named by a string"
     if finding.detail.startswith("the replacement"):
         return "CP003 unreachable"
     return "CP003 other"
@@ -808,6 +814,7 @@ def test_the_agreement_tree_reaches_every_outcome(tmp_path):
         "CP003 re-export",
         "CP003 never read",
         "CP003 load-bearing",
+        "CP003 named by a string",
         "CP003 unreachable",
         "CP003 no relative spelling",
         "CP004",

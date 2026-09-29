@@ -513,7 +513,7 @@ def test_fix_keeps_a_reexport_that_a_module_of_the_same_name_hides(
 # -- the cross-file limitation note -----------------------------------------
 
 
-_NOTE = "cleanporter: note: --fix cannot see dotted references from other files"
+_NOTE = "cleanporter: note: --fix cannot see dynamic or getattr() references"
 
 
 def test_fix_notes_the_cross_file_limitation_on_stderr(project, monkeypatch, capsys):

@@ -208,24 +208,29 @@ producing wrong code first.
 This one bites, and it is worth internalising before you use the tool on
 anything — including on this repository.
 
-**cleanporter's safety guards are per file.** They analyse the file being
-rewritten and nothing else. So a string in a *different* file that names a
-rewritten binding by its dotted path is invisible to them and can go stale:
+**cleanporter's safety guards see only the run.** A string in another analysed
+file that spells a rewritten binding's dotted path out whole is guarded -- the
+import it names is kept and reported `CP003`:
 
 ```python
-# tests/test_thing.py -- cleanporter cannot see this while rewriting pkg/cli.py
+# tests/test_thing.py -- keeps `from pkg.core import helper` in pkg/cli.py
 monkeypatch.setattr("pkg.cli.helper", fake)
 ```
 
-The same applies to entry points in `pyproject.toml`, `importlib` lookups,
-plugin registries, Django-style string references — anything that names a binding
-as text from outside the file. After running `cleanporter --fix` over any
-codebase, **re-run that codebase's test suite.** `--fix` prints a note to stderr
-saying exactly this whenever it writes a file.
+So is any dotted string value in the `pyproject.toml` in use -- entry points
+under `[project.scripts]` or `[tool.poetry.scripts]`, plugin addresses. What is
+not: a string assembled at runtime, a lookup through a module object
+(`getattr(module, "helper")`, `monkeypatch.setattr(module, "helper", fake)`,
+`mock.patch.object`), a reference in a file outside
+the run, and dotted paths in `setup.cfg`, `tox.ini`, YAML or any other config
+file. After running `cleanporter --fix` over any codebase, **re-run that
+codebase's test suite.** `--fix` prints a note to stderr saying exactly this
+whenever it writes a file.
 
-This is not hypothetical: it was found by running cleanporter over its own
-source, where a test patched `cleanporter.cli.fix_record` — a name the compliant
-rewrite no longer bound there.
+This is not hypothetical: before the cross-file string guard existed, running
+cleanporter over its own source broke a test that patched
+`cleanporter.cli.fix_record` — a name the compliant rewrite no longer bound
+there.
 
 ## Commits
 

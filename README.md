@@ -125,7 +125,7 @@ reported. See
 | --- | --- | --- |
 | `CP001` | `VIOLATION` | object imported by name — blocks CI |
 | `CP002` | `UNRESOLVED` | could not determine whether the symbol is a module; never rewritten. Also marks a file that was not processed (could not be read, decoded, parsed or written), which always exits `2`, with or without `--strict` |
-| `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely; like `CP001`, it fails the run. A wildcard import, an explicit or load-bearing re-export, an unprovable replacement and a top-level `from . import X` are reported in every mode; the rest are the fixer explaining a decision, so they appear under `--fix`/`--diff` |
+| `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely; like `CP001`, it fails the run. A wildcard import, an explicit or load-bearing re-export, a re-export another file names by its dotted path (`monkeypatch.setattr("pkg.mod.name", ...)`, an entry point), an unprovable replacement and a top-level `from . import X` are reported in every mode; the rest are the fixer explaining a decision, so they appear under `--fix`/`--diff` |
 | `CP004` | `SKIPPED_BY_CONFIG` | matched a [`skip` rule](https://graitools.github.io/cleanporter/configuration/#skip-rules) — never analysed, never rewritten, counted in the summary, printed only under `--show-skipped`, and never part of the exit code |
 
 ## Dogfooding
