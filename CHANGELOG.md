@@ -138,12 +138,16 @@ Breaking under the pre-1.0 policy above:
   with --root or source_roots lets --fix write 'import pkg'".
   Documented under
   [Known limitations](https://graitools.github.io/cleanporter/safety/#known-limitations).
-- **Releases are published from version tags.** Pushing `vX.Y.Z` runs
-  `.github/workflows/release.yml`, which checks that the tagged commit is on
-  `main`, that the tag matches `project.version` and that `CHANGELOG.md` has a
-  section for it, runs the test suite, builds the sdist and wheel once, and
-  then makes the GitHub release and -- when enabled -- the PyPI upload. See
-  `CONTRIBUTING.md`.
+- **Releases are published from version tags.** Pushing `vX.Y.Z` -- or
+  running the workflow from the Actions tab on `main` with the tag, which
+  creates the tag there if it does not exist -- runs
+  `.github/workflows/release.yml`, which checks that the released commit is
+  on `main`, that the tag matches `project.version` and that
+  `.github/release-notes/X.Y.Z.md` holds concise notes for it (the release
+  PR adds them; the CHANGELOG section is linked, not copied), runs the test
+  suite, builds the sdist and wheel once, and then makes the GitHub release
+  and -- when enabled -- the PyPI upload. An existing GitHub release is never
+  overwritten. See `CONTRIBUTING.md`.
 - **The test suite runs on Windows in CI** (Python 3.12 and 3.14), beside the
   Linux matrix.
 
