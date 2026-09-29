@@ -582,43 +582,44 @@ def test_select_and_ignore_filter_cp005(
     assert ": CP001 " not in out
 
 
-def test_a_cp005_is_baselined_by_file_and_code(
+def test_a_cp005_is_never_baselined(
     project: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """A stale suppression is always reported: a baseline would let it swallow a new finding."""
     _write(_consumer(project), _UNUSED)
     assert _write_baseline() == 0
-    consumer = "src/demo/consumer.py"
     assert _baseline(project)["findings"] == [
-        {"path": consumer, "code": "CP001", "parent": "demo.helpers", "name": "THING"},
-        {"path": consumer, "code": "CP005", "parent": "", "name": ""},
+        {
+            "path": "src/demo/consumer.py",
+            "code": "CP001",
+            "parent": "demo.helpers",
+            "name": "THING",
+        },
     ]
     capsys.readouterr()
-    assert cli.main(["--baseline", "baseline.json", "src"]) == 0
-    assert "2 in the baseline" in capsys.readouterr().out
-    # No line in the key: the comment moving keeps it accepted.
-    _write(_consumer(project), "\n\n" + _UNUSED)
-    assert cli.main(["--baseline", "baseline.json", "src"]) == 0
-    # A second unused suppression in the file is a new finding.
-    second = "from demo import helpers as h  # cleanporter: ignore[CP002]\nh.go()\n"
-    _write(_consumer(project), _UNUSED + second)
-    capsys.readouterr()
     assert cli.main(["--baseline", "baseline.json", "src"]) == 1
-    assert "CP005" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "CP005" in out
+    assert ": CP001 " not in out
+    assert "1 in the baseline" in out
+    # Deleting the stale comment is the fix.
+    _write(_consumer(project), _UNUSED.replace("  # cleanporter: ignore[CP001]", ""))
+    assert cli.main(["--baseline", "baseline.json", "src"]) == 0
 
 
-def test_cp005_is_a_class_of_its_own(project: pathlib.Path) -> None:
-    """A `CP005` entry accepts no `CP001` or `CP003`, and neither of those a `CP005`."""
+def test_no_entry_accepts_a_cp005(project: pathlib.Path) -> None:
+    """Not a hand-written ``CP005`` entry, nor a ``CP001`` or ``CP003`` one; each is stale."""
     _write(_consumer(project), _UNUSED)
     cfg = config.Config(root=project)
     result = engine.run([pathlib.Path("src")], cfg)
     assert sorted(f.code for f in result.findings) == ["CP001", "CP005"]
     path = "src/demo/consumer.py"
-    as_unused = [baseline.Entry(path, "CP005", "demo.helpers", "THING")]
-    assert [f.code for f in baseline.apply(result, as_unused, cfg).findings] == [
-        "CP001",
-        "CP005",
-    ]
-    as_violations = [baseline.Entry(path, code, "", "") for code in ("CP001", "CP003")]
-    kept = baseline.apply(result, as_violations, cfg)
+    entries = [baseline.Entry(path, code, "", "") for code in ("CP001", "CP003", "CP005")]
+    kept = baseline.apply(result, entries, cfg)
     assert sorted(f.code for f in kept.findings) == ["CP001", "CP005"]
-    assert kept.stale_baseline == 2
+    assert (kept.baselined, kept.stale_baseline) == (0, 3)
+    # The real CP001 entry is still accepted beside them.
+    real = baseline.entries(result, project)
+    assert [e.code for e in real] == ["CP001"]
+    kept = baseline.apply(result, [*real, *entries], cfg)
+    assert [f.code for f in kept.findings] == ["CP005"]

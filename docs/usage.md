@@ -32,7 +32,7 @@ cleanporter [--fix] [--diff] [--python PATH] [--exempt MODULE] [--root PATH]
 | `--select CODES` | Report and count only these finding codes: comma-separated (`CP001,CP003`), case-insensitive, repeatable. Replaces `select` from the configuration. It filters the *report*: `--fix` still rewrites exactly what it would have, and the exit code follows only the selected codes — `--select CP002` exits `1` on a `CP002` only under `--strict`, as without it. `CP004` is still printed only under `--show-skipped`. An unknown code is a usage error (exit `2`). |
 | `--ignore CODES` | Neither report nor count these finding codes; the same syntax as `--select`, applied after it, and replacing `ignore` from the configuration. Reporting only, too: `--fix --ignore CP001` still rewrites every `CP001` it can — it just does not list the ones it cannot. Likewise `--ignore CP005` hides unused suppressions without changing what any comment suppresses. |
 | `--baseline FILE` | Leave out the findings recorded in a baseline file (written by `--write-baseline`), so only *new* findings are reported and counted. Replaces `baseline` from the configuration; a relative path is read from the current directory. A recorded finding that is gone is counted in a note on stderr, never a failure. A missing or malformed file, or no `pyproject.toml` above the first path, exits `2`. Check runs only: with `--fix` or `--diff` it is a usage error, and a configured `baseline` is skipped under them with a note. See [Adopting cleanporter on an existing codebase](#adopting-cleanporter-on-an-existing-codebase). |
-| `--write-baseline FILE` | Record the current findings in `FILE` instead of reporting them, and exit `0`. Records what the run reports — after `--select` and `--ignore`, before any baseline, and never `CP004` — so the file always holds the complete current state. Check mode only: combined with `--fix`, `--diff` or `--format` it is a usage error (exit `2`). Needs a `pyproject.toml` above the first path. A run in which a file could not be read or parsed writes nothing and exits `2`. |
+| `--write-baseline FILE` | Record the current findings in `FILE` instead of reporting them, and exit `0`. Records what the run reports — after `--select` and `--ignore`, before any baseline, and never `CP004` or `CP005` — so the file always holds the complete current state. Check mode only: combined with `--fix`, `--diff` or `--format` it is a usage error (exit `2`). Needs a `pyproject.toml` above the first path. A run in which a file could not be read or parsed writes nothing and exits `2`. |
 | `--format FORMAT` | How to report: `text` (the default, the human report described on this page), `json`, `sarif` (SARIF 2.1.0, for code scanning) or `github` (GitHub Actions workflow commands, which annotate the lines in a pull request). A structured format puts one document on stdout and nothing else; see [Machine-readable output](#machine-readable-output). `--diff` cannot be combined with `sarif` or `github`, not even alongside `--fix`. |
 | `--version` | Print the version and exit. |
 | `--help` | Print usage and exit. |
@@ -74,8 +74,8 @@ modules are passed over before they are classified. Under that scope the probe
 still classifies a third-party name that one of your own modules re-exports,
 because an import of it from your package depends on what it is.
 
-Nothing at all is reported for a module-level import in a package's
-`__init__.py`: it is the package's public surface, never reported or
+Nothing at all is reported for a module-level import of an object in a
+package's `__init__.py`: it is the package's public surface, never reported or
 rewritten (see [A package's `__init__.py`](configuration.md#a-packages-__init__py)).
 An import inside a function there is checked like any other.
 
@@ -113,7 +113,9 @@ An import inside a function there is checked like any other.
 
     A suppression that suppresses nothing is stale: left in place, it would
     silently swallow the next finding of its code to land on its line. So it
-    fails the run like a `CP001`, whatever the other flags. A *malformed*
+    fails the run like a `CP001` unless `--select` / `--ignore` leaves it out,
+    and a [baseline](#adopting-cleanporter-on-an-existing-codebase) never
+    accepts it: remove the comment. A *malformed*
     suppression — `# cleanporter: ignore` with no codes, an unknown code, or
     `CP004`/`CP005` in the brackets — is not a finding but a warning naming
     its file and line, and it suppresses nothing.
@@ -481,10 +483,11 @@ from the same module in one file are two entries, and a third is reported.
 With no line in the key, which of the three is reported is not tracked — it
 may be one of the old imports rather than the one just added.
 
-An unused suppression (`CP005`) is about a comment, not an import, so its
-`parent` and `name` are empty and its entry is just its file and code: the
-count of unused suppressions per file is what is accepted, whatever lines
-they are on. It is a class of its own, matching neither `CP001` nor `CP003`.
+An unused suppression (`CP005`) is never recorded and never accepted: it is
+always reported. It is about a comment, not an import, so an entry could say
+no more than "some stale comment in this file" — and accepting that would
+leave the comment in place to swallow the next finding of its code on its
+line, which is what `CP005` is there to prevent. Delete the comment instead.
 
 **Stale entries.** A recorded finding that no longer occurs — fixed, changed
 or deleted — is *stale*. Fixing something must never fail a run, so the run
@@ -506,10 +509,10 @@ such a run; the `cleanporter` hook applies the baseline.
 **The file** is JSON — `{"version": 1, "findings": [...]}`, each entry with
 `path`, `code`, `parent` and `name` — sorted and indented, so it diffs well in
 review, and written atomically. `CP004` is never recorded (it never fails a
-run), a run under `--select` or `--ignore` records only what it reports, and
-a run in which a file could not be read or parsed writes nothing and exits
-`2`. `--write-baseline` prints no report, so it cannot be combined with
-`--format`.
+run), nor is `CP005` (above); a run under `--select` or `--ignore` records
+only what it reports, and a run in which a file could not be read or parsed
+writes nothing and exits `2`. `--write-baseline` prints no report, so it
+cannot be combined with `--format`.
 
 To silence a *kind* of finding rather than a list of them, use `--select` /
 `--ignore` (or `select` / `ignore` in the configuration): `--ignore CP002`,
@@ -552,6 +555,11 @@ uv run pytest                      # re-run the suite -- see the warning below
 ```text
 checked 41 file(s), fixed 6: 3 violation(s), 2 not rewritten, 1 unresolved, 0 skipped by config
 ```
+
+Two counts are added to the end only when they apply: `, N unused
+suppression(s)` when there is any `CP005`, and `, N in the baseline` when a
+baseline was applied (check runs only), so a check might end
+`… 0 skipped by config, 1 unused suppression(s), 12 in the baseline`.
 
 Anything still reported after the sweep is a `CP001` the fixer never planned
 (a semicolon-joined or one-line import), a `CP003` it deliberately declined,

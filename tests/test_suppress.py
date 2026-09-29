@@ -322,6 +322,33 @@ def test_a_suppression_on_a_package_surface_import_is_unused(
     assert init.read_text(encoding="utf-8") == source
 
 
+def test_fix_rewrites_a_local_import_beside_a_surface_suppression(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The unused module-level comment neither blocks the fix nor moves.
+
+    Its import is the package's surface, so it is never a candidate; the
+    function-local `CP001` is, and is rewritten with no `CP003` decline.
+    """
+    init = project / "src" / "demo" / "__init__.py"
+    surface = "from demo.helpers import THING  # cleanporter: ignore[CP001]\n"
+    init.write_text(
+        surface + "\n\ndef later():\n    from demo.helpers import go\n\n    return go()\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    rc, out, err = _run(capsys, "--fix", "src")
+    assert rc == 1  # the CP005 remains
+    assert init.read_text(encoding="utf-8") == (
+        surface + "\n\ndef later():\n    from demo import helpers\n\n    return helpers.go()\n"
+    )
+    assert "CP003" not in out + err
+    reported = [line for line in (out + err).splitlines() if "__init__.py:" in line]
+    assert len(reported) == 1
+    assert ":1:" in reported[0]
+    assert "CP005" in reported[0]
+
+
 @pytest.mark.parametrize(
     ("comment", "why"),
     [

@@ -37,10 +37,14 @@ reported. Which of the three is reported is not tracked -- with no line in
 the key, the entries cannot say which import is the new one -- so the one
 reported may be an old import rather than the one just added.
 
-A `CP005` (an unused inline suppression) is about a comment, not an import:
-its ``parent`` and ``name`` are empty, so its identity is its file and code,
-and a file's unused suppressions are a multiset of identical entries -- the
-count is accepted, not the lines. It matches only another `CP005`.
+**`CP005` is never baselined.** An unused inline suppression is about a
+comment, not an import: it has no ``parent`` or ``name``, so an entry could
+only say "some stale comment in this file". Accepting that would let the
+stale comment sit there and swallow the next finding of its code to land on
+its line -- exactly what `CP005` exists to prevent. So `entries` never
+records one and `apply` never takes one out: a `CP005` is always reported,
+and deleting the comment is the fix. An entry with code ``CP005`` in a
+hand-edited file matches nothing, and is stale like any other.
 
 **Staleness.** An entry that matches no finding -- the import was fixed,
 changed or deleted -- is *stale*. It is not a failure: fixing a finding must
@@ -54,7 +58,7 @@ stale, merely not looked at.
 entry with ``path``, ``code``, ``parent`` and ``name``, sorted, indented,
 ``\n``-terminated and UTF-8 -- deterministic, so the file diffs well in
 version control. `CP004` is never written: it never fails a run, so there is
-nothing to accept.
+nothing to accept. Nor is `CP005` (above).
 """
 
 from __future__ import annotations
@@ -78,6 +82,10 @@ _FIELDS = ("path", "code", "parent", "name")
 
 #: Codes that match each other's entries: see the module docstring.
 _SAME_CLASS = {"CP003": "CP001"}
+
+
+#: Statuses a baseline never records nor accepts: see the module docstring.
+_NEVER_RECORDED = frozenset({model.Status.SKIPPED_BY_CONFIG, model.Status.UNUSED_SUPPRESSION})
 
 
 class BaselineError(ValueError):
@@ -137,14 +145,12 @@ def _require_check(result: engine.RunResult) -> None:
 
 
 def entries(result: engine.RunResult, root: pathlib.Path) -> list[Entry]:
-    """What a baseline of *result* records: every finding but `CP004`, sorted.
+    """What a baseline of *result* records: every finding but `CP004` and `CP005`, sorted.
 
     Raises `ValueError` unless *result* is from a `engine.Mode.CHECK` run.
     """
     _require_check(result)
-    return sorted(
-        entry(f, root) for f in result.findings if f.status is not model.Status.SKIPPED_BY_CONFIG
-    )
+    return sorted(entry(f, root) for f in result.findings if f.status not in _NEVER_RECORDED)
 
 
 def dumps(baseline: list[Entry]) -> str:
@@ -230,10 +236,11 @@ def apply(
     """*result* without the findings *baseline* accepts, counting what it took and left.
 
     Pure: nothing is read or printed. Each entry takes out at most one
-    finding (a multiset). The returned result's `engine.RunResult.baselined`
-    and `engine.RunResult.stale_baseline` say how many were taken out and
-    how many entries that could have matched did not; when any are stale, a
-    note saying so is added to its `engine.RunResult.notes`. Raises
+    finding (a multiset), and a `CP005` is never taken out. The returned
+    result's `engine.RunResult.baselined` and `engine.RunResult.stale_baseline`
+    say how many were taken out and how many entries that could have matched
+    did not; when any are stale, a note saying so is added to its
+    `engine.RunResult.notes`. Raises
     `ValueError` unless *result* is from a `engine.Mode.CHECK` run.
     """
     _require_check(result)
@@ -241,7 +248,7 @@ def apply(
     kept: list[model.Finding] = []
     for finding in result.findings:
         key = _match_key(entry(finding, config.root))
-        if remaining[key] > 0:
+        if finding.status is not model.Status.UNUSED_SUPPRESSION and remaining[key] > 0:
             remaining[key] -= 1
         else:
             kept.append(finding)
