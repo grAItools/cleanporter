@@ -302,25 +302,46 @@ A release is a version tag; `.github/workflows/release.yml` does the rest.
    `pyproject.toml` to `X.Y.Z`, rename `CHANGELOG.md`'s `## [Unreleased]`
    section to `## [X.Y.Z] - YYYY-MM-DD` (and start a fresh, empty
    `## [Unreleased]` above it), and update the link definitions at the bottom
-   of the file. `tests/test_release.py` fails the PR if the new version has no
-   changelog section.
-2. **Merge it**, then tag the merge commit and push the tag:
+   of the file.
+2. **In the same PR, add the release notes** as
+   `.github/release-notes/X.Y.Z.md`: the GitHub release's text, curated and
+   short, not the CHANGELOG section. Aim for 10–25 lines — a one-line
+   summary, a short *Breaking* list if there is one, *Highlights* of one line
+   each — ending with a link to the full CHANGELOG section. Over 4000
+   characters is refused. `tests/test_release.py` fails the PR if the new
+   version has no notes file, or an empty or oversized one.
+3. **Merge it**, then release it, in either of two ways:
+   - **push a tag** on the merge commit:
 
-   ```bash
-   git switch main && git pull
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
-   ```
+     ```bash
+     git switch main && git pull
+     git tag vX.Y.Z
+     git push origin vX.Y.Z
+     ```
+
+   - or, without the right to push tags, **run the workflow from the Actions
+     tab**: *Actions → Release → Run workflow*, on `main`, with the tag
+     (`vX.Y.Z`) as input. If the tag does not exist, the release is of the
+     commit of `main` the run is for, and the workflow creates the tag on it
+     when it makes the GitHub release. If the tag exists, it is released
+     exactly as pushing it would have — which is also how a tag pushed before
+     the workflow existed (`v0.4.0`) gets its release.
+
+A dispatch from any branch but `main` is refused, and so is a tag that
+already has a GitHub release: nothing is overwritten. Either way the release
+machinery — `.github/scripts/release.py` and the notes file — is read from
+the workflow's own revision (the tag on a push, `main` on a dispatch), while
+what is tested and built is the tag's tree, with its own lockfile.
 
 The workflow then, in one `build` job that stops at the first failure:
 
-- checks that the tagged commit is on `main` — tag the merge, not a branch;
+- checks that the released commit is on `main` — tag the merge, not a branch;
 - checks that the tag is exactly `v` + `project.version`, a normalised public
   version (`0.5.0`, `0.5.0rc1`; not `0.5.0-rc1` or `0.5.0+local`) — the wheel
   takes its version from `pyproject.toml`, not from the tag;
-- takes the release notes from the `## [X.Y.Z] - DATE` section of
-  `CHANGELOG.md`, and stops if there is none;
-- runs the test suite on the tagged commit;
+- takes the release notes from `.github/release-notes/X.Y.Z.md`, and stops if
+  it is missing, empty or over the cap;
+- runs the test suite on the released commit;
 - checks that nothing was left in the checkout (the sdist packs every file
   there that git does not ignore; the notes are written outside it);
 - builds the sdist and wheel once, with `uv build --no-sources`.
@@ -329,7 +350,8 @@ Only after all of that succeeds do two jobs start, side by side and
 independent of each other:
 
 - the GitHub release for the tag, with those notes and both files attached
-  (marked a pre-release for an `rc`, `a`, `b` or `dev` version);
+  (marked a pre-release for an `rc`, `a`, `b` or `dev` version), creating
+  the tag first when a dispatch named a new one;
 - the upload of the same files to PyPI — **only if PyPI publishing is
   enabled**.
 
@@ -339,7 +361,8 @@ re-run the failed job from the Actions tab.
 
 The tag and notes checks are `.github/scripts/release.py`, which you can run
 before tagging:
-`uv run --no-project python .github/scripts/release.py check-tag vX.Y.Z`.
+`uv run --no-project python .github/scripts/release.py check-tag vX.Y.Z` and
+`uv run --no-project python .github/scripts/release.py notes X.Y.Z`.
 
 ### Enabling PyPI publishing
 
