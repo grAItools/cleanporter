@@ -764,6 +764,26 @@ def analyze_record(
                 unit.name,
                 decision.status,
                 decision.detail,
+                _module_import(rec, unit) if decision.rewrite else "",
             )
         )
     return findings
+
+
+def _module_import(rec: FileRecord, unit: ImportUnit) -> str:
+    """The replacement a `CP001`'s message advises, when it is not the plain absolute one.
+
+    Spelled by the function the fixer spells its new statement with
+    (`_imports.module_import_spelling`, then `_imports.render_import`), so
+    the advice for ``from .readers import read`` is ``from . import
+    readers`` -- the statement ``--fix`` would write, give or take the alias
+    it may allocate -- and never the absolute name the inferred root
+    implies. An absolute import's advice is its own parent, already in the
+    message, so it gets none and its text is unchanged.
+    """
+    if unit.parent is None or _imports.relative_level(unit.node) == 0:
+        return ""
+    spelling = _imports.module_import_spelling(
+        unit.node, unit.parent, declared_root=rec.declared_root
+    )
+    return _imports.render_import(spelling) if spelling is not None else ""

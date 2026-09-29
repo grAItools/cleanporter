@@ -53,6 +53,13 @@ class Finding:
     name: str
     status: Status
     detail: str = ""
+    #: For a `CP001` from a *relative* import, the module import that would
+    #: replace it, spelled as the fixer spells its statement
+    #: (``from . import readers``); empty otherwise. `message` quotes it as
+    #: advice, because ``parent`` is the absolute name the import root
+    #: implies -- ``io.readers`` for a namespace directory -- which is how
+    #: the resolver classifies the import, not how anyone should write it.
+    module_import: str = ""
 
     @property
     def code(self) -> str:
@@ -71,9 +78,10 @@ class Finding:
             # `--fix` writes, which can reuse an existing binding of the
             # module or pick a free alias.
             token = self.parent.rsplit(".", 1)[-1]
+            module = f" ('{self.module_import}')" if self.module_import else ""
             return (
                 f"imports object '{self.name}' from module '{self.parent}'; "
-                f"import the module and use '{token}.{self.name}'"
+                f"import the module{module} and use '{token}.{self.name}'"
             )
         if self.status is Status.UNRESOLVED and self.name == "?":
             # A whole file that could not be read, decoded, parsed or written.

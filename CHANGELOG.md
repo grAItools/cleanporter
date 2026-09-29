@@ -131,6 +131,17 @@ Breaking under the pre-1.0 policy above:
   (34 of 297 files still with a `CP001`), `--diff` went from 200 s to 112 s,
   against 33 s for a check; over libcst as released, where 261 of the 297 files
   have one, it is unchanged at about 232 s.
+- **A relative import's `CP001` advises a relative replacement.** The message
+  used to say only "import the module and use 'readers.read'", leaving the
+  reader to derive the import from the absolute module it names — which, for a
+  relative import, is only as good as the inferred import root and can even
+  look like the standard library (`io.readers` for a PEP 420 namespace
+  directory). It now quotes the replacement spelled by the fixer's own
+  function: `import the module ('from . import readers') and use
+  'readers.read'`. It is advice, not the exact statement: `--fix` may reuse an
+  existing binding or allocate an alias. Absolute imports' messages are
+  unchanged. `model.Finding` gains a trailing `module_import` field (empty
+  unless the finding is such a `CP001`), which the message quotes.
 
 ### Fixed
 

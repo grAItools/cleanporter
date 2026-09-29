@@ -1024,3 +1024,85 @@ def test_a_declared_root_never_spells_a_stdlib_name(tmp_path):
         assert {f.code for f in found} == {"CP003"}, mode
         assert all("standard library's 'io'" in f.detail for f in found)
     assert {p: p.read_bytes() for p in pkg.rglob("*.py")} == before
+
+
+# -- a CP001's advice spells the import as the fixer would ---------------------
+def _messages(root: pathlib.Path, files: dict[str, str], **table: object) -> dict[str, str]:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
+    result = engine.run([root], config._parse_table(dict(table), root))
+    return {
+        f"{f.path.relative_to(root).as_posix()}:{f.name}": f.message
+        for f in result.findings
+        if f.code == "CP001"
+    }
+
+
+def test_a_relative_cp001_advises_the_relative_replacement(tmp_path):
+    messages = _messages(
+        tmp_path,
+        {
+            "app/__init__.py": "",
+            "app/helpers.py": "THING = 1\n",
+            "app/user.py": "from .helpers import THING\n\nx = THING\n",
+            "app/sub/__init__.py": "VALUE = 2\n",
+            "app/sub/tool.py": "def dump():\n    return 3\n",
+            "app/sub/deep.py": (
+                "from . import VALUE\nfrom ..sub.tool import dump\n\nx = VALUE, dump()\n"
+            ),
+            "app/plain.py": "from app.helpers import THING\n\nx = THING\n",
+        },
+    )
+    assert messages == {
+        "app/user.py:THING": (
+            "imports object 'THING' from module 'app.helpers'; "
+            "import the module ('from . import helpers') and use 'helpers.THING'"
+        ),
+        "app/sub/deep.py:VALUE": (
+            "imports object 'VALUE' from module 'app.sub'; "
+            "import the module ('from .. import sub') and use 'sub.VALUE'"
+        ),
+        "app/sub/deep.py:dump": (
+            "imports object 'dump' from module 'app.sub.tool'; "
+            "import the module ('from ..sub import tool') and use 'tool.dump'"
+        ),
+        # An absolute import's text is what it always was.
+        "app/plain.py:THING": (
+            "imports object 'THING' from module 'app.helpers'; "
+            "import the module and use 'helpers.THING'"
+        ),
+    }
+
+
+def test_the_advice_never_names_the_module_the_inferred_root_implies(tmp_path):
+    """`analytics/` is a namespace directory inferred as a root.
+
+    The absolute name is then `io.readers`, and `from io import readers` is
+    the standard library: the advice stays relative, as the fixer's would.
+    """
+    messages = _messages(
+        tmp_path,
+        {
+            "analytics/io/__init__.py": "from .readers import read\n\nx = read\n",
+            "analytics/io/readers.py": "def read():\n    return 1\n",
+        },
+    )
+    assert messages == {
+        "analytics/io/__init__.py:read": (
+            "imports object 'read' from module 'io.readers'; "
+            "import the module ('from . import readers') and use 'readers.read'"
+        )
+    }
+
+
+def test_a_declared_root_advises_the_absolute_package_import(tmp_path):
+    pkg = _top_level_tree(tmp_path)
+    result = engine.run([pkg], config._parse_table({"source_roots": ["."]}, tmp_path))
+    deep = [f.message for f in result.findings if f.path.name == "deep.py"]
+    assert deep == [
+        (
+            "imports object 'helper' from module 'toppkg'; "
+            "import the module ('import toppkg') and use 'toppkg.helper'"
+        )
+    ]

@@ -45,7 +45,7 @@ Each reported line has the shape
 
 | Code | Status | Meaning |
 | --- | --- | --- |
-| `CP001` | `VIOLATION` | An object is imported by name. This is the rule being enforced, and it is what blocks CI. |
+| `CP001` | `VIOLATION` | An object is imported by name. This is the rule being enforced, and it is what blocks CI. The message names the module to import instead; for a relative import it also quotes the replacement statement, spelled relative as `--fix` would write it (`import the module ('from . import helpers') and use 'helpers.Widget'`), since the absolute module name it reports is only as good as the inferred import root. |
 | `CP002` | `UNRESOLVED` | cleanporter could not determine whether the symbol is a module: a third-party parent it cannot import, a name that is both a submodule and a binding in its package's `__init__`, or a first-party name that is neither on disk nor bound in its parent to something cleanporter can follow (a generated `_version.py`, a `_pb2`, an out-of-tree extension, another portion of a namespace package). The message says which evidence was missing. Never rewritten. Only counts toward the failure exit code under `--strict` / `treat_unresolved_as_error`. The same code also marks a whole file that was not processed (`file not processed: …`, when it could not be read, decoded, parsed or written); those lines are not findings and always make the exit code `2`, with or without `--strict` — see [Exit codes](#exit-codes). |
 | `CP003` | `SKIPPED` | Structurally a violation, deliberately not rewritten. Under `--fix` or `--diff` it is the "declined, because…" note explaining why a file, or one import in it, was left alone; a few reasons that belong to the import itself are reported in every mode (below). |
 | `CP004` | `SKIPPED_BY_CONFIG` | Matched a [`skip` rule](configuration.md#skip-rules), so it was never analysed. Counted in the summary, printed only under `--show-skipped`, and **never** part of the exit code — you asked for it. |
@@ -275,7 +275,7 @@ A finding:
 | `level` | `error`, `warning` or `note`, as above. |
 | `path`, `line`, `column` | Where the `from` import starts; `column` is 0-based. |
 | `parent`, `name` | The `from PARENT import NAME` it is about. |
-| `message` | The text report's message, after the code. For `CP001` it suggests the conventional spelling (`helpers.Widget`); `--fix` may write a different one — reusing an existing binding of the module, or a free alias when the name is taken — so read the patch, not the message, for what is written. |
+| `message` | The text report's message, after the code. For `CP001` it suggests the conventional spelling (`helpers.Widget`) and, for a relative import, the replacement import spelled as `--fix` spells it (`from . import helpers`); `--fix` may write a different one — reusing an existing binding of the module, or a free alias when the name is taken — so read the patch, not the message, for what is written. |
 | `detail` | The bare reason, for `CP002`–`CP004` (empty for `CP001`). |
 
 ```bash
