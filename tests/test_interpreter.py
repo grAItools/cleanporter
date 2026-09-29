@@ -6,21 +6,42 @@ import os
 import pathlib
 import subprocess
 import sys
+import types
 import venv
 
 import pytest
 
 from cleanporter import _interpreter, cli, config, engine, model
 
-posix_only = pytest.mark.skipif(os.name != "posix", reason="uses bin/python venv layouts")
+posix_only = pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
 
 
 def _fake_venv(venv_dir: pathlib.Path) -> pathlib.Path:
-    """A venv layout whose interpreter is a symlink to this one, so it really runs."""
-    python = venv_dir / "bin" / "python"
+    """A venv layout, in this platform's shape, that detection accepts.
+
+    On POSIX its interpreter is a symlink to this one, so it really runs. On
+    Windows, where any file is "executable" and a symlink needs a privilege,
+    it is an empty file: nothing that uses this helper runs it.
+    """
+    python = _interpreter._venv_python(venv_dir)
     python.parent.mkdir(parents=True)
-    python.symlink_to(sys.executable)
+    if os.name == "posix":
+        python.symlink_to(sys.executable)
+    else:
+        python.write_bytes(b"")
     return python
+
+
+def test_the_venv_interpreter_is_where_each_platform_puts_it(monkeypatch):
+    """``bin/python``, or ``Scripts\\python.exe`` on Windows, checked on either."""
+    venv = pathlib.Path("env")
+    for name, expected in (
+        ("posix", venv / "bin" / "python"),
+        ("nt", venv / "Scripts" / "python.exe"),
+    ):
+        # Only the module's view of `os` changes, never the real `os.name`.
+        monkeypatch.setattr(_interpreter, "os", types.SimpleNamespace(name=name))
+        assert _interpreter._venv_python(venv) == expected
 
 
 def _stub_venv(venv_dir: pathlib.Path) -> pathlib.Path:
@@ -42,7 +63,10 @@ def test_this_interpreter_is_its_own_executable_path():
 def test_a_symlink_to_this_interpreter_is_not_this_interpreter(tmp_path):
     """A venv's ``bin/python`` is exactly such a symlink, to another environment."""
     link = tmp_path / "python"
-    link.symlink_to(sys.executable)
+    try:
+        link.symlink_to(sys.executable)
+    except OSError:  # pragma: no cover - e.g. Windows without the privilege
+        pytest.skip("cannot create a symlink here")
     assert _interpreter.is_this_interpreter(str(link)) is False
 
 
@@ -63,7 +87,6 @@ def test_a_bare_command_name_is_not_this_interpreter(monkeypatch):
 # -- choose: named and sentinel values -----------------------------------------
 
 
-@posix_only
 def test_a_named_interpreter_is_used_as_written_even_if_missing(tmp_path):
     """A request, not a search: its failure is the probe's to report."""
     _fake_venv(tmp_path / ".venv")
@@ -72,7 +95,6 @@ def test_a_named_interpreter_is_used_as_written_even_if_missing(tmp_path):
     assert _interpreter.choose("python3", tmp_path) == _interpreter.Choice("python3")
 
 
-@posix_only
 def test_self_is_cleanporters_own_interpreter_even_with_a_venv_present(tmp_path, monkeypatch):
     _fake_venv(tmp_path / ".venv")
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / ".venv"))
@@ -87,7 +109,6 @@ def test_detection_finding_nothing_keeps_cleanporters_own(tmp_path, setting):
 # -- choose: detection, in order ------------------------------------------------
 
 
-@posix_only
 @pytest.mark.parametrize("setting", [None, "auto"])
 def test_the_projects_dot_venv_is_detected(tmp_path, setting):
     python = _fake_venv(tmp_path / ".venv")
@@ -99,7 +120,6 @@ def test_the_projects_dot_venv_is_detected(tmp_path, setting):
     assert "python = 'self'" in choice.note
 
 
-@posix_only
 def test_the_projects_dot_venv_wins_over_an_active_virtual_env(tmp_path, monkeypatch):
     """uv's order: a stale activated shell does not pick the project's packages."""
     project = _fake_venv(tmp_path / ".venv")
@@ -111,7 +131,6 @@ def test_the_projects_dot_venv_wins_over_an_active_virtual_env(tmp_path, monkeyp
     assert f"not the active $VIRTUAL_ENV {tmp_path / 'elsewhere'}" in choice.note
 
 
-@posix_only
 def test_virtual_env_is_used_when_the_project_has_no_environment(tmp_path, monkeypatch):
     active = _fake_venv(tmp_path / "elsewhere")
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "elsewhere"))
@@ -122,7 +141,6 @@ def test_virtual_env_is_used_when_the_project_has_no_environment(tmp_path, monke
     assert "not the active" not in choice.note
 
 
-@posix_only
 def test_an_active_virtual_env_that_is_the_projects_is_not_called_passed_over(
     tmp_path, monkeypatch
 ):
@@ -133,7 +151,6 @@ def test_an_active_virtual_env_that_is_the_projects_is_not_called_passed_over(
     assert "not the active" not in note
 
 
-@posix_only
 def test_uv_project_environment_is_read_against_the_root(tmp_path, monkeypatch):
     _fake_venv(tmp_path / ".venv")
     uv_env = _fake_venv(tmp_path / "envs" / "proj")
@@ -145,7 +162,6 @@ def test_uv_project_environment_is_read_against_the_root(tmp_path, monkeypatch):
     assert "$UV_PROJECT_ENVIRONMENT" in choice.note
 
 
-@posix_only
 def test_uv_project_environment_wins_over_an_active_virtual_env(tmp_path, monkeypatch):
     _fake_venv(tmp_path / "active")
     uv_env = _fake_venv(tmp_path / "uv")
@@ -154,7 +170,9 @@ def test_uv_project_environment_wins_over_an_active_virtual_env(tmp_path, monkey
     assert _interpreter.choose(None, tmp_path).python == str(uv_env)
 
 
-@posix_only
+@pytest.mark.skipif(
+    os.name != "posix", reason="POSIX execute bits: on Windows every file is executable"
+)
 def test_candidates_that_cannot_run_are_passed_over_silently(tmp_path, monkeypatch):
     """A stale variable, a broken link and a non-executable file are all misses."""
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "gone"))
@@ -177,7 +195,6 @@ def test_empty_variables_are_no_candidates(tmp_path, monkeypatch):
     assert _interpreter.choose(None, tmp_path) == _interpreter.Choice(None)
 
 
-@posix_only
 def test_detecting_cleanporters_own_interpreter_stays_in_process(tmp_path, monkeypatch):
     """The ``uv run cleanporter`` case: the path is ``sys.executable``, nothing to say."""
     python = _fake_venv(tmp_path / ".venv")
@@ -193,7 +210,6 @@ def _running_in(monkeypatch: pytest.MonkeyPatch, venv_dir: pathlib.Path) -> None
     monkeypatch.setattr(sys, "base_prefix", "/usr")
 
 
-@posix_only
 def test_a_detected_venv_that_is_sys_prefix_stays_in_process(tmp_path, monkeypatch):
     """``bin/python3`` running, ``bin/python`` detected: one environment, no note."""
     _fake_venv(tmp_path / ".venv")
@@ -201,7 +217,6 @@ def test_a_detected_venv_that_is_sys_prefix_stays_in_process(tmp_path, monkeypat
     assert _interpreter.choose(None, tmp_path) == _interpreter.Choice(None)
 
 
-@posix_only
 def test_the_prefix_rule_is_not_applied_to_a_named_interpreter(tmp_path, monkeypatch):
     """A name keeps the strict path-identity rule: a miss costs a subprocess, nothing else."""
     python = _fake_venv(tmp_path / ".venv")
@@ -209,7 +224,6 @@ def test_the_prefix_rule_is_not_applied_to_a_named_interpreter(tmp_path, monkeyp
     assert _interpreter.choose(str(python), tmp_path).python == str(python)
 
 
-@posix_only
 def test_the_prefix_rule_needs_a_virtual_environment(tmp_path, monkeypatch):
     """Outside a venv ``sys.prefix`` is a base install, which a detected venv never is."""
     python = _fake_venv(tmp_path / ".venv")
@@ -232,7 +246,6 @@ def _workspace(tmp_path: pathlib.Path, table: str) -> pathlib.Path:
     return member
 
 
-@posix_only
 @pytest.mark.parametrize("members", ['["packages/*"]', '["packages/app"]', '["**"]'])
 def test_a_workspace_members_environment_is_the_workspace_roots(tmp_path, members):
     member = _workspace(tmp_path, f"members = {members}")
@@ -243,7 +256,6 @@ def test_a_workspace_members_environment_is_the_workspace_roots(tmp_path, member
     assert f"the .venv in the uv workspace root {tmp_path}" in choice.note
 
 
-@posix_only
 def test_uv_project_environment_is_read_against_the_workspace_root(tmp_path, monkeypatch):
     member = _workspace(tmp_path, 'members = ["packages/*"]')
     python = _fake_venv(tmp_path / "envs" / "ws")
@@ -251,7 +263,6 @@ def test_uv_project_environment_is_read_against_the_workspace_root(tmp_path, mon
     assert _interpreter.choose(None, member).python == str(python)
 
 
-@posix_only
 def test_a_members_own_dot_venv_is_not_tried(tmp_path):
     """uv keeps a member's environment at the workspace root, and so looks only there."""
     member = _workspace(tmp_path, 'members = ["packages/*"]')
@@ -260,7 +271,6 @@ def test_a_members_own_dot_venv_is_not_tried(tmp_path):
     assert _interpreter.choose(None, member).python == str(python)
 
 
-@posix_only
 def test_a_member_without_a_workspace_environment_falls_back_to_virtual_env(tmp_path, monkeypatch):
     member = _workspace(tmp_path, 'members = ["packages/*"]')
     _fake_venv(member / ".venv")
@@ -269,7 +279,6 @@ def test_a_member_without_a_workspace_environment_falls_back_to_virtual_env(tmp_
     assert _interpreter.choose(None, member).python == str(active)
 
 
-@posix_only
 def test_a_project_inside_a_member_is_its_own_environment_root(tmp_path):
     """uv's counterexample: the first ancestor pyproject.toml (a plain project) decides.
 
@@ -288,7 +297,6 @@ def test_a_project_inside_a_member_is_its_own_environment_root(tmp_path):
     assert "the .venv in the project root" in choice.note
 
 
-@posix_only
 def test_a_project_that_declares_a_workspace_is_its_own_root(tmp_path):
     _workspace(tmp_path, 'members = ["packages/*"]')
     python = _fake_venv(tmp_path / ".venv")
@@ -298,7 +306,6 @@ def test_a_project_that_declares_a_workspace_is_its_own_root(tmp_path):
     assert "the .venv in the project root" in choice.note
 
 
-@posix_only
 def test_a_nested_workspace_root_is_its_own_root(tmp_path):
     """uv: "Found workspace root: .../pkgs/inner", even though ``pkgs/*`` matches it."""
     (tmp_path / "pyproject.toml").write_text(
@@ -318,7 +325,6 @@ def test_a_nested_workspace_root_is_its_own_root(tmp_path):
     assert "the .venv in the project root" in choice.note
 
 
-@posix_only
 @pytest.mark.parametrize("members", ['["./packages/*"]', '["packages/*/"]', '["packages//app"]'])
 def test_workspace_globs_are_matched_literally(tmp_path, members):
     """uv reports these "not included"; a lenient normalisation would pick the workspace."""
@@ -327,7 +333,6 @@ def test_workspace_globs_are_matched_literally(tmp_path, members):
     assert _interpreter.choose(None, member) == _interpreter.Choice(None)
 
 
-@posix_only
 def test_a_relative_root_is_made_absolute(tmp_path, monkeypatch):
     member = _workspace(tmp_path, 'members = ["packages/*"]')
     python = _fake_venv(tmp_path / ".venv")
@@ -335,7 +340,6 @@ def test_a_relative_root_is_made_absolute(tmp_path, monkeypatch):
     assert _interpreter.choose(None, pathlib.Path()).python == str(python)
 
 
-@posix_only
 @pytest.mark.parametrize(
     "table",
     [
@@ -351,7 +355,6 @@ def test_a_project_that_is_not_a_member_does_not_use_the_workspace(tmp_path, tab
     assert _interpreter.choose(None, member) == _interpreter.Choice(None)
 
 
-@posix_only
 def test_the_workspace_walk_stops_at_the_nearest_declaring_ancestor(tmp_path):
     """A non-matching inner workspace hides an outer one that would match."""
     outer_member = _workspace(tmp_path, 'members = ["**"]')
@@ -365,7 +368,6 @@ def test_the_workspace_walk_stops_at_the_nearest_declaring_ancestor(tmp_path):
     assert _interpreter.choose(None, project) == _interpreter.Choice(None)
 
 
-@posix_only
 def test_an_unreadable_first_ancestor_pyproject_means_no_workspace(tmp_path):
     """It still ends the walk: a workspace further up is not consulted."""
     _workspace(tmp_path, 'members = ["**"]')
@@ -374,7 +376,6 @@ def test_an_unreadable_first_ancestor_pyproject_means_no_workspace(tmp_path):
     assert _interpreter.choose(None, tmp_path / "packages" / "app") == _interpreter.Choice(None)
 
 
-@posix_only
 def test_an_in_process_pick_still_names_a_different_active_virtual_env(tmp_path, monkeypatch):
     """The shell's environment is never ignored silently."""
     _fake_venv(tmp_path / ".venv")
@@ -388,11 +389,13 @@ def test_an_in_process_pick_still_names_a_different_active_virtual_env(tmp_path,
     assert "in process" in choice.note
 
 
-@posix_only
 def test_uv_run_is_silent(tmp_path, monkeypatch):
     """``uv run cleanporter``: $VIRTUAL_ENV is the project's own venv, spelled any way."""
     _fake_venv(tmp_path / ".venv")
-    (tmp_path / "link").symlink_to(tmp_path / ".venv")
+    try:
+        (tmp_path / "link").symlink_to(tmp_path / ".venv", target_is_directory=True)
+    except OSError:  # pragma: no cover - e.g. Windows without the privilege
+        pytest.skip("cannot create a symlink here")
     _running_in(monkeypatch, tmp_path / ".venv")
     monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "link"))
     assert _interpreter.choose(None, tmp_path) == _interpreter.Choice(None)

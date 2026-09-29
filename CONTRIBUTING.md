@@ -269,7 +269,15 @@ Before you open a PR:
 CI runs `uv run prek run --all-files` once — the same hooks you run locally,
 which is the point: CI does not re-spell the commands, so it cannot drift from
 `.pre-commit-config.yaml` in its options. The test suite runs separately on
-Python 3.12, 3.13 and 3.14.
+Python 3.12, 3.13 and 3.14 on Linux, and on 3.12 and 3.14 on Windows. A test
+that cannot mean anything on Windows (a `/bin/sh` stub interpreter, POSIX mode
+bits, a non-UTF-8 filename) is skipped there with a `skipif` giving the reason;
+one that only *spells* something the POSIX way — a report path with `/`, a
+`bin/python` venv layout — is written portably instead
+(`pathlib.PurePath("src", "mod.py")`, `_interpreter._venv_python`). Symlinks
+are made in a `try` that skips on `OSError`, since creating one on Windows
+needs a privilege. The checkout is LF on every platform (`.gitattributes`), so
+a test that needs CRLF writes the bytes itself.
 
 zuban used to have a CI job of its own that reported disagreements as a warning
 annotation and always exited 0. It is gone: zuban is a hook like the others

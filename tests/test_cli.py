@@ -304,13 +304,14 @@ def test_the_diff_can_be_applied_with_git_apply(project, monkeypatch, capsys):
     cli.main(["--diff", "src"])
     patch = capsys.readouterr().out
     proc = subprocess.run(
-        ["git", "apply", "--check", "-"],
-        input=patch,
-        text=True,
+        ["git", "-c", "core.autocrlf=false", "apply", "--check", "-"],
+        # Bytes, not text=True: a text pipe on Windows would turn every \n of
+        # the patch into \r\n, and the patch would no longer match the file.
+        input=patch.encode("utf-8"),
         capture_output=True,
         cwd=project,
     )
-    assert proc.returncode == 0, proc.stderr
+    assert proc.returncode == 0, proc.stderr.decode(errors="replace")
 
 
 def test_warnings_go_to_stderr_when_a_patch_is_on_stdout(project, monkeypatch, capsys):
@@ -1382,7 +1383,9 @@ _CRLF_FIXED = b'import os\r\nfrom os import path\r\n\r\nprint(path.join("a", "b"
 def _apply_patch(patch: bytes, cwd: pathlib.Path) -> None:
     """Apply *patch* in *cwd* with ``git apply``, else ``patch``, else skip."""
     if shutil.which("git"):
-        command = ["git", "apply", "--whitespace=nowarn", "-"]
+        # autocrlf off: Git for Windows turns it on system-wide, and then
+        # converts the line endings these tests are about.
+        command = ["git", "-c", "core.autocrlf=false", "apply", "--whitespace=nowarn", "-"]
     elif shutil.which("patch"):  # pragma: no cover - depends on the machine
         command = ["patch", "-p1", "--binary"]
     else:  # pragma: no cover - depends on the machine
@@ -1596,6 +1599,9 @@ def test_a_temporary_file_that_cannot_be_removed_is_named(project, monkeypatch, 
     assert f"{target.parent}{os.sep}.consumer.py." in err
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Windows has no mode bits beyond read-only to preserve"
+)
 def test_fix_preserves_permission_bits(project, capsys):
     target = project / "src" / "demo" / "consumer.py"
     target.chmod(0o751)
@@ -1609,7 +1615,10 @@ def test_fix_writes_through_a_symlink(project, tmp_path, capsys):
     real = tmp_path / "elsewhere.py"
     real.write_text("from os.path import join\nprint(join('a'))\n", encoding="utf-8")
     link = project / "src" / "demo" / "linked.py"
-    link.symlink_to(real)
+    try:
+        link.symlink_to(real)
+    except OSError:  # pragma: no cover - e.g. Windows without the privilege
+        pytest.skip("cannot create a symlink here")
     assert cli.main(["--fix", str(project / "src")]) == 0
     assert link.is_symlink()
     assert real.read_text(encoding="utf-8") == "from os import path\nprint(path.join('a'))\n"

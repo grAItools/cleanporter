@@ -22,6 +22,11 @@ CONSUMER = (
     "total = THING + other\n"
 )
 
+#: The text and JSON reports spell a path as the run found it, so natively:
+#: with backslashes on Windows. SARIF and GitHub always use ``/``.
+CONSUMER_PATH = str(pathlib.PurePath("src", "demo", "consumer.py"))
+BROKEN_PATH = str(pathlib.PurePath("src", "demo", "broken.py"))
+
 
 @pytest.fixture
 def project(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.Path:
@@ -87,7 +92,7 @@ def test_json_is_one_document_with_every_field(project, capsys):
             "code": "CP001",
             "status": "violation",
             "level": "error",
-            "path": "src/demo/consumer.py",
+            "path": CONSUMER_PATH,
             "line": 1,
             "column": 0,
             "parent": "demo.helpers",
@@ -100,7 +105,7 @@ def test_json_is_one_document_with_every_field(project, capsys):
             "code": "CP002",
             "status": "unresolved",
             "level": "warning",
-            "path": "src/demo/consumer.py",
+            "path": CONSUMER_PATH,
             "line": 2,
             "column": 0,
             "parent": "definitely_missing_pkg_xyz",
@@ -164,11 +169,11 @@ def test_json_lists_a_file_it_could_not_process_as_an_error(project, capsys):
     assert rc == document["exit_code"] == 2
     [error] = document["errors"]
     assert list(error) == ["code", "path", "line", "column", "message"]
-    assert error["path"] == "src/demo/broken.py"
+    assert error["path"] == BROKEN_PATH
     assert error["message"].startswith("file not processed: ")
-    assert all(f["path"] != "src/demo/broken.py" for f in document["findings"])
+    assert all(f["path"] != BROKEN_PATH for f in document["findings"])
     # In the document, and echoed to stderr for whoever reads the log.
-    assert "src/demo/broken.py:1:0: CP002 file not processed: " in err
+    assert f"{BROKEN_PATH}:1:0: CP002 file not processed: " in err
 
 
 def test_json_diff_carries_the_patch_in_the_document(project, capsys):
@@ -178,7 +183,7 @@ def test_json_diff_carries_the_patch_in_the_document(project, capsys):
     assert rc == document["exit_code"] == 1  # the CP001 is still there: nothing was written
     assert document["mode"] == "diff"
     [patch] = document["patches"]
-    assert patch["path"] == "src/demo/consumer.py"
+    assert patch["path"] == CONSUMER_PATH
     assert patch["written"] is False
     assert patch["write_error"] is None
     assert patch["diff_encoding"] == "utf-8"
@@ -195,7 +200,7 @@ def test_json_fix_writes_and_reports_what_remains(project, capsys):
     assert patch["written"] is True
     assert document["counts"]["changed"] == 1
     assert [f["code"] for f in document["findings"]] == ["CP002"]
-    assert "fixed: src/demo/consumer.py" in err
+    assert f"fixed: {CONSUMER_PATH}" in err
     assert "re-run your tests" in err
 
 
@@ -303,12 +308,31 @@ def test_sarif_srcroot_of_the_filesystem_root_is_file_slash_slash_slash():
     assert document["runs"][0]["originalUriBaseIds"]["SRCROOT"]["uri"] == "file:///"
 
 
-#: A filename that is not valid UTF-8, as Python hands it over: a lone surrogate.
-_UNDECODABLE = pathlib.Path(os.fsdecode(b"bad\xff.py"))
+def test_a_windows_drive_keeps_its_colon_in_a_file_uri():
+    """``file:///C:/...``, as `pathlib` and every SARIF viewer spell it, not ``C%3A``."""
+    path = pathlib.PureWindowsPath(r"C:\Users\me\odd name.py")
+    assert _report._file_uri(path) == path.as_uri() == "file:///C:/Users/me/odd%20name.py"
+    assert _report._file_uri(pathlib.PureWindowsPath("D:/"), directory=True) == "file:///D:/"
+    # Only the drive's colon: one in a POSIX name is still encoded, as `as_uri` does.
+    posix = pathlib.PurePosixPath("/srv/a:b.py")
+    assert _report._file_uri(posix) == posix.as_uri() == "file:///srv/a%3Ab.py"
 
 
+#: Windows filenames are UTF-16, so there is no undecodable one to carry, and
+#: its `os.fsdecode` (strict UTF-8) refuses the byte these tests are built on.
+posix_filenames = pytest.mark.skipif(
+    sys.platform == "win32", reason="non-UTF-8 byte filenames exist only on POSIX"
+)
+
+
+def _undecodable() -> pathlib.Path:
+    """A filename that is not valid UTF-8, as Python hands it over: a lone surrogate."""
+    return pathlib.Path(os.fsdecode(b"bad\xff.py"))
+
+
+@posix_filenames
 def test_every_format_survives_a_surrogate_escaped_path(tmp_path):
-    finding = model.Finding(_UNDECODABLE, 1, 0, "p", "n", model.Status.SKIPPED, "why")
+    finding = model.Finding(_undecodable(), 1, 0, "p", "n", model.Status.SKIPPED, "why")
     outside = model.Finding(
         pathlib.Path(os.fsdecode(b"/elsewhere/\xff.py")), 1, 0, "p", "n", model.Status.SKIPPED
     )
@@ -329,9 +353,10 @@ def test_every_format_survives_a_surrogate_escaped_path(tmp_path):
     assert outputs["github"].startswith("::error file=bad\\xff.py,")
 
 
+@posix_filenames
 def test_sarif_on_a_real_undecodable_filename(project, capsys):
     try:
-        (project / "src" / "demo" / _UNDECODABLE).write_text("x = (\n", encoding="utf-8")
+        (project / "src" / "demo" / _undecodable()).write_text("x = (\n", encoding="utf-8")
     except (OSError, UnicodeEncodeError):
         pytest.skip("this filesystem does not take a non-UTF-8 filename")
     rc, document, _ = _sarif_run(capsys, "src")
@@ -458,7 +483,7 @@ def test_fix_writes_without_printing_a_patch_for_a_format_without_patches(projec
     rc, out, err = _run(capsys, "--format", fmt, "--fix", "src")
     assert rc == 0
     assert "+from demo import helpers" not in out + err
-    assert "fixed: src/demo/consumer.py" in err
+    assert f"fixed: {CONSUMER_PATH}" in err
     assert (
         (project / "src" / "demo" / "consumer.py")
         .read_text(encoding="utf-8")
@@ -490,7 +515,7 @@ def test_text_is_the_default_and_unchanged(project, capsys):
     _, default, _ = _run(capsys, "src")
     _, text, _ = _run(capsys, "--format", "text", "src")
     assert default == text
-    assert default.splitlines()[0].startswith("src/demo/consumer.py:1:0: CP001 ")
+    assert default.splitlines()[0].startswith(f"{CONSUMER_PATH}:1:0: CP001 ")
 
 
 def test_a_package_writing_to_fd_1_on_import_cannot_corrupt_the_document(
@@ -565,7 +590,12 @@ def test_a_run_with_no_sys_stdout_exits_cleanly(project, monkeypatch):
     assert cli.main(["--python", "self", "src"]) == 0  # the probe ran in process
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell to close fd 2")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    # Git for Windows puts an MSYS `sh` on PATH, but its `2>&-` does not
+    # become a Windows process with no standard error handle.
+    reason="closes POSIX descriptor 2 through a POSIX shell",
+)
 def test_a_run_with_descriptor_2_closed_exits_cleanly(project):
     """``2>&-``: descriptor 2 cannot be the target of the probe's redirection."""
     (project / "src" / "demo" / "consumer.py").write_text(
@@ -595,4 +625,4 @@ def test_whole_project_json_reports_only_the_listed_files(project, capsys):
     assert document["counts"]["files_checked"] == 1
     rc, document = _json_run(capsys, "--whole-project", "src/demo/consumer.py")
     assert rc == document["exit_code"] == 1
-    assert {f["path"] for f in document["findings"]} == {"src/demo/consumer.py"}
+    assert {f["path"] for f in document["findings"]} == {CONSUMER_PATH}

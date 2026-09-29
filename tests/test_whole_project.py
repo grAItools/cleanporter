@@ -162,7 +162,7 @@ def test_cli_reports_listed_files_relative_to_the_cwd(tree: pathlib.Path, monkey
     monkeypatch.chdir(tree)
     rc = cli.main(["--whole-project", "demo/__init__.py"])
     out = capsys.readouterr().out
-    assert out.startswith("demo/__init__.py:1:0: CP003 ")
+    assert out.startswith(f"{pathlib.PurePath('demo', '__init__.py')}:1:0: CP003 ")
     assert "checked 1 file(s)" in out
     assert rc == 1
 
@@ -208,7 +208,8 @@ def test_a_stray_file_under_no_pyproject_is_refused(
     rc = cli.main(["--whole-project", "--fix", *(listed if stray_first else listed[::-1])])
     err = capsys.readouterr().err
     assert rc == 2
-    assert "scripts/util.py:1:0: CP002 file not processed: outside the project root py" in err
+    util_path = pathlib.PurePath("scripts", "util.py")
+    assert f"{util_path}:1:0: CP002 file not processed: outside the project root py" in err
     assert (scripts / "util.py").read_text(encoding="utf-8") == util
 
 
@@ -254,7 +255,8 @@ def test_a_symlink_out_of_the_root_inside_a_listed_directory_is_refused(
     rc = cli.main(["--whole-project", "--fix", "--python", "self", "pkg"])
     err = capsys.readouterr().err
     assert rc == 2
-    assert "pkg/util.py:1:0: CP002 file not processed: outside the project root" in err
+    util_path = pathlib.PurePath("pkg", "util.py")
+    assert f"{util_path}:1:0: CP002 file not processed: outside the project root" in err
     assert "through a symlink" in err
     assert "warning" not in err  # a refused run says nothing else
     assert (tmp_path / "ext" / "util.py").read_text(encoding="utf-8") == ext
@@ -293,8 +295,10 @@ def test_files_from_two_projects_are_refused(
     assert rc == 2
     assert "judges one project per run" in err
     # Named relative to the cwd, with the listed paths that belong to each.
-    assert "examples/ex/pyproject.toml (examples/ex/a.py)" in err
-    assert " pyproject.toml (demo/__init__.py)" in err
+    nested_toml = pathlib.PurePath("examples", "ex", "pyproject.toml")
+    nested_a = pathlib.PurePath("examples", "ex", "a.py")
+    assert f"{nested_toml} ({nested_a})" in err
+    assert f" pyproject.toml ({pathlib.PurePath('demo', '__init__.py')})" in err
     assert "files:" in err
     assert (tree / "demo" / "__init__.py").read_text(encoding="utf-8") == _REEXPORT
 

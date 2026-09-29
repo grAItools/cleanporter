@@ -105,6 +105,13 @@ Breaking under the pre-1.0 policy above:
   against 33 s for a check; over libcst as released, where 261 of the 297 files
   have one, it is unchanged at about 232 s.
 
+### Fixed
+
+- **SARIF `file:` URIs on Windows keep the drive's colon.** A file outside the
+  working directory, and `SRCROOT` itself, were written `file:///C%3A/...`;
+  they are now `file:///C:/...`, as `pathlib` spells them and SARIF viewers
+  resolve them. The test suite now also runs on Windows in CI.
+
 ## [0.4.0] - 2026-09-28
 
 Breaking under the pre-1.0 policy above:

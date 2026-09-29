@@ -262,18 +262,21 @@ def _uri(posix: str) -> str:
     return urllib.parse.quote(os.fsencode(posix), safe="/")
 
 
-def _file_uri(path: pathlib.Path, *, directory: bool = False) -> str:
+def _file_uri(path: pathlib.PurePath, *, directory: bool = False) -> str:
     """The ``file:`` URI of the absolute *path*; with a trailing ``/`` for a *directory*.
 
     Built by hand rather than by `pathlib.Path.as_uri`, which fails on a
-    surrogate-escaped name.
+    surrogate-escaped name. A Windows drive letter keeps its colon, as
+    ``as_uri`` keeps it (``file:///C:/x``): percent-encoded, ``C%3A`` is a
+    spelling SARIF viewers do not map back to the file.
     """
     posix = path.as_posix()
-    if not posix.startswith("/"):  # a Windows drive: C:/x -> /C:/x
-        posix = f"/{posix}"
+    drive = ""
+    if path.drive.endswith(":"):  # C:/x -> /C: + /x
+        drive, posix = f"/{path.drive}", posix[len(path.drive) :]
     if directory and not posix.endswith("/"):
         posix = f"{posix}/"
-    return f"file://{_uri(posix)}"
+    return f"file://{drive}{_uri(posix)}"
 
 
 def _sarif_location(path: pathlib.Path, line: int, column: int, cwd: pathlib.Path) -> Json:

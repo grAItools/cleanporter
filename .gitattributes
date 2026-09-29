@@ -1,0 +1,6 @@
+# LF in every checkout, Windows included. The test fixtures and the files the
+# suite reads back are compared byte for byte, and cleanporter's fixer
+# preserves a file's line endings -- so a checkout that turned them into CRLF
+# (Git for Windows' default `core.autocrlf=true`) would test different inputs
+# from the ones committed. The tests that need CRLF write it themselves.
+* text=auto eol=lf
