@@ -398,3 +398,86 @@ and only suppresses the findings.
 
 Use `exclude` for code that is not yours to fix: vendored trees, generated
 files, build output.
+
+## Inline suppressions
+
+A `skip` rule is for a *kind* of code. For one import you have looked at and
+decided to keep, put the decision on the import itself:
+
+```python
+from gt4py.next import broadcast  # cleanporter: ignore[CP001]
+from vendored_thing import handle  # cleanporter: ignore[CP001, CP002]
+```
+
+The finding the comment names is reported as `CP004` instead — counted in the
+summary, printed only under `--show-skipped`, never part of the exit code —
+with a message saying which code was suppressed and by the comment on which
+line. `--fix` keeps a suppressed import exactly as it keeps one a `skip` rule
+covers: the name is not rewritten, nor is any use of it, and the rest of the
+file is fixed as usual. Nothing reaches the resolver, so a suppression never
+turns an unresolved name into an answer.
+
+### Syntax
+
+`# cleanporter: ignore[CODE, ...]`, where each code is `CP001`, `CP002` or
+`CP003`. The comment is split at each `#`, so it can share a line with other
+tools' directives (`# noqa: F401  # cleanporter: ignore[CP001]`). Everything
+else is **malformed**, and a malformed comment suppresses nothing; cleanporter
+prints a warning naming its file and line and goes on:
+
+- `# cleanporter: ignore` with no codes — a bare ignore would silence findings
+  nobody has seen yet, which is why the rule exists;
+- a code that is not one of the three: an unknown one (`CP009`), `CP004`
+  (already your own decision) or `CP005` (the report that a suppression did
+  nothing);
+- anything else after `cleanporter:` (`# cleanporter: noqa`,
+  `# cleanporter: ignore CP001`).
+
+A never-read import is `CP001` to a plain check and `CP003` under `--fix` (the
+fixer knows nothing reads it). It is suppressed by `ignore[CP001]`, the code a
+check reports, so one comment works in both modes.
+
+### Which imports a comment covers
+
+Attachment is by **physical line**. A suppression comment covers
+
+1. every name imported by a `from` statement that **starts** on its line, and
+2. every imported name **written** on its line.
+
+```python
+from pkg.shapes import Circle, Square  # cleanporter: ignore[CP001]  <- both names
+
+from pkg.shapes import (  # cleanporter: ignore[CP001]              <- every name below
+    Circle,
+    Square,
+)
+
+from pkg.shapes import (
+    Circle,  # cleanporter: ignore[CP001]                            <- Circle only
+    Square,
+)
+```
+
+A comment on a line of its own, on the closing `)`, or on anything but a
+`from` import covers nothing. It applies only to findings about an imported
+name: a file-level `CP003` (the fixer declining a whole file) cannot be
+suppressed.
+
+!!! warning "A per-name comment inside a statement `--fix` rewrites"
+
+    `--fix` never discards a comment. A comment *inside* a parenthesised
+    import cannot survive a rewrite of that statement, so when another name
+    in it is a `CP001`, the file is declined
+    ([`CP003`](safety.md#a-comment-inside-the-import-statement)). Give the
+    suppressed name a statement of its own.
+
+### Unused suppressions: `CP005`
+
+A code in a suppression that matches no finding on the names the comment
+covers is reported as `CP005`, at the comment, and it makes the run exit `1`
+like a `CP001`: a stale suppression would otherwise silently swallow the next
+finding of that code to land on its line. It appears when the import was fixed
+or became compliant, and when the comment is on a line that covers nothing.
+A comment on a line a `skip` rule covers, or covering a name a rule pins, is
+never reported unused: the rule has already taken whatever it could have
+matched.

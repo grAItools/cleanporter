@@ -260,6 +260,10 @@ is sound — the pinned name is still bound, and the guard still fires for every
 name that is still being rewritten — but the file changes more, not less.
 `exempt_names` has always worked this way; a rule is not special.
 
+An [inline suppression](configuration.md#inline-suppressions) takes the same
+path: the finding it names becomes a `CP004`, and the name joins the same
+*keep* list, so everything above holds for it too.
+
 One more edge, enforced rather than documented away: a rule can match code the
 fixer is about to *write*. `{ decorator = 'gtx\.field_operator' }` matches
 nothing in a file that imports the decorator bare and writes `@field_operator`,

@@ -26,7 +26,7 @@ cleanporter [--fix] [--diff] [--python PATH] [--exempt MODULE] [--root PATH]
 | `--root PATH` | An additional first-party import root — a directory that is on `sys.path` for the code being analysed. Repeatable. Adds to whatever the analysed paths themselves imply, and to `source_roots`. A relative value is resolved against the directory holding your `pyproject.toml`, not against the current directory. |
 | `--strict` | Also fail (exit `1`) on imports that could not be classified (`CP002`). Equivalent to turning on `treat_unresolved_as_error` for this run. |
 | `--whole-project` | Read the whole project for evidence, but fix, report and count only the files under `paths`. The project is the directory of the `pyproject.toml` the listed paths sit under — looked up from each path as written, not from a symlink's target — and every listed path that has one must share it: paths from two projects (a nested `examples/` project beside its parent, say) exit `2`, as does a list where none has one. Every listed path, and every file a listed directory expands to, must also lie inside that directory, both as written and with symlinks resolved: one that does not (a script under no `pyproject.toml`, a symlink into another project) is reported as `file not processed`, and the whole run exits `2` with nothing analysed or written. The project is walked as `cleanporter .` run from that directory would walk it. A listed file the walk leaves out — matched by `exclude`, or in a skipped directory — is not reported. A file elsewhere in the tree that cannot be parsed is a warning, not exit `2`. Built for [pre-commit](pre-commit.md), which passes only the changed files: see there for what a run over those alone gets wrong. |
-| `--show-skipped` | List the imports a [`skip` rule](configuration.md#skip-rules) took out of the run (`CP004`). They are counted in the summary either way; this prints them, which is how you check what a pattern actually swallowed. |
+| `--show-skipped` | List the imports a [`skip` rule](configuration.md#skip-rules) or an [inline suppression](configuration.md#inline-suppressions) took out of the run (`CP004`). They are counted in the summary either way; this prints them, which is how you check what a pattern actually swallowed. |
 | `--format FORMAT` | How to report: `text` (the default, the human report described on this page), `json`, `sarif` (SARIF 2.1.0, for code scanning) or `github` (GitHub Actions workflow commands, which annotate the lines in a pull request). A structured format puts one document on stdout and nothing else; see [Machine-readable output](#machine-readable-output). `--diff` cannot be combined with `sarif` or `github`, not even alongside `--fix`. |
 | `--version` | Print the version and exit. |
 | `--help` | Print usage and exit. |
@@ -48,7 +48,8 @@ Each reported line has the shape
 | `CP001` | `VIOLATION` | An object is imported by name. This is the rule being enforced, and it is what blocks CI. The message names the module to import instead; for a relative import it also quotes the replacement statement, spelled relative as `--fix` would write it (`import the module ('from . import helpers') and use 'helpers.Widget'`), since the absolute module name it reports is only as good as the inferred import root. |
 | `CP002` | `UNRESOLVED` | cleanporter could not determine whether the symbol is a module: a third-party parent it cannot import, a name that is both a submodule and a binding in its package's `__init__`, or a first-party name that is neither on disk nor bound in its parent to something cleanporter can follow (a generated `_version.py`, a `_pb2`, an out-of-tree extension, another portion of a namespace package). The message says which evidence was missing. Never rewritten. Only counts toward the failure exit code under `--strict` / `treat_unresolved_as_error`. The same code also marks a whole file that was not processed (`file not processed: …`, when it could not be read, decoded, parsed or written); those lines are not findings and always make the exit code `2`, with or without `--strict` — see [Exit codes](#exit-codes). |
 | `CP003` | `SKIPPED` | Structurally a violation, deliberately not rewritten. Under `--fix` or `--diff` it is the "declined, because…" note explaining why a file, or one import in it, was left alone; a few reasons that belong to the import itself are reported in every mode (below). |
-| `CP004` | `SKIPPED_BY_CONFIG` | Matched a [`skip` rule](configuration.md#skip-rules), so it was never analysed. Counted in the summary, printed only under `--show-skipped`, and **never** part of the exit code — you asked for it. |
+| `CP004` | `SKIPPED_BY_CONFIG` | Matched a [`skip` rule](configuration.md#skip-rules), so it was never analysed — or an [inline suppression](configuration.md#inline-suppressions) (`# cleanporter: ignore[CP001]`) named the code of its finding, and the message says which code and which comment. Counted in the summary, printed only under `--show-skipped`, and **never** part of the exit code — you asked for it. |
+| `CP005` | `UNUSED_SUPPRESSION` | An [inline suppression](configuration.md#inline-suppressions) names a code that no finding on the imports it covers has — the finding was fixed, or the comment is on the wrong line. Reported at the comment. Like `CP001`, it makes the run exit `1`, and it cannot itself be suppressed: remove the comment, or the code, instead. |
 
 Examples of each:
 
@@ -57,6 +58,7 @@ src/mypkg/consumer.py:3:0: CP001 imports object 'Widget' from module 'mypkg.help
 src/mypkg/gpu.py:5:0: CP002 could not determine whether 'cupy.ndarray' is a module: 'cupy' is not importable in the target interpreter
 src/mypkg/api.py:11:0: CP003 file not rewritten: local 'Widget' is rebound in the same scope
 src/mypkg/stencils.py:4:0: CP004 'broadcast' from 'gt4py.next' skipped by configuration: skip rule #1 (decorator='field_operator'): DSL bodies are re-parsed by the frontend
+src/mypkg/compat.py:7:31: CP005 unused suppression: no CP002 finding on the imports this comment covers; remove the comment
 ```
 
 `CP002` findings are only produced for imports cleanporter actually looked at:
@@ -94,6 +96,15 @@ because an import of it from your package depends on what it is.
     spelling `--fix` is about to *write* rather than the one in your source,
     the file is declined with a `CP003`, which does count. See
     [when a rewrite would create its own skipped region](safety.md#what-a-skip-rule-can-and-cannot-do).
+
+!!! note "`CP005` findings count toward the failure exit code"
+
+    A suppression that suppresses nothing is stale: left in place, it would
+    silently swallow the next finding of its code to land on its line. So it
+    fails the run like a `CP001`, whatever the other flags. A *malformed*
+    suppression — `# cleanporter: ignore` with no codes, an unknown code, or
+    `CP004`/`CP005` in the brackets — is not a finding but a warning naming
+    its file and line, and it suppresses nothing.
 
 ## Exit codes
 
@@ -224,7 +235,7 @@ format:
   stderr and **no document** on stdout; check the exit code before parsing.
 - **The findings are the ones the text report prints.** `CP004` is listed only
   under `--show-skipped`, though it is counted either way.
-- **Severity is the effect on the exit code:** `CP001` and `CP003` are errors;
+- **Severity is the effect on the exit code:** `CP001`, `CP003` and `CP005` are errors;
   `CP002` is a warning, or an error under `--strict`; `CP004` is a note.
 - **Paths**: JSON spells them as the text report does (as found from the path
   you gave). SARIF and GitHub use them relative to the current directory, with
@@ -263,7 +274,7 @@ One JSON object, keys in this order:
 | `mode` | `"check"`, `"diff"` or `"fix"`. |
 | `strict` | Whether `--strict` / `treat_unresolved_as_error` was in effect. |
 | `exit_code` | The process's exit code. |
-| `counts` | `files_checked`, `changed` (files rewritten, or diffed under `--diff`), `violations` (`CP001`), `not_rewritten` (`CP003`), `unresolved` (`CP002`), `skipped_by_config` (`CP004`) and `errors` (files not processed) — the summary line's numbers. |
+| `counts` | `files_checked`, `changed` (files rewritten, or diffed under `--diff`), `violations` (`CP001`), `not_rewritten` (`CP003`), `unresolved` (`CP002`), `skipped_by_config` (`CP004`), `unused_suppressions` (`CP005`) and `errors` (files not processed) — the summary line's numbers. |
 | `findings` | One object per finding (below), sorted by path, line, column and code. |
 | `errors` | One object per file that could not be read, decoded, parsed or written: `code` (`CP002`), `path`, `line`, `column`, `message`. Not findings; any of them makes the exit code `2`. |
 | `warnings`, `notes` | Lists of strings, without the `cleanporter: warning:` / `note:` prefix. |
@@ -273,13 +284,13 @@ A finding:
 
 | Key | Value |
 | --- | --- |
-| `code` | `CP001`–`CP004`. |
-| `status` | `violation`, `unresolved`, `skipped` or `skipped-by-config`. |
+| `code` | `CP001`–`CP005`. |
+| `status` | `violation`, `unresolved`, `skipped`, `skipped-by-config` or `unused-suppression`. |
 | `level` | `error`, `warning` or `note`, as above. |
-| `path`, `line`, `column` | Where the `from` import starts; `column` is 0-based. |
-| `parent`, `name` | The `from PARENT import NAME` it is about. |
+| `path`, `line`, `column` | Where the `from` import starts — for `CP005`, where the comment starts; `column` is 0-based. |
+| `parent`, `name` | The `from PARENT import NAME` it is about; empty strings for `CP005`, which is about a comment. |
 | `message` | The text report's message, after the code. For `CP001` it suggests the conventional spelling (`helpers.Widget`) and, for a relative import, the replacement import spelled as `--fix` spells it (`from . import helpers`); `--fix` may write a different one — reusing an existing binding of the module, or a free alias when the name is taken — so read the patch, not the message, for what is written. |
-| `detail` | The bare reason, for `CP002`–`CP004` (empty for `CP001`). |
+| `detail` | The bare reason, for `CP002`–`CP005` (empty for `CP001`). |
 
 ```bash
 $ cleanporter --format json src/ 2>/dev/null | jq '.findings[0]'
@@ -301,7 +312,7 @@ $ cleanporter --format json src/ 2>/dev/null | jq '.findings[0]'
 
 A [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
 log with one run. `tool.driver` names cleanporter and its version and carries
-one rule per finding code, `CP001`–`CP004`, each with a short and full
+one rule per finding code, `CP001`–`CP005`, each with a short and full
 description, `help` (text and Markdown) and a `helpUri` pointing at
 [the finding codes table](#finding-codes) above. Each result has its
 `ruleId`, `level`, message, and a location whose URI is relative to the
@@ -343,7 +354,7 @@ per finding, which GitHub Actions turns into an annotation on the line:
 ::warning file=src/mypkg/gpu.py,line=5,col=1,title=CP002::could not determine whether 'cupy.ndarray' is a module: 'cupy' is not importable in the target interpreter
 ```
 
-`error`, `warning` or `notice` follows the severity above; an unprocessable
+`error`, `warning` or `notice` follows the severity above (so a `CP005` is an `::error`); an unprocessable
 file is an `::error` titled `CP002`. In the message `%`, CR and LF are escaped
 as `%25`, `%0D` and `%0A`; in the `file=` and `title=` properties `:` and `,`
 are escaped as well (`%3A`, `%2C`), as GitHub's parser requires. As with
@@ -436,8 +447,9 @@ checked 41 file(s), fixed 6: 3 violation(s), 2 not rewritten, 1 unresolved, 0 sk
 Anything still reported after the sweep is a `CP001` the fixer never planned
 (a semicolon-joined or one-line import), a `CP003` it deliberately declined,
 or a `CP002` it could not classify. All three need a human. A `CP004` does
-not — that one is your own `skip` rule, and it is only printed if you ask for
-it with `--show-skipped`.
+not — that one is your own `skip` rule or inline suppression, and it is only
+printed if you ask for it with `--show-skipped`. A `CP005` is a suppression
+the sweep made stale: the finding it silenced is gone, so delete the comment.
 
 !!! warning "Re-run your tests"
 

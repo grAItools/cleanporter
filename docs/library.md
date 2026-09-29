@@ -70,18 +70,18 @@ It returns a `RunResult`:
 | --- | --- |
 | `mode` | The `Mode` the run was made in. |
 | `files_checked` | How many files were read and parsed. |
-| `findings` | Every finding (`CP001`–`CP004`), sorted by path, line, column and code — the order the command prints them in. |
+| `findings` | Every finding (`CP001`–`CP005`), sorted by path, line, column and code — the order the command prints them in. |
 | `patches` | One `FilePatch` per rewritten file: its `path`, the unified `diff` as bytes (in the file's own encoding and line endings, ready for `git apply`), the `before` and `after` contents, whether it was `written`, and — under `Mode.FIX`, when the write failed — the `write_error` finding. A failed write keeps its patch, which still applies to the untouched file. |
 | `errors` | A finding per file that could not be read, decoded, parsed or written: the files that failed to load, then the failed writes. The command exits `2` when there are any. |
 | `write_errors` | Just the failed writes among `errors` (the `write_error` of each such patch), so they can be told apart from files that never loaded. |
 | `warnings` | Every warning, in the order it arose. |
 | `notes` | Every note, in the order it arose — today, which interpreter was detected for the probe and why (see [Side effects](#side-effects)). Informational: never counted by `exit_code`. |
-| `violations`, `skipped`, `unresolved`, `skipped_by_config` | Counts of `CP001`, `CP003`, `CP002` and `CP004` in `findings`. |
+| `violations`, `skipped`, `unresolved`, `skipped_by_config`, `unused_suppressions` | Counts of `CP001`, `CP003`, `CP002`, `CP004` and `CP005` in `findings`. |
 | `changed`, `wrote` | How many files were rewritten (written under `Mode.FIX`, diffed under `Mode.DIFF`; a failed write does not count), and whether anything was written to disk. |
 
 `exit_code(strict=False)` is the command's exit code for the result, and the
 command uses exactly this: `2` when `errors` is non-empty, else `1` when
-`violations + skipped` (plus `unresolved` when `strict`, as under `--strict`
+`violations + skipped + unused_suppressions` (plus `unresolved` when `strict`, as under `--strict`
 or `treat_unresolved_as_error`) is non-zero, else `0`. `CP004` never counts.
 
 A literal dotted path in another analysed file or in `pyproject.toml` keeps
