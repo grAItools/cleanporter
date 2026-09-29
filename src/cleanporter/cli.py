@@ -5,8 +5,9 @@ the flags that override it -- hands the run to `engine.run`, prints what it
 reports, and picks the exit code: 0 clean, 1 anything left to fix, 2
 operational error. The run itself -- fixing, writing, re-analysing, counting --
 is the engine's; this module is only its shell. A file the fixer declined
-(`CP003`) counts toward the 1 -- it is a declined violation, not a note --
-while `CP002` counts only under ``--strict``.
+(`CP003`) and an unused suppression (`CP005`) count toward the 1 -- a declined
+violation and a stale comment, not notes -- while `CP002` counts only under
+``--strict``.
 
 Stream contract: when a patch goes to stdout (``--diff``, ``--fix``) stdout
 carries *only* the patch, so ``cleanporter --diff src/ | git apply`` works, and
@@ -156,7 +157,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--show-skipped",
         action="store_true",
-        help="list the imports a [tool.cleanporter.skip] rule took out (CP004)",
+        help="list the imports a [tool.cleanporter.skip] rule or an inline suppression "
+        "took out (CP004)",
     )
     parser.add_argument(
         "--select",
@@ -495,6 +497,12 @@ def _summary(result: engine.RunResult) -> str:
         + (f", fixed {result.changed}" if result.mode is engine.Mode.FIX else "")
         + f": {result.violations} violation(s), {result.skipped} not rewritten, "
         f"{result.unresolved} unresolved, {result.skipped_by_config} skipped by config"
+        # Only when there are any: a count nobody using suppressions needs.
+        + (
+            f", {result.unused_suppressions} unused suppression(s)"
+            if result.unused_suppressions
+            else ""
+        )
         + (f", {result.baselined} in the baseline" if result.baselined is not None else "")
     )
 

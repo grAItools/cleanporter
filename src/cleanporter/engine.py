@@ -176,6 +176,11 @@ class RunResult:
         return self._count(model.Status.SKIPPED_BY_CONFIG)
 
     @property
+    def unused_suppressions(self) -> int:
+        """`CP005` findings."""
+        return self._count(model.Status.UNUSED_SUPPRESSION)
+
+    @property
     def write_errors(self) -> tuple[model.Finding, ...]:
         """The `errors` that are failed writes under `Mode.FIX`, in file order."""
         return tuple(p.write_error for p in self.patches if p.write_error is not None)
@@ -194,15 +199,20 @@ class RunResult:
         """The command's exit code for this result: 0 clean, 1 violations, 2 errors.
 
         2 when any file could not be read, decoded, parsed or written;
-        otherwise 1 when a `CP001` or `CP003` remains -- or, under *strict*
-        (``--strict`` / ``treat_unresolved_as_error``), a `CP002`; otherwise 0.
-        `CP004` never counts. Only `findings` count, so a code
+        otherwise 1 when a `CP001`, `CP003` or `CP005` remains -- or, under
+        *strict* (``--strict`` / ``treat_unresolved_as_error``), a `CP002`;
+        otherwise 0. `CP004` never counts. Only `findings` count, so a code
         `Config.select` / `Config.ignore` left out, or a finding a baseline
         took out, cannot fail the run.
         """
         if self.errors:
             return 2
-        hard = self.violations + self.skipped + (self.unresolved if strict else 0)
+        hard = (
+            self.violations
+            + self.skipped
+            + self.unused_suppressions
+            + (self.unresolved if strict else 0)
+        )
         return 1 if hard else 0
 
 
@@ -218,8 +228,8 @@ class Listener:
     building the project (a missing path, nesting roots, a failed warm-up
     probe), then the files that could not be loaded (sorted by path; in a
     whole-project run an unlisted one is a warning instead), then per file a
-    write error or a patch, then warnings from probes the warm-up did not
-    foresee.
+    write error or a patch followed by its malformed suppression comments,
+    then warnings from probes the warm-up did not foresee.
     """
 
     def warning(self, message: str) -> None:
@@ -432,6 +442,9 @@ def _process(
             current = _apply(current, outcome.source, write=mode is Mode.FIX, tally=tally)
         tally.findings.extend(outcome.blockers)
         unread = outcome.unread
+    # Read off the file as it now is, so the lines match its findings'.
+    for warning in current.suppressions.warnings(current.path):
+        tally.warn(warning)
     tally.findings.extend(analyze.analyze_record(current, project.resolver, project.config, unread))
 
 

@@ -74,13 +74,14 @@ block hides (`_type_checking`), which string literals are annotations or
 from __future__ import annotations
 
 import ast
+import collections
 import dataclasses
 import re
 
 import libcst as cst
 from libcst import metadata
 
-from cleanporter import analyze, config, model, resolver, skip
+from cleanporter import analyze, config, model, resolver, skip, suppress
 
 from . import _annotations, _imports, _nodes, _source, _type_checking, guards
 
@@ -153,6 +154,9 @@ class _Fixer(cst.CSTTransformer):
         #: Names kept because nothing in this file reads them. Reported by
         #: `analyze.analyze_record`, which cannot work them out on its own.
         self.unread: set[str] = set()
+        #: ``id`` of every `libcst.ImportAlias` planned for a rewrite, so
+        #: `_suppression_moved` knows which names the output no longer imports.
+        self.rewritten_aliases: set[int] = set()
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
@@ -410,6 +414,7 @@ class _Fixer(cst.CSTTransformer):
                 self.unread.add(asname or name)
             if decision.rewrite:
                 fix.append((name, asname))
+                self.rewritten_aliases.add(id(alias))
             else:
                 keep.append(_render_alias(name, asname))
         return keep, fix
@@ -958,7 +963,9 @@ def fix_record(
             unread=frozenset(fixer.unread),
         )
 
-    stale = _region_the_rewrite_created(rec, new_source, config)
+    stale = _region_the_rewrite_created(rec, new_source, config) or _suppression_moved(
+        rec, new_source, fixer.rewritten_aliases
+    )
     if stale is not None:
         return FixOutcome("skipped", rec.source, [stale], unread=frozenset(fixer.unread))
 
@@ -1040,6 +1047,77 @@ def _unwritable(rec: analyze.FileRecord, new_source: str) -> model.Finding | Non
         else:
             return None
     return model.Finding(rec.path, 1, 0, "?", "?", model.Status.SKIPPED, reason)
+
+
+def _suppression_moved(
+    rec: analyze.FileRecord, new_source: str, rewritten: set[int]
+) -> model.Finding | None:
+    r"""A suppression comment the rewrite would move onto other imports, or None.
+
+    A comment covers imports by physical line (`cleanporter.suppress`), and a
+    partial rewrite re-renders the names it keeps on one line that carries the
+    statement's trailing comment. So a comment that covered only a rewritten
+    name -- ``Widget  # cleanporter: ignore[CP002]`` on the second line of a
+    backslash continuation -- or nothing at all (one on the closing ``)``)
+    would land on the kept names and start suppressing them: ``--fix`` would
+    report less than ``check``, and could turn a failing ``--strict`` run
+    green. The skip precedent applies (`_region_the_rewrite_created`):
+    recompute on the output, and decline rather than chase a fixed point.
+
+    Compared per comment, in source order: the imports it covers in the
+    output must be exactly the ones it covered in the input, less those this
+    rewrite takes away. Any import it newly covers -- a kept name, or the
+    module import just written -- declines the file, and so does a comment
+    count that changed. A file with no suppression costs nothing.
+    """
+    if not rec.suppressions.comments:
+        return None
+    after = analyze.FileRecord(
+        rec.path, new_source, cst.parse_module(new_source), rec.base_pkg, qualname=rec.qualname
+    )
+    before = _coverage(rec, rewritten)
+    now = _coverage(after, set())
+    if before == now:
+        return None
+    moved = next(
+        (i for i, (was, is_) in enumerate(zip(before, now, strict=False)) if was != is_),
+        min(len(before), len(now)),
+    )
+    comments = rec.suppressions.comments
+    return model.Finding(
+        rec.path,
+        comments[min(moved, len(comments) - 1)].line,
+        0,
+        "?",
+        "?",
+        model.Status.SKIPPED,
+        "the rewrite would move this suppression comment onto imports it does not "
+        "cover now, changing what it suppresses; give the suppressed names a "
+        "statement of their own",
+    )
+
+
+def _coverage(
+    rec: analyze.FileRecord, rewritten: set[int]
+) -> list[collections.Counter[tuple[str, str, str | None]]]:
+    """Per suppression comment in *rec*, the imports it covers that are not in *rewritten*.
+
+    An import is ``(parent, name, asname)``, counted rather than collected: a
+    set keyed on less, or a set at all, lets two imports sharing a key
+    collapse into one -- ``mystery, Widget, mystery`` with ``Widget``
+    rewritten would compare equal before and after while the comment moved
+    onto the first ``mystery``. Relative parents resolve the same way on both
+    sides, since the file's package does not change.
+    """
+    covered: dict[suppress.Suppression, collections.Counter[tuple[str, str, str | None]]] = {
+        s: collections.Counter() for s in rec.suppressions.comments
+    }
+    for unit in rec.units:
+        if unit.alias is not None and id(unit.alias) in rewritten:
+            continue
+        for s in rec.suppressions.covering(unit.node, unit.alias):
+            covered[s][unit.parent or "?", unit.name, unit.asname] += 1
+    return [covered[s] for s in rec.suppressions.comments]
 
 
 def _source_lines(source: str) -> list[str]:

@@ -42,6 +42,11 @@ class Status(enum.Enum):
     #: Distinct from `SKIPPED` in the one way that matters: the author asked
     #: for this, so it is not a failure and never reaches the exit code.
     SKIPPED_BY_CONFIG = "skipped-by-config"
+    #: An inline ``cleanporter: ignore[...]`` comment that suppressed
+    #: nothing -- no finding of a code it names on the names it covers. Counts
+    #: toward the failure exit code: a stale suppression would otherwise
+    #: silently swallow the next finding to land on its line.
+    UNUSED_SUPPRESSION = "unused-suppression"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -68,6 +73,7 @@ class Finding:
             Status.UNRESOLVED: "CP002",
             Status.SKIPPED: "CP003",
             Status.SKIPPED_BY_CONFIG: "CP004",
+            Status.UNUSED_SUPPRESSION: "CP005",
         }[self.status]
 
     @property
@@ -93,6 +99,8 @@ class Finding:
             )
         if self.status is Status.SKIPPED_BY_CONFIG:
             return f"{self._subject()} skipped by configuration: {self.detail}"
+        if self.status is Status.UNUSED_SUPPRESSION:
+            return f"unused suppression: {self.detail}"
         return f"{self._subject()} not rewritten: {self.detail}"
 
     def format(self) -> str:

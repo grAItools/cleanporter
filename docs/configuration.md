@@ -430,3 +430,133 @@ and only suppresses the findings.
 
 Use `exclude` for code that is not yours to fix: vendored trees, generated
 files, build output.
+
+## Inline suppressions
+
+A `skip` rule is for a *kind* of code. For one import you have looked at and
+decided to keep, put the decision on the import itself:
+
+```python
+from gt4py.next import broadcast  # cleanporter: ignore[CP001]
+from vendored_thing import handle  # cleanporter: ignore[CP001, CP002]
+```
+
+The finding the comment names is reported as `CP004` instead — counted in the
+summary, printed only under `--show-skipped`, never part of the exit code —
+with a message saying which code was suppressed and by the comment on which
+line. `--fix` keeps a suppressed import exactly as it keeps one a `skip` rule
+covers: the name is not rewritten, nor is any use of it, and the rest of the
+file is fixed as usual. The import is still analysed — a suppression
+replaces the finding only once it exists, so the resolver (and the probe) are
+asked about it as about any other — but the suppression never feeds back into
+the verdict: it cannot turn an unresolved name into an answer, and it changes
+nothing about any other import.
+
+### Syntax
+
+The comment is split at each `#`, so a suppression can share a line with
+other tools' directives (`# noqa: F401  # cleanporter: ignore[CP001]`). Each
+piece is, in order:
+
+1. optional whitespace after the `#`;
+2. `cleanporter:` — exactly, lowercase, with no space before the colon;
+3. optional whitespace, then `ignore[`;
+4. one or more codes, separated by commas, each with optional whitespace
+   around it; each code is `CP001`, `CP002` or `CP003`, in capitals;
+5. `]`;
+6. nothing more, or whitespace followed by any text — a reason, say.
+
+So these are accepted:
+
+```python
+# cleanporter: ignore[CP001]
+#cleanporter:ignore[CP001,CP002]
+# cleanporter: ignore[ CP002 ]  -- the vendored copy is not importable
+```
+
+A piece that starts with `cleanporter` and a colon in any other way — in any
+case, with any spacing before the colon — is **malformed**. A malformed comment
+suppresses nothing: cleanporter prints a warning naming its file and line and
+goes on, and the finding it meant to suppress is reported as usual. Malformed
+are, for example:
+
+- `# cleanporter: ignore` with no codes — a bare ignore would silence findings
+  nobody has seen yet, which is why the rule exists — and `ignore[]`;
+- a code that is not one of the three: an unknown one (`CP009`), a lowercase
+  one (`cp001`), `CP004` (already your own decision) or `CP005` (the report
+  that a suppression did nothing);
+- a near miss: `# Cleanporter: ignore[CP001]`, `# cleanporter : ignore[CP001]`,
+  `# cleanporter: IGNORE[CP001]`, `# cleanporter: ignore [CP001]`,
+  `# cleanporter: ignore[CP001]: reason` (no whitespace before the reason),
+  `# cleanporter: noqa`.
+
+One malformed piece voids the whole comment, including a well-formed piece
+beside it.
+
+A never-read import is `CP001` to a plain check and `CP003` under `--fix` (the
+fixer knows nothing reads it). It is suppressed by `ignore[CP001]`, the code a
+check reports, so one comment works in both modes. `ignore[CP003]` on it
+suppresses nothing in either mode — a check cannot know the name is never read,
+so accepting it under `--fix` alone would make the two modes disagree — and is
+reported `CP005`, whose message under `--fix` points to `CP001`.
+
+### Which imports a comment covers
+
+Attachment is by **physical line**. A suppression comment covers
+
+1. every name imported by a `from` statement that **starts** on its line, and
+2. every imported name **written** on its line.
+
+```python
+from pkg.shapes import Circle, Square  # cleanporter: ignore[CP001]  <- both names
+
+from pkg.shapes import (  # cleanporter: ignore[CP001]              <- every name below
+    Circle,
+    Square,
+)
+
+from pkg.shapes import (
+    Circle,  # cleanporter: ignore[CP001]                            <- Circle only
+    Square,
+)
+```
+
+A comment on a line of its own, on the closing `)`, or on anything but a
+`from` import covers nothing. It applies only to findings about an imported
+name: a file-level `CP003` (the fixer declining a whole file) cannot be
+suppressed.
+
+!!! warning "A per-name comment inside a statement `--fix` rewrites"
+
+    `--fix` never discards a comment. A comment *inside* a parenthesised
+    import cannot survive a rewrite of that statement, so when another name
+    in it is a `CP001`, the file is declined
+    ([`CP003`](safety.md#a-comment-inside-the-import-statement)). Give the
+    suppressed name a statement of its own.
+
+!!! warning "`--fix` never moves a suppression onto other imports"
+
+    When `--fix` rewrites some names of a statement and keeps others, the kept
+    names are written on one line, which takes the statement's trailing
+    comment. A comment that covered only a rewritten name, or nothing at all
+    (one on a closing `)`), would then cover the kept names and start
+    suppressing them. cleanporter recomputes which imports every suppression
+    covers on its own output, and when what any comment covers changes —
+    beyond losing the names the rewrite takes away: a kept name, a second
+    import of the same name, or the module import just written — it declines
+    the whole file (`CP003`: *the rewrite would move this
+    suppression comment onto imports it does not cover now*). Give the
+    suppressed names a statement of their own, or delete a stale comment.
+
+### Unused suppressions: `CP005`
+
+A code in a suppression that matches no finding on the names the comment
+covers is reported as `CP005`, at the comment, and it makes the run exit `1`
+like a `CP001`: a stale suppression would otherwise silently swallow the next
+finding of that code to land on its line. It appears when the import was fixed
+or became compliant, and when the comment is on a line that covers nothing.
+Two cases are exempt, because a `skip` rule has already replaced whatever the
+comment could have matched: a comment on a line a rule covers (every line of a
+file a rule takes whole), and a comment covering an import a rule has already
+reported as `CP004`. Nothing else is: a comment on an import a rule pins, but
+whose name is compliant or exempt, is still `CP005`.

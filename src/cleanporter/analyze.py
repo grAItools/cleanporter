@@ -2,8 +2,9 @@
 
 `FileRecord` carries a parsed file and lazily caches what is expensive to
 derive from it -- its `FileFacts`, the import units, where each import
-starts, libcst's position metadata when something needs it, and whatever
-`cleanporter.skip` takes out of the file -- so a record survives being
+starts, libcst's position metadata when something needs it, whatever
+`cleanporter.skip` takes out of the file and its inline suppressions
+(`cleanporter.suppress`) -- so a record survives being
 analysed more than once (`engine.run` re-parses into a fresh record after a
 fix and analyses it again). Building the records of a run, and the resolver
 they are analysed against, is `project.build`'s job.
@@ -37,6 +38,7 @@ from libcst import metadata
 from cleanporter import config, firstparty, model
 from cleanporter import resolver as resolver_lib
 from cleanporter import skip as skip_lib
+from cleanporter import suppress as suppress_lib
 
 from . import _imports, guards
 
@@ -92,6 +94,9 @@ class FileRecord:
         default=None, repr=False, compare=False
     )
     _skipped: skip_lib.Skipped | None = dataclasses.field(default=None, repr=False, compare=False)
+    _suppressions: suppress_lib.Suppressions | None = dataclasses.field(
+        default=None, repr=False, compare=False
+    )
 
     @property
     def facts(self) -> FileFacts:
@@ -160,6 +165,21 @@ class FileRecord:
                 else skip_lib.EMPTY
             )
         return self._skipped
+
+    @property
+    def suppressions(self) -> suppress_lib.Suppressions:
+        """This file's ``# cleanporter: ignore[...]`` comments. Computed once.
+
+        Free for a file `suppress.may_hold` rules out: nothing is walked
+        and `positions` is not forced.
+        """
+        if self._suppressions is None:
+            self._suppressions = (
+                suppress_lib.collect(self.tree, self.positions)
+                if suppress_lib.may_hold(self.source)
+                else suppress_lib.EMPTY
+            )
+        return self._suppressions
 
     @property
     def positions(self) -> Mapping[cst.CSTNode, metadata.CodeRange]:
@@ -607,6 +627,9 @@ class Decision:
     #: Kept only because nothing in the file reads it. The fixer collects
     #: these to hand back to `analyze_record`; see `rewrite.FixOutcome.unread`.
     unread: bool = False
+    #: For a `CP004` an inline comment made: the code it replaced and the
+    #: comments naming it. `analyze_record` reports the rest as `CP005`.
+    hit: suppress_lib.Hit | None = None
 
     @property
     def rewrite(self) -> bool:
@@ -669,6 +692,32 @@ class Decider:
         return in_scope(parent, self._resolver, self._config)
 
     def decide(
+        self, unit: ImportUnit, line: int, never_read: frozenset[str] = frozenset()
+    ) -> Decision:
+        """`_ladder`'s decision, unless an inline comment suppresses its code.
+
+        A suppressed finding becomes a `CP004`, so the fixer keeps the name
+        exactly as it keeps one a skip rule covers. The code matched is the one
+        plain ``check`` reports: a never-read name is the fixer's `CP003` but
+        check's `CP001`, so ``ignore[CP001]`` covers it in both modes and the
+        two cannot disagree about what is suppressed. See `cleanporter.suppress`.
+        """
+        decision = self._ladder(unit, line, never_read)
+        status = model.Status.VIOLATION if decision.unread else decision.status
+        code = suppress_lib.CODES.get(status) if status is not None else None
+        if code is None:
+            return decision
+        hit = self._rec.suppressions.match(unit.node, unit.alias, code)
+        if hit is None:
+            return decision
+        where = ", ".join(str(s.line) for s in hit.by)
+        return Decision(
+            model.Status.SKIPPED_BY_CONFIG,
+            f"{code} suppressed by the inline comment on line {where}",
+            hit=hit,
+        )
+
+    def _ladder(
         self, unit: ImportUnit, line: int, never_read: frozenset[str] = frozenset()
     ) -> Decision:
         """Decide *unit*, an import found on *line* of the record's file.
@@ -827,9 +876,15 @@ def analyze_record(
     starts = rec.import_starts
     decider = Decider(rec, resolver, config)
     findings: list[model.Finding] = []
+    used: set[tuple[suppress_lib.Suppression, str]] = set()
+    #: Comments covering a name reported as never read, for `CP005`'s hint.
+    on_unread: set[suppress_lib.Suppression] = set()
     for unit in rec.units:
         line, column = starts[unit.node]
         decision = decider.decide(unit, line, unread)
+        _mark_used(rec, unit, decision, used)
+        if decision.unread:
+            on_unread.update(rec.suppressions.covering(unit.node, unit.alias))
         if decision.status is None:
             continue
         findings.append(
@@ -842,6 +897,75 @@ def analyze_record(
                 decision.status,
                 decision.detail,
                 _module_import(rec, unit) if decision.rewrite else "",
+            )
+        )
+    findings.extend(_unused_suppressions(rec, used, on_unread))
+    return findings
+
+
+def _mark_used(
+    rec: FileRecord,
+    unit: ImportUnit,
+    decision: Decision,
+    used: set[tuple[suppress_lib.Suppression, str]],
+) -> None:
+    """Record the suppression codes *decision* consumed, into *used*.
+
+    A `CP004` a skip rule made replaced the finding before any comment was
+    consulted, so what the comments covering the name would have matched is
+    unknowable: every code they name counts as used, rather than be reported
+    unused over a finding nobody could see.
+    """
+    if decision.hit is not None:
+        used.update((s, decision.hit.code) for s in decision.hit.by)
+    elif decision.status is model.Status.SKIPPED_BY_CONFIG:
+        for suppression in rec.suppressions.covering(unit.node, unit.alias):
+            used.update((suppression, code) for code in suppression.codes)
+
+
+def _unused_suppressions(
+    rec: FileRecord,
+    used: set[tuple[suppress_lib.Suppression, str]],
+    on_unread: set[suppress_lib.Suppression],
+) -> list[model.Finding]:
+    """A `CP005` per suppression comment naming a code that matched nothing.
+
+    A comment on a line a skip rule covers is not reported: the rule took
+    whatever it could have matched.
+
+    A never-read name is suppressed by ``CP001`` only (`Decider.decide`), so
+    an ``ignore[CP003]`` written after seeing the fixer's never-read `CP003`
+    is unused -- in both modes, which is what keeps them agreeing. The
+    message says so where the fixer knows the name is never read (*on_unread*).
+    """
+    findings: list[model.Finding] = []
+    for suppression in rec.suppressions.comments:
+        if rec.skipped.covers(suppression.line) is not None:
+            continue
+        unused = [code for code in suppression.codes if (suppression, code) not in used]
+        if not unused:
+            continue
+        findings.append(
+            model.Finding(
+                rec.path,
+                suppression.line,
+                suppression.column,
+                "",
+                "",
+                model.Status.UNUSED_SUPPRESSION,
+                f"no {' or '.join(unused)} finding on the imports this comment covers"
+                + (
+                    " (a never-read import is suppressed by CP001, the code a plain check "
+                    "reports for it, even where --fix reports it as CP003)"
+                    if "CP003" in unused and suppression in on_unread
+                    else ""
+                )
+                + "; "
+                + (
+                    "remove the comment"
+                    if len(unused) == len(suppression.codes)
+                    else f"remove {', '.join(unused)} from it"
+                ),
             )
         )
     return findings

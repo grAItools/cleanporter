@@ -654,7 +654,7 @@ class _RecordingFixer(rewrite._Fixer):
 #: named-by-a-string,
 #: never-read, unreachable-replacement, no-relative-spelling, function-local, TYPE_CHECKING-gated,
 #: package-surface,
-#: skip-pinned, skip-covered and guard-blocked imports.
+#: skip-pinned, skip-covered, inline-suppressed and guard-blocked imports.
 _AGREEMENT_TREE = {
     "__init__.py": "from app.helpers import THING as THING\n",
     "helpers.py": "THING = 1\n\ndef go():\n    return 2\n\nclass Widget:\n    pass\n",
@@ -709,6 +709,18 @@ _AGREEMENT_TREE = {
         "    pass\n"
     ),
     "unread.py": "from app.helpers import go\n",
+    # Inline suppressions: a whole statement, one name of a parenthesised
+    # import, a never-read name (check's CP001, the fixer's CP003), and a
+    # code that matches nothing (CP005, beside the CP001 it did not cover).
+    "suppressed.py": (
+        "from app.helpers import go  # cleanporter: ignore[CP001]\n"
+        "from app.helpers import (\n"
+        "    Widget,  # cleanporter: ignore[CP001]\n"
+        ")\n"
+        "from app.helpers import THING  # cleanporter: ignore[CP002]\n"
+        "from app.sub.tool import dump  # cleanporter: ignore[CP001]\n"
+        "x = go(), Widget, THING\n"
+    ),
     "user.py": (
         "from __future__ import annotations\n"
         "from typing import TYPE_CHECKING, Any\n"
@@ -852,7 +864,20 @@ def test_the_agreement_tree_reaches_every_outcome(tmp_path):
         "CP003 unreachable",
         "CP003 no relative spelling",
         "CP004",
+        "CP005",
     }
+
+    # Suppressed in both modes alike, the never-read `dump` included.
+    suppressed = runs["default"]["suppressed.py"]
+    for findings in (suppressed.check, suppressed.fix_mode):
+        assert [(f.line, f.code) for f in findings] == [
+            (1, "CP004"),
+            (2, "CP004"),
+            (5, "CP001"),
+            (6, "CP004"),
+            (5, "CP005"),
+        ]
+    assert suppressed.rewritten == {(5, "app.helpers", "THING")}
 
     # CP004 both ways: pinned by name at module level, and covered by a rule
     # (the import inside the skipped function) -- plus a whole-file rule.
