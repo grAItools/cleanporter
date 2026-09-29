@@ -552,3 +552,73 @@ def test_an_alias_or_a_scope_change_keeps_the_finding_baselined(
     assert _write_baseline() == 0
     _write(_consumer(project), rewritten)
     assert cli.main(["--baseline", "baseline.json", "src"]) == 0
+
+
+# -- CP005, unused inline suppressions -----------------------------------------
+
+#: A CP001 on line 1 and an unused suppression (CP005) on line 2.
+_UNUSED = (
+    "from demo.helpers import THING\n"
+    "from demo import helpers  # cleanporter: ignore[CP001]\n"
+    "total = THING, helpers\n"
+)
+
+
+def test_select_and_ignore_filter_cp005(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(_consumer(project), _UNUSED)
+    assert cli.main(["--ignore", "CP001", "src"]) == 1  # the CP005 still fails the run
+    assert "CP005" in capsys.readouterr().out
+    assert cli.main(["--ignore", "CP005", "src"]) == 1  # the CP001 still does
+    out = capsys.readouterr().out
+    assert "CP005" not in out
+    assert "unused suppression" not in out
+    assert cli.main(["--ignore", "CP001,CP005", "src"]) == 0
+    capsys.readouterr()
+    assert cli.main(["--select", "CP005", "src"]) == 1
+    out = capsys.readouterr().out
+    assert "CP005" in out
+    assert ": CP001 " not in out
+
+
+def test_a_cp005_is_baselined_by_file_and_code(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(_consumer(project), _UNUSED)
+    assert _write_baseline() == 0
+    consumer = "src/demo/consumer.py"
+    assert _baseline(project)["findings"] == [
+        {"path": consumer, "code": "CP001", "parent": "demo.helpers", "name": "THING"},
+        {"path": consumer, "code": "CP005", "parent": "", "name": ""},
+    ]
+    capsys.readouterr()
+    assert cli.main(["--baseline", "baseline.json", "src"]) == 0
+    assert "2 in the baseline" in capsys.readouterr().out
+    # No line in the key: the comment moving keeps it accepted.
+    _write(_consumer(project), "\n\n" + _UNUSED)
+    assert cli.main(["--baseline", "baseline.json", "src"]) == 0
+    # A second unused suppression in the file is a new finding.
+    second = "from demo import helpers as h  # cleanporter: ignore[CP002]\nh.go()\n"
+    _write(_consumer(project), _UNUSED + second)
+    capsys.readouterr()
+    assert cli.main(["--baseline", "baseline.json", "src"]) == 1
+    assert "CP005" in capsys.readouterr().out
+
+
+def test_cp005_is_a_class_of_its_own(project: pathlib.Path) -> None:
+    """A `CP005` entry accepts no `CP001` or `CP003`, and neither of those a `CP005`."""
+    _write(_consumer(project), _UNUSED)
+    cfg = config.Config(root=project)
+    result = engine.run([pathlib.Path("src")], cfg)
+    assert sorted(f.code for f in result.findings) == ["CP001", "CP005"]
+    path = "src/demo/consumer.py"
+    as_unused = [baseline.Entry(path, "CP005", "demo.helpers", "THING")]
+    assert [f.code for f in baseline.apply(result, as_unused, cfg).findings] == [
+        "CP001",
+        "CP005",
+    ]
+    as_violations = [baseline.Entry(path, code, "", "") for code in ("CP001", "CP003")]
+    kept = baseline.apply(result, as_violations, cfg)
+    assert sorted(f.code for f in kept.findings) == ["CP001", "CP005"]
+    assert kept.stale_baseline == 2

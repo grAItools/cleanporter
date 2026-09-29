@@ -392,4 +392,4 @@ def test_an_empty_baseline_is_a_config_error(tmp_path: pathlib.Path) -> None:
 
 def test_known_codes_are_one_per_status() -> None:
     assert len(config.known_codes()) == len(model.Status)
-    assert {"CP001", "CP002", "CP003", "CP004"} <= config.known_codes()
+    assert {"CP001", "CP002", "CP003", "CP004", "CP005"} <= config.known_codes()

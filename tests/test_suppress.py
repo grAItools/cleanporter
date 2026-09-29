@@ -291,6 +291,37 @@ def test_an_unused_suppression_alone_fails_the_run(
     assert "consumer.py:1:26: CP005 unused suppression: " in out
 
 
+def test_a_suppression_on_a_package_surface_import_is_unused(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A package ``__init__``'s module-level import is compliant: nothing to suppress.
+
+    Its function-local one is an ordinary import, so its comment is used.
+    """
+    init = project / "src" / "demo" / "__init__.py"
+    source = (
+        "from demo.helpers import THING  # cleanporter: ignore[CP001]\n"
+        "\n"
+        "\n"
+        "def later():\n"
+        "    from demo.helpers import go  # cleanporter: ignore[CP001]\n"
+        "\n"
+        "    return go()\n"
+    )
+    init.write_text(source, encoding="utf-8", newline="\n")
+    rc, out, _ = _run(capsys, "--show-skipped", "src")
+    assert rc == 1
+    found = sorted(
+        line.split(": ")[1].split()[0] + "@" + line.split(":")[1]
+        for line in out.splitlines()
+        if "__init__.py:" in line
+    )
+    assert found == ["CP004@5", "CP005@1"]
+    rc, _out, _err = _run(capsys, "--fix", "src")
+    assert rc == 1
+    assert init.read_text(encoding="utf-8") == source
+
+
 @pytest.mark.parametrize(
     ("comment", "why"),
     [

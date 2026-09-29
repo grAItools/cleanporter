@@ -77,6 +77,10 @@ Breaking under the pre-1.0 policy above:
   makes the run exit `1`. It is in every format (a SARIF rule, an `::error` in
   GitHub's), counted as `unused_suppressions` in JSON's `counts` and in
   `RunResult.unused_suppressions`, and added to the summary line when non-zero.
+  A suppression on a module-level import in a package `__init__.py` is always
+  unused, since that import is compliant (see *Changed*). `--select` /
+  `--ignore` take `CP005` like any code, and a baseline records it by file and
+  code alone, matching only another `CP005`.
 - **A cross-file string guard.** A string literal in another analysed file
   that spells a first-party binding's dotted path out whole —
   `monkeypatch.setattr("pkg.mod.helper", ...)`, `mock.patch("pkg.mod.helper")`,

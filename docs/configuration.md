@@ -560,3 +560,13 @@ comment could have matched: a comment on a line a rule covers (every line of a
 file a rule takes whole), and a comment covering an import a rule has already
 reported as `CP004`. Nothing else is: a comment on an import a rule pins, but
 whose name is compliant or exempt, is still `CP005`.
+
+That includes a package's public surface. A module-level import in a
+package's `__init__.py` is compliant (see
+[A package's `__init__.py`](#a-packages-__init__py)), so it has no finding
+for a comment to suppress, and `# cleanporter: ignore[CP001]` on it is a
+`CP005` asking you to delete the comment: the import is kept without it. The
+public surface is decided before any comment is read, so the comment cannot
+change it. A suppression on an import *inside a function* in `__init__.py`
+works as it does in any module, since that import is reported and fixed like
+any other.

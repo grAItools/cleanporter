@@ -37,6 +37,11 @@ reported. Which of the three is reported is not tracked -- with no line in
 the key, the entries cannot say which import is the new one -- so the one
 reported may be an old import rather than the one just added.
 
+A `CP005` (an unused inline suppression) is about a comment, not an import:
+its ``parent`` and ``name`` are empty, so its identity is its file and code,
+and a file's unused suppressions are a multiset of identical entries -- the
+count is accepted, not the lines. It matches only another `CP005`.
+
 **Staleness.** An entry that matches no finding -- the import was fixed,
 changed or deleted -- is *stale*. It is not a failure: fixing a finding must
 never fail a run. `apply` counts the stale entries (and says so in a note)
