@@ -16,7 +16,9 @@ stages are fixed because each needs the one before it:
    and only then is each file's own package and module name known, which is
    what anchors its relative imports (`analyze.FileRecord`).
 4. **Use evidence.** What every file reads -- ``from M import N``, ``M.N``
-   through an import, ``from M import *`` -- is collected into a
+   through an import, ``from M import *`` -- and every string that names a
+   first-party ``M.N`` by its dotted path, in a file or among the entry
+   points of the ``pyproject.toml`` in use (`_named`), is collected into a
    `resolver.Evidence`. It needs every record, because it is cross-file.
 5. **Resolver ready.** The resolver is constructed *with* that evidence, and
    with the interpreter `_interpreter.choose` makes of the ``python`` setting
@@ -41,10 +43,12 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+import tomllib
+from collections.abc import Callable, Mapping
 
 import libcst as cst
 
-from cleanporter import analyze, discover, firstparty, model
+from cleanporter import analyze, discover, firstparty, guards, model
 from cleanporter import config as config_lib
 from cleanporter import resolver as resolver_lib
 
@@ -89,8 +93,9 @@ def build(paths: list[pathlib.Path], config: config_lib.Config) -> Project:
     records = _records(parsed, module_map, config)
     pairs = analyze.collect_pairs(records)
     interpreter = _interpreter.choose(config.python, config.root)
+    named = _named(records, module_map, config, warnings)
     resolver = resolver_lib.Resolver(
-        module_map, python=interpreter.python, evidence=_evidence(records, pairs)
+        module_map, python=interpreter.python, evidence=_evidence(records, pairs, named)
     )
     # Out-of-scope pairs are never asked about, so classifying them -- an
     # import of a third-party package, in the probe -- would be wasted. A
@@ -172,7 +177,9 @@ def _records(
 
 
 def _evidence(
-    records: list[analyze.FileRecord], pairs: list[tuple[str, str]]
+    records: list[analyze.FileRecord],
+    pairs: list[tuple[str, str]],
+    named: Mapping[tuple[str, str], tuple[resolver_lib.StringReference, ...]],
 ) -> resolver_lib.Evidence:
     """Every *use* of ``M.N`` in the run, which says M must keep binding N.
 
@@ -185,4 +192,124 @@ def _evidence(
     for rec in records:
         uses |= rec.facts.attribute_pairs(rec.base_pkg)
         star |= rec.facts.star_imported_modules(rec.base_pkg)
-    return resolver_lib.Evidence(frozenset(uses), frozenset(star))
+    return resolver_lib.Evidence(frozenset(uses), frozenset(star), named)
+
+
+def _named(
+    records: list[analyze.FileRecord],
+    module_map: firstparty.ModuleMap,
+    config: config_lib.Config,
+    warnings: list[str],
+) -> dict[tuple[str, str], tuple[resolver_lib.StringReference, ...]]:
+    """Every string in the run that names a first-party ``module.name`` by path.
+
+    The strings are the ones `analyze.FileFacts` already kept off each tree's
+    single walk -- a literal whose whole text is ``a.b.c`` or ``a.b:c`` --
+    plus the entry points of the ``pyproject.toml`` in use
+    (`_entry_points`). Each yields every split `guards.cross_file_pairs`
+    offers, kept when its first component is first-party: nothing else can
+    be something this run rewrites. Whether the pair is a *re-export* the
+    rewrite would remove is `resolver.Resolver.named_by`'s question, asked
+    only of the modules the fixer actually touches.
+    """
+    first_party: dict[str, bool] = {}
+    named: dict[tuple[str, str], list[resolver_lib.StringReference]] = {}
+
+    def wanted(parts: tuple[str, ...]) -> bool:
+        head = parts[0]
+        if head not in first_party:
+            first_party[head] = module_map.is_first_party(head)
+        return first_party[head]
+
+    def add(parts: tuple[str, ...], ref: resolver_lib.StringReference) -> None:
+        for pair in guards.cross_file_pairs(parts):
+            named.setdefault(pair, []).append(ref)
+
+    for rec in records:
+        shown: pathlib.Path | None = None
+        for node, parts in rec.facts.path_strings:
+            if not wanted(parts):
+                continue  # ``"os.path.join"``, ``"setup.py"``: not this run's to rewrite
+            if shown is None:
+                shown = _shown(rec.path, config.root)
+            ref = resolver_lib.StringReference(
+                node.raw_value, shown, rec.path.resolve(), _line_of(rec, node)
+            )
+            add(parts, ref)
+    for parts, ref in _entry_points(config, warnings):
+        if wanted(parts):
+            add(parts, ref)
+    return {pair: tuple(refs) for pair, refs in named.items()}
+
+
+def _line_of(rec: analyze.FileRecord, node: cst.CSTNode) -> Callable[[], int]:
+    """The line of *node* in *rec*, resolved only if someone asks."""
+    return lambda: rec.positions[node].start.line
+
+
+#: The ``[project]`` tables whose values are ``module:attribute`` entry points.
+_ENTRY_POINT_TABLES = ("scripts", "gui-scripts")
+
+
+def _entry_points(
+    config: config_lib.Config, warnings: list[str]
+) -> list[tuple[tuple[str, ...], resolver_lib.StringReference]]:
+    """Every entry point the ``pyproject.toml`` in use declares, as a reference.
+
+    ``[project.scripts]``, ``[project.gui-scripts]`` and every group under
+    ``[project.entry-points]``. The value is ``module:attribute`` with
+    optional whitespace around the colon and an optional ``[extras]`` suffix,
+    both dropped. TOML keeps no positions, so the line is the first one of
+    the file that holds the value as written -- or the first line, when the
+    value is spelled some other way (a multi-line or escaped string).
+    """
+    pyproject = config.root / "pyproject.toml"
+    try:
+        text = pyproject.read_text(encoding="utf-8")
+        data = tomllib.loads(text)
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        warnings.append(f"{pyproject}: cannot read its entry points ({exc}); they are not evidence")
+        return []
+    project = data.get("project")
+    if not isinstance(project, dict):
+        return []
+    tables = [project.get(key) for key in _ENTRY_POINT_TABLES]
+    groups = project.get("entry-points")
+    if isinstance(groups, dict):
+        tables.extend(groups.values())
+    lines = text.splitlines()
+    shown = _shown(pyproject, config.root)
+    found: list[tuple[tuple[str, ...], resolver_lib.StringReference]] = []
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        for value in table.values():
+            if not isinstance(value, str):
+                continue
+            spec = "".join(value.partition("[")[0].split())
+            parts = guards.dotted_reference(spec)
+            if parts is None:
+                continue
+            line = next((i for i, row in enumerate(lines, 1) if value in row), 1)
+            ref = resolver_lib.StringReference(spec, shown, pyproject.resolve(), _constant(line))
+            found.append((parts, ref))
+    return found
+
+
+def _constant(line: int) -> Callable[[], int]:
+    return lambda: line
+
+
+def _shown(path: pathlib.Path, root: pathlib.Path) -> pathlib.Path:
+    """*path* as a reason names it: relative to the project root, else as the run spells it.
+
+    The reason is read next to a finding about a *different* file, so it
+    names the referencing file the way the project does (``tests/test_x.py``,
+    ``pyproject.toml``) whatever the paths on the command line looked like.
+    """
+    try:
+        return path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return path

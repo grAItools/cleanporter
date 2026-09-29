@@ -38,7 +38,7 @@ from cleanporter import config, firstparty, model
 from cleanporter import resolver as resolver_lib
 from cleanporter import skip as skip_lib
 
-from . import _imports
+from . import _imports, guards
 
 
 @dataclasses.dataclass
@@ -274,6 +274,10 @@ class FileFacts:
     #: "b")``). Reads through a call or a subscript are not dotted names and
     #: are not recorded.
     attribute_reads: frozenset[tuple[str, str]]
+    #: Every string literal whose whole text is a dotted or entry-point path
+    #: (`guards.dotted_reference`), with its components, in source order. The
+    #: raw material for the cross-file string evidence (`project._named`).
+    path_strings: tuple[tuple[cst.SimpleString, tuple[str, ...]], ...] = ()
 
     @property
     def import_froms(self) -> tuple[cst.ImportFrom, ...]:
@@ -358,6 +362,18 @@ class _FactCollector(cst.CSTVisitor):
         super().__init__()
         self.imports: list[cst.Import | cst.ImportFrom] = []
         self.attribute_reads: set[tuple[str, str]] = set()
+        self.path_strings: list[tuple[cst.SimpleString, tuple[str, ...]]] = []
+
+    def visit_SimpleString(self, node: cst.SimpleString) -> None:
+        # A path has no escapes, so a string with a backslash is not one, and
+        # without one the raw text *is* the value: no evaluation needed.
+        # Bytes are not paths anything imports by.
+        raw = node.raw_value
+        if "\\" in raw or "b" in node.prefix.lower():
+            return
+        parts = guards.dotted_reference(raw)
+        if parts is not None:
+            self.path_strings.append((node, parts))
 
     def visit_Import(self, node: cst.Import) -> None:
         self.imports.append(node)
@@ -379,7 +395,11 @@ def collect_facts(tree: cst.Module) -> FileFacts:
     """Walk *tree* once and return every `FileFacts` the analysis needs."""
     collector = _FactCollector()
     tree.visit(collector)
-    return FileFacts(tuple(collector.imports), frozenset(collector.attribute_reads))
+    return FileFacts(
+        tuple(collector.imports),
+        frozenset(collector.attribute_reads),
+        tuple(collector.path_strings),
+    )
 
 
 def iter_units(tree: cst.Module, base_pkg: str) -> Iterator[ImportUnit]:
@@ -629,6 +649,15 @@ class Decider:
                 model.Status.SKIPPED,
                 f"another file imports '{bound}' from '{qualname}'; "
                 "rewriting this import would remove that attribute",
+            )
+        named = (
+            self._resolver.named_by(qualname, bound, outside=self._rec.path) if qualname else None
+        )
+        if named is not None:
+            return Decision(
+                model.Status.SKIPPED,
+                f"'{qualname}.{bound}' is named by the string '{named.text}' at "
+                f"{named.where()}; rewriting this import would remove that attribute",
             )
         if bound in never_read:
             return Decision(model.Status.SKIPPED, _UNREAD, unread=True)

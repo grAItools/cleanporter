@@ -140,11 +140,12 @@ pass" while unformatted this way.
 
 ## Gotchas
 
-- **Re-run the target's test suite after any `cleanporter --fix`.** Guards are
-  per file, so a string in *another* file naming a rewritten binding by its
-  dotted path (`monkeypatch.setattr("pkg.cli.helper", ...)`, an entry point, an
-  `importlib` lookup) is invisible and can go stale. It bit this repo's own
-  suite once; `--fix` prints a note to stderr saying so.
+- **Re-run the target's test suite after any `cleanporter --fix`.** A literal
+  dotted path in another analysed file or a `pyproject.toml` entry point is
+  guarded (`Resolver.named_by`), but a dynamic string, `getattr(module,
+  "name")`, a reference from a file outside the run, or one in `setup.cfg`,
+  `tox.ini` or YAML is invisible and can go stale. It bit this repo's own suite
+  once; `--fix` prints a note to stderr saying so.
 - **Never lower a guard, widen an exemption, or make the resolver optimistic to
   make a test pass.** Add the guard's counterexample test instead. Guards are
   settled product decisions argued in their docstrings (prose docstrings exempt,

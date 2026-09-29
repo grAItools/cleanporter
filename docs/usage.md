@@ -69,7 +69,8 @@ because an import of it from your package depends on what it is.
     appear under `--fix` or `--diff`. The exceptions are reasons that belong
     to the import itself, which are reported as `CP003` in every mode: a
     wildcard import (`from x import *`), for which no module import is a
-    replacement; an explicit or load-bearing re-export; a replacement that
+    replacement; an explicit or load-bearing re-export, or one a string in
+    another file names by its dotted path; a replacement that
     cannot be shown to bind the module it names; and `from . import C` where
     the package is top-level, which has no relative replacement (see
     [Known limitations](safety.md#known-limitations)).
@@ -261,15 +262,18 @@ or a `CP002` it could not classify. All three need a human. A `CP004` does
 not — that one is your own `skip` rule, and it is only printed if you ask for
 it with `--show-skipped`.
 
-!!! warning "Guards are per file — re-run your tests"
+!!! warning "Re-run your tests"
 
-    cleanporter proves safety by analysing the file it is rewriting. A string
-    in a *different* file that names the rewritten binding by its dotted path
-    — `monkeypatch.setattr("pkg.cli.helper", ...)`, an entry point in
-    `pyproject.toml`, an `importlib` lookup — is invisible to that analysis,
-    so `--fix` can make such a reference stale even though the rewritten file
-    itself is correct. Whenever it writes a file, `--fix` prints a note to
-    stderr saying exactly this.
+    cleanporter proves safety by analysing the file it is rewriting, plus
+    what the rest of the run says about it. A string in another analysed file
+    that spells the rewritten binding's dotted path out whole —
+    `monkeypatch.setattr("pkg.cli.helper", ...)`, `mock.patch`, an entry point
+    in `pyproject.toml` — keeps that import as it is (a `CP003` naming the
+    string). What the run cannot see can still go stale even though the
+    rewritten file itself is correct: a dynamic string, a `getattr(module,
+    "helper")`, a reference in a file outside the run, or one in a config
+    file other than `pyproject.toml` (`setup.cfg`, `tox.ini`, YAML). Whenever
+    it writes a file, `--fix` prints a note to stderr saying exactly this.
 
 ### Import layout
 

@@ -57,6 +57,7 @@ import json
 import pathlib
 import subprocess
 import sys
+from collections.abc import Callable, Mapping
 
 from cleanporter import firstparty, model
 
@@ -99,6 +100,38 @@ class Evidence:
     uses: frozenset[tuple[str, str]] = frozenset()
     #: Modules some analysed file star-imports, which could need any name.
     star_imported: frozenset[str] = frozenset()
+    #: ``(module, name)`` -> every string that names ``module.name`` by its
+    #: dotted path (``"pkg.mod.name"``, ``"pkg.mod:name"``, or a longer path
+    #: through it), in the run's files or the entry points of the
+    #: ``pyproject.toml`` in use, in the order they were found.
+    named: Mapping[tuple[str, str], tuple[StringReference, ...]] = dataclasses.field(
+        default_factory=dict
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class StringReference:
+    """A string literal that addresses a module attribute by its dotted path.
+
+    ``monkeypatch.setattr("pkg.mod.helper", ...)``, ``mock.patch(...)``, an
+    entry point: each keeps working only while ``pkg.mod`` binds ``helper``.
+    See `Resolver.named_by`.
+    """
+
+    #: The string as written (an entry point's value, stripped of extras).
+    text: str
+    #: The file it is in, as a reason names it: relative to the project root.
+    path: pathlib.Path
+    #: The same file, resolved, to tell whether it is the one asking.
+    origin: pathlib.Path
+    #: Its line in that file. A call, because finding it can take position
+    #: metadata for the whole file, and it is wanted only for a reference
+    #: that actually declines a rewrite: rarely, and then once.
+    locate: Callable[[], int] = dataclasses.field(compare=False, repr=False)
+
+    def where(self) -> str:
+        """``path:line``, for a message."""
+        return f"{self.path}:{self.locate()}"
 
 
 #: No evidence at all, for a resolver built outside a run -- passed explicitly.
@@ -327,6 +360,36 @@ class Resolver:
         evidence = self._evidence
         used = (module, name) in evidence.uses or module in evidence.star_imported
         return used and self._map.is_reexport(module, name)
+
+    def named_by(
+        self, module: str, name: str, *, outside: pathlib.Path | None = None
+    ) -> StringReference | None:
+        """A string elsewhere in the run that names ``module.name``, if one would go stale.
+
+        The string-literal half of `is_load_bearing`, and the same two
+        questions: does ``module`` only *re-export* ``name``
+        (`firstparty.ModuleMap.is_reexport`), so rewriting its import removes
+        the attribute, and does some string name it by its dotted path --
+        ``monkeypatch.setattr("pkg.mod.name", ...)``, ``mock.patch``, an
+        ``importlib`` address, an entry point in the ``pyproject.toml`` in
+        use? Such a reference imports, parses and type-checks after the
+        rewrite, and then fails -- or, for a patch, silently patches a name
+        nothing reads any more.
+
+        *outside* is the file doing the asking: a string in the rewritten file
+        itself is not this question's. The whole-file string guard
+        (`guards.find_string_mentions`) already declines that file, and it
+        stays the one that does.
+
+        Returns the first such string in run order, or ``None``. As with
+        `is_load_bearing`, the evidence stops at the run's files -- a dynamic
+        string, or one in a file outside the run, is not seen.
+        """
+        asking = outside.resolve() if outside is not None else None
+        refs = [r for r in self._evidence.named.get((module, name), ()) if r.origin != asking]
+        if refs and self._map.is_reexport(module, name):
+            return refs[0]
+        return None
 
     def reason(self, parent: str, name: str) -> str:
         """Human explanation for an unresolved (``None``) verdict."""
