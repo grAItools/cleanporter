@@ -793,3 +793,36 @@ def test_a_template_rendering_a_keyword_declines_the_fix(
     err = capsys.readouterr().err
     assert "CP003" in err
     assert "as 'if' for demo.f, which no import can bind" in err
+
+
+def test_a_builtin_read_in_a_string_annotation_is_suffixed(project: pathlib.Path) -> None:
+    _configure(project, "")
+    _list_module(project)
+    source = (
+        "from __future__ import annotations\nfrom demo.list import go\n\n\n"
+        'def f(x: "list[int]"):\n    return go()\n'
+    )
+    text, _codes = _fix(project, source)
+    assert text == (
+        "from __future__ import annotations\nfrom demo import list as list_2\n\n\n"
+        'def f(x: "list[int]"):\n    return list_2.go()\n'
+    )
+
+
+def test_an_undefined_name_in_a_string_annotation_is_taken(project: pathlib.Path) -> None:
+    _configure(project, "")
+    source = (
+        "from __future__ import annotations\nfrom demo.helpers import go\n\n\n"
+        'def f(x: "helpers"):\n    return go()\n'
+    )
+    text, _codes = _fix(project, source)
+    assert "from demo import helpers as helpers_2\n" in text
+    assert 'def f(x: "helpers"):' in text
+
+
+def test_with_a_rule_a_builtin_in_a_string_annotation_declines(project: pathlib.Path) -> None:
+    _configure(project, '[[tool.cleanporter.alias]]\nmodule = "json"\nas = "str"\n')
+    source = 'from json import dumps\n\n\ndef f(x: "str"):\n    return dumps(x)\n'
+    text, codes = _fix(project, source)
+    assert text == source
+    assert "CP003" in codes

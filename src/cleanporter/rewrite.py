@@ -167,8 +167,9 @@ class _Fixer(cst.CSTTransformer):
         #: `_suppression_moved` knows which names the output no longer imports.
         self.rewritten_aliases: set[int] = set()
         #: ``(scope, name)`` for every read that resolves to a builtin or to
-        #: nothing; see `_free_names_below`. Built on first use.
-        self._free_reads: list[tuple[metadata.Scope, str]] | None = None
+        #: nothing; see `_free_names_below`. Built on first use. ``None`` for
+        #: a read whose names cannot be read off its node.
+        self._free_reads: list[tuple[metadata.Scope, str | None]] | None = None
         #: The alias conventions every new binding follows (`_allocate_token`).
         self._conventions = config.conventions
 
@@ -788,7 +789,7 @@ class _Fixer(cst.CSTTransformer):
         self._module_binding[key] = bind
         return bind, True
 
-    def _free_names_below(self, scope: metadata.Scope) -> set[str]:
+    def _free_names_below(self, scope: metadata.Scope) -> tuple[set[str], bool]:
         """Names read in *scope*, or a scope nested in it, that no assignment in the file binds.
 
         A read of ``str`` or ``list`` resolves to the builtin -- or, for a
@@ -800,6 +801,15 @@ class _Fixer(cst.CSTTransformer):
         builtin would alias needlessly), so the names actually *read* where
         the binding would be visible are collected here instead. A read in a
         nested class body counts too, which only ever over-avoids.
+
+        A read inside a string annotation (``def f(x: "list[int]")``) is an
+        access too, but its node is the string, not a `libcst.Name`: its
+        names are its builtin referents' plus every name the string's content
+        could reference (`guards.string_references`) -- which over-avoids,
+        the safe direction, and is what recovers a name nothing binds, whose
+        access has no referent to read it from. The second value is True when
+        such a read's content cannot be read at all; the caller then declines
+        rather than guess what it names.
         """
         if self._free_reads is None:
             scopes = {
@@ -808,23 +818,27 @@ class _Fixer(cst.CSTTransformer):
                 if isinstance(s, metadata.Scope)
             }
             self._free_reads = [
-                (access.scope, access.node.value)
+                (access.scope, name)
                 for each in scopes
                 for access in each.accesses
-                if isinstance(access.node, cst.Name)
-                and all(isinstance(r, metadata.BuiltinAssignment) for r in access.referents)
+                if all(isinstance(r, metadata.BuiltinAssignment) for r in access.referents)
+                for name in _read_names(access)
             ]
         found: set[str] = set()
+        opaque = False
         for where, name in self._free_reads:
             current: metadata.Scope | None = where
             while current is not None:
                 if current is scope:
-                    found.add(name)
+                    if name is None:
+                        opaque = True
+                    else:
+                        found.add(name)
                     break
                 if isinstance(current, metadata.GlobalScope):
                     break
                 current = current.parent
-        return found
+        return found, opaque
 
     def _submodule_slots(self, parent: str) -> set[str]:
         """Names a module-scope binding of *parent* must not occupy.
@@ -913,7 +927,15 @@ class _Fixer(cst.CSTTransformer):
         no rule the leaf is suffixed as it always has been.
         """
         token = parent.rsplit(".", 1)[-1]
-        taken = self._names_in_scope(scope) | extra_avoid | self._free_names_below(scope)
+        free, opaque = self._free_names_below(scope)
+        taken = self._names_in_scope(scope) | extra_avoid | free
+        if opaque:
+            self.blockers.append(
+                (
+                    line,
+                    "a string read where the new import would be visible cannot be read",
+                )
+            )
         if isinstance(scope, metadata.GlobalScope):
             taken = taken | self._submodule_slots(parent)
         expectation = self._expectation(parent)
@@ -980,6 +1002,22 @@ class _Fixer(cst.CSTTransformer):
         # All-or-nothing. libcst hands us the pristine original tree, so
         # returning it discards every edit made to the children.
         return original_node if self.blockers else updated_node
+
+
+def _read_names(access: metadata.Access) -> list[str | None]:
+    """The names *access* reads, for `_Fixer._free_names_below`; ``[None]`` if unreadable."""
+    node = access.node
+    if isinstance(node, cst.Name):
+        return [node.value]
+    names: list[str | None] = [r.name for r in access.referents]
+    content = (
+        node.evaluated_value
+        if isinstance(node, (cst.SimpleString, cst.ConcatenatedString))
+        else None
+    )
+    if not isinstance(content, str):
+        return [None]
+    return [*names, *sorted(guards.string_references(content))]
 
 
 @dataclasses.dataclass

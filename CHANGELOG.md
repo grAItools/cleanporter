@@ -61,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `x = list(go())` became `from demo import list` with
   `list(list.go())`, which calls the module. A name read where the new
   binding would be visible and bound nowhere in the file (a builtin, or an
-  undefined name) now counts as taken, so the binding is suffixed
+  undefined name) now counts as taken -- including one read inside a string
+  annotation (`def f(x: "list[int]")`) -- so the binding is suffixed
   (`list_2`) -- or, under an alias rule asking for that name, the file is
   declined with a `CP003`.
 
