@@ -33,11 +33,13 @@ def project(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> pathlib.
     """A project holding one `CP001` and one `CP002`, with the cwd at its root."""
     (tmp_path / "src" / "demo").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8"
+        '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8", newline="\n"
     )
-    (tmp_path / "src" / "demo" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "src" / "demo" / "helpers.py").write_text("THING = 42\n", encoding="utf-8")
-    (tmp_path / "src" / "demo" / "consumer.py").write_text(CONSUMER, encoding="utf-8")
+    (tmp_path / "src" / "demo" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "src" / "demo" / "helpers.py").write_text(
+        "THING = 42\n", encoding="utf-8", newline="\n"
+    )
+    (tmp_path / "src" / "demo" / "consumer.py").write_text(CONSUMER, encoding="utf-8", newline="\n")
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -132,7 +134,7 @@ def test_json_messages_are_the_text_report_lines(project, capsys):
 
 def test_strict_makes_cp002_an_error_and_changes_the_exit_code(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from definitely_missing_pkg_xyz import other\n", encoding="utf-8"
+        "from definitely_missing_pkg_xyz import other\n", encoding="utf-8", newline="\n"
     )
     rc, document = _json_run(capsys, "src")
     assert rc == document["exit_code"] == 0
@@ -149,6 +151,7 @@ def test_cp004_is_counted_always_and_listed_only_under_show_skipped(project, cap
         '[project]\nname = "demo"\nversion = "0"\n'
         "[tool.cleanporter]\nskip = [{ file = '.*consumer[.]py', reason = 'legacy' }]\n",
         encoding="utf-8",
+        newline="\n",
     )
     rc, document = _json_run(capsys, "src")
     assert rc == 0
@@ -163,7 +166,7 @@ def test_cp004_is_counted_always_and_listed_only_under_show_skipped(project, cap
 
 
 def test_json_lists_a_file_it_could_not_process_as_an_error(project, capsys):
-    (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8")
+    (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8", newline="\n")
     rc, out, err = _run(capsys, "--format", "json", "src")
     document = json.loads(out)
     assert rc == document["exit_code"] == 2
@@ -271,7 +274,7 @@ def test_sarif_strict_makes_cp002_an_error(project, capsys):
 
 
 def test_sarif_reports_a_file_error_as_a_failed_execution(project, capsys):
-    (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8")
+    (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8", newline="\n")
     rc, document, _ = _sarif_run(capsys, "src")
     assert rc == 2
     [run] = document["runs"]
@@ -356,7 +359,9 @@ def test_every_format_survives_a_surrogate_escaped_path(tmp_path):
 @posix_filenames
 def test_sarif_on_a_real_undecodable_filename(project, capsys):
     try:
-        (project / "src" / "demo" / _undecodable()).write_text("x = (\n", encoding="utf-8")
+        (project / "src" / "demo" / _undecodable()).write_text(
+            "x = (\n", encoding="utf-8", newline="\n"
+        )
     except (OSError, UnicodeEncodeError):
         pytest.skip("this filesystem does not take a non-UTF-8 filename")
     rc, document, _ = _sarif_run(capsys, "src")
@@ -428,7 +433,7 @@ def test_github_levels_follow_strict_and_show_skipped(tmp_path):
 
 
 def test_github_file_error_is_an_error_annotation(project, capsys):
-    (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8")
+    (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8", newline="\n")
     rc, out, _ = _run(capsys, "--format", "github", "src")
     assert rc == 2
     assert out.splitlines()[0].startswith(
@@ -500,11 +505,13 @@ def test_every_format_exits_as_the_text_report_does(tmp_path, monkeypatch, capsy
         work = tmp_path / fmt
         (work / "src" / "demo").mkdir(parents=True)
         (work / "pyproject.toml").write_text(
-            '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8"
+            '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8", newline="\n"
         )
-        (work / "src" / "demo" / "__init__.py").write_text("", encoding="utf-8")
-        (work / "src" / "demo" / "helpers.py").write_text("THING = 42\n", encoding="utf-8")
-        (work / "src" / "demo" / "consumer.py").write_text(CONSUMER, encoding="utf-8")
+        (work / "src" / "demo" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+        (work / "src" / "demo" / "helpers.py").write_text(
+            "THING = 42\n", encoding="utf-8", newline="\n"
+        )
+        (work / "src" / "demo" / "consumer.py").write_text(CONSUMER, encoding="utf-8", newline="\n")
         monkeypatch.chdir(work)
         codes[fmt] = cli.main(["--format", fmt, *argv, "src"])
         capsys.readouterr()
@@ -531,10 +538,11 @@ def test_a_package_writing_to_fd_1_on_import_cannot_corrupt_the_document(
     (site / "loudpkg" / "__init__.py").write_text(
         "import os\nos.write(1, b'LOUD BANNER\\n')\nprint('PRINTED BANNER')\nthing = 1\n",
         encoding="utf-8",
+        newline="\n",
     )
     monkeypatch.syspath_prepend(str(site))
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from loudpkg import thing\n", encoding="utf-8"
+        "from loudpkg import thing\n", encoding="utf-8", newline="\n"
     )
     rc = cli.main(["--format", "json", "--python", "self", "src"])
     captured = capfd.readouterr()
@@ -584,7 +592,7 @@ def test_descriptor_1_is_restored_when_a_flush_fails(capfd, monkeypatch):
 def test_a_run_with_no_sys_stdout_exits_cleanly(project, monkeypatch):
     """``>&-``, ``pythonw``, a GUI host: `sys.stdout` is None, and that is not a failure."""
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from definitely_missing_pkg_xyz import other\n", encoding="utf-8"
+        "from definitely_missing_pkg_xyz import other\n", encoding="utf-8", newline="\n"
     )
     monkeypatch.setattr(sys, "stdout", None)
     assert cli.main(["--python", "self", "src"]) == 0  # the probe ran in process
@@ -599,7 +607,7 @@ def test_a_run_with_no_sys_stdout_exits_cleanly(project, monkeypatch):
 def test_a_run_with_descriptor_2_closed_exits_cleanly(project):
     """``2>&-``: descriptor 2 cannot be the target of the probe's redirection."""
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from definitely_missing_pkg_xyz import other\n", encoding="utf-8"
+        "from definitely_missing_pkg_xyz import other\n", encoding="utf-8", newline="\n"
     )
     code = (
         "import sys; from cleanporter import cli; sys.exit(cli.main(['--python', 'self', 'src']))"
@@ -617,7 +625,7 @@ def test_a_run_with_descriptor_2_closed_exits_cleanly(project):
 
 def test_whole_project_json_reports_only_the_listed_files(project, capsys):
     (project / "src" / "demo" / "clean.py").write_text(
-        "from demo import helpers\n\nhelpers.THING\n", encoding="utf-8"
+        "from demo import helpers\n\nhelpers.THING\n", encoding="utf-8", newline="\n"
     )
     rc, document = _json_run(capsys, "--whole-project", "src/demo/clean.py")
     assert rc == document["exit_code"] == 0

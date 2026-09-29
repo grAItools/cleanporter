@@ -9,14 +9,16 @@ from cleanporter import config, discover
 
 def _tree(tmp_path: pathlib.Path) -> pathlib.Path:
     (tmp_path / "src" / "pkg").mkdir(parents=True)
-    (tmp_path / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "src" / "pkg" / "mod.py").write_text("", encoding="utf-8")
-    (tmp_path / "src" / "pkg" / "skipme.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "pkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "src" / "pkg" / "mod.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "src" / "pkg" / "skipme.py").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "src" / "pkg" / "__pycache__").mkdir()
-    (tmp_path / "src" / "pkg" / "__pycache__" / "mod.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "pkg" / "__pycache__" / "mod.py").write_text(
+        "", encoding="utf-8", newline="\n"
+    )
     (tmp_path / ".venv" / "lib").mkdir(parents=True)
-    (tmp_path / ".venv" / "lib" / "vendored.py").write_text("", encoding="utf-8")
-    (tmp_path / "notes.txt").write_text("", encoding="utf-8")
+    (tmp_path / ".venv" / "lib" / "vendored.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "notes.txt").write_text("", encoding="utf-8", newline="\n")
     return tmp_path
 
 

@@ -48,7 +48,9 @@ def _stub_venv(venv_dir: pathlib.Path) -> pathlib.Path:
     """A venv layout whose interpreter fails, so the probe warning names what ran."""
     python = venv_dir / "bin" / "python"
     python.parent.mkdir(parents=True)
-    python.write_text("#!/bin/sh\necho 'stub interpreter ran' >&2\nexit 1\n", encoding="utf-8")
+    python.write_text(
+        "#!/bin/sh\necho 'stub interpreter ran' >&2\nexit 1\n", encoding="utf-8", newline="\n"
+    )
     python.chmod(0o755)
     return python
 
@@ -182,7 +184,7 @@ def test_candidates_that_cannot_run_are_passed_over_silently(tmp_path, monkeypat
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "broken"))
     plain = tmp_path / ".venv" / "bin" / "python"
     plain.parent.mkdir(parents=True)
-    plain.write_text("", encoding="utf-8")
+    plain.write_text("", encoding="utf-8", newline="\n")
     plain.chmod(0o644)
     assert _interpreter.choose(None, tmp_path) == _interpreter.Choice(None)
     plain.chmod(0o755)
@@ -238,11 +240,13 @@ def test_the_prefix_rule_needs_a_virtual_environment(tmp_path, monkeypatch):
 def _workspace(tmp_path: pathlib.Path, table: str) -> pathlib.Path:
     """A workspace root at *tmp_path* declaring *table*, with a member ``packages/app``."""
     (tmp_path / "pyproject.toml").write_text(
-        f'[project]\nname = "ws"\n[tool.uv.workspace]\n{table}\n', encoding="utf-8"
+        f'[project]\nname = "ws"\n[tool.uv.workspace]\n{table}\n', encoding="utf-8", newline="\n"
     )
     member = tmp_path / "packages" / "app"
     member.mkdir(parents=True)
-    (member / "pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    (member / "pyproject.toml").write_text(
+        '[project]\nname = "app"\n', encoding="utf-8", newline="\n"
+    )
     return member
 
 
@@ -289,7 +293,9 @@ def test_a_project_inside_a_member_is_its_own_environment_root(tmp_path):
     _fake_venv(tmp_path / ".venv")
     demo = tmp_path / "packages" / "app" / "examples" / "demo"
     demo.mkdir(parents=True)
-    (demo / "pyproject.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+    (demo / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\n', encoding="utf-8", newline="\n"
+    )
     python = _fake_venv(demo / ".venv")
     choice = _interpreter.choose(None, demo)
     assert choice.python == str(python)
@@ -311,11 +317,14 @@ def test_a_nested_workspace_root_is_its_own_root(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "outer"\n[tool.uv.workspace]\nmembers = ["pkgs/*"]\n',
         encoding="utf-8",
+        newline="\n",
     )
     inner = tmp_path / "pkgs" / "inner"
     inner.mkdir(parents=True)
     (inner / "pyproject.toml").write_text(
-        '[project]\nname = "inner"\n[tool.uv.workspace]\nmembers = []\n', encoding="utf-8"
+        '[project]\nname = "inner"\n[tool.uv.workspace]\nmembers = []\n',
+        encoding="utf-8",
+        newline="\n",
     )
     _fake_venv(tmp_path / ".venv")
     python = _fake_venv(inner / ".venv")
@@ -361,6 +370,7 @@ def test_the_workspace_walk_stops_at_the_nearest_declaring_ancestor(tmp_path):
     (outer_member / "pyproject.toml").write_text(
         '[project]\nname = "app"\n[tool.uv.workspace]\nmembers = ["other/*"]\n',
         encoding="utf-8",
+        newline="\n",
     )
     project = outer_member / "sub"
     project.mkdir()
@@ -372,7 +382,9 @@ def test_an_unreadable_first_ancestor_pyproject_means_no_workspace(tmp_path):
     """It still ends the walk: a workspace further up is not consulted."""
     _workspace(tmp_path, 'members = ["**"]')
     _fake_venv(tmp_path / ".venv")
-    (tmp_path / "packages" / "pyproject.toml").write_text("this is [not", encoding="utf-8")
+    (tmp_path / "packages" / "pyproject.toml").write_text(
+        "this is [not", encoding="utf-8", newline="\n"
+    )
     assert _interpreter.choose(None, tmp_path / "packages" / "app") == _interpreter.Choice(None)
 
 
@@ -407,7 +419,7 @@ def test_uv_run_is_silent(tmp_path, monkeypatch):
 @pytest.mark.parametrize("value", ["auto", "self"])
 def test_the_sentinels_are_not_anchored_as_paths(tmp_path, value):
     (tmp_path / "pyproject.toml").write_text(
-        f'[tool.cleanporter]\npython = "{value}"\n', encoding="utf-8"
+        f'[tool.cleanporter]\npython = "{value}"\n', encoding="utf-8", newline="\n"
     )
     assert config.load_config(tmp_path).python == value
 
@@ -417,7 +429,9 @@ def test_the_default_config_detects(tmp_path):
     """No key, no flag: a run under a plain `Config` probes the project's `.venv`."""
     assert config.Config().python is None
     python = _stub_venv(tmp_path / ".venv")
-    (tmp_path / "app.py").write_text("from functools import partial\n", encoding="utf-8")
+    (tmp_path / "app.py").write_text(
+        "from functools import partial\n", encoding="utf-8", newline="\n"
+    )
     result = engine.run([tmp_path / "app.py"], config.Config(root=tmp_path))
     assert len(result.notes) == 1
     assert str(python) in result.notes[0]
@@ -429,9 +443,9 @@ _PROJECT = '[project]\nname = "demo"\nversion = "0"\n'
 
 def _stub_project(tmp_path: pathlib.Path, table: str = "") -> pathlib.Path:
     """A project with a stdlib import to probe, and a failing stub as its ``.venv``."""
-    (tmp_path / "pyproject.toml").write_text(_PROJECT + table, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(_PROJECT + table, encoding="utf-8", newline="\n")
     (tmp_path / "app.py").write_text(
-        "from functools import partial\nf = partial(print)\n", encoding="utf-8"
+        "from functools import partial\nf = partial(print)\n", encoding="utf-8", newline="\n"
     )
     _stub_venv(tmp_path / ".venv")
     return tmp_path
@@ -521,7 +535,9 @@ def _real_venv_with_onlyhere(venv_dir: pathlib.Path) -> pathlib.Path:
     ).stdout.strip()
     package = pathlib.Path(purelib) / "onlyhere"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text("def helper():\n    pass\n", encoding="utf-8")
+    (package / "__init__.py").write_text(
+        "def helper():\n    pass\n", encoding="utf-8", newline="\n"
+    )
     return python
 
 
@@ -536,8 +552,10 @@ class _Notes(engine.Listener):
 def test_a_package_only_the_project_has_is_classified_through_detection(tmp_path):
     """The pipx / ``uv tool`` case: cleanporter's environment lacks ``onlyhere``."""
     python = _real_venv_with_onlyhere(tmp_path / ".venv")
-    (tmp_path / "pyproject.toml").write_text(_PROJECT, encoding="utf-8")
-    (tmp_path / "app.py").write_text("from onlyhere import helper\nhelper()\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(_PROJECT, encoding="utf-8", newline="\n")
+    (tmp_path / "app.py").write_text(
+        "from onlyhere import helper\nhelper()\n", encoding="utf-8", newline="\n"
+    )
     cfg = config.load_config(tmp_path)
     listener = _Notes()
 

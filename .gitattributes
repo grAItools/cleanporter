@@ -3,4 +3,9 @@
 # preserves a file's line endings -- so a checkout that turned them into CRLF
 # (Git for Windows' default `core.autocrlf=true`) would test different inputs
 # from the ones committed. The tests that need CRLF write it themselves.
+#
+# This covers the checkout only. Files a test writes at run time are the
+# test's to pin: `Path.write_text` translates `\n` to CRLF on Windows unless
+# given `newline="\n"`, which every call in tests/ therefore passes
+# (tests/test_portability.py enforces it).
 * text=auto eol=lf

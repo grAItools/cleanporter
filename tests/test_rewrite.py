@@ -1324,11 +1324,11 @@ def test_an_ordinary_alias_is_still_rewritten():
 def _tree(tmp_path: pathlib.Path, **files: str) -> pathlib.Path:
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "display.py").write_text("def dump(x):\n    return x\n")
-    (pkg / "tool.py").write_text("from pkg.display import dump\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "display.py").write_text("def dump(x):\n    return x\n", newline="\n")
+    (pkg / "tool.py").write_text("from pkg.display import dump\n", newline="\n")
     for name, body in files.items():
-        (pkg / f"{name}.py").write_text(body)
+        (pkg / f"{name}.py").write_text(body, newline="\n")
     return pkg
 
 
@@ -1339,7 +1339,7 @@ def _fix_all(pkg: pathlib.Path) -> None:
     for rec in records:
         out = rewrite.fix_record(rec, resolver, cfg)
         if out.status == "fixed":
-            rec.path.write_text(out.source)
+            rec.path.write_text(out.source, newline="\n")
 
 
 def test_a_load_bearing_reexport_is_kept_but_the_rest_of_the_file_is_fixed(
@@ -1347,14 +1347,15 @@ def test_a_load_bearing_reexport_is_kept_but_the_rest_of_the_file_is_fixed(
 ) -> None:
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "display.py").write_text("def dump():\n    return 1\n")
-    (pkg / "other.py").write_text("class Thing:\n    pass\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n", newline="\n")
+    (pkg / "other.py").write_text("class Thing:\n    pass\n", newline="\n")
     (pkg / "tool.py").write_text(
         "from pkg.display import dump\nfrom pkg.other import Thing\n"
-        "def go():\n    return dump(), Thing()\n"
+        "def go():\n    return dump(), Thing()\n",
+        newline="\n",
     )
-    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
+    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n", newline="\n")
 
     built = project.build([pkg], config_lib.Config(root=pkg.parent))
 
@@ -1798,13 +1799,13 @@ def _fix_in(tmp_path: pathlib.Path, target: str, source: str) -> rewrite.FixOutc
     """Fix *source*, written to *target* under a ``top/pkg/sub`` package tree."""
     top = tmp_path / "top"
     (top / "pkg" / "sub").mkdir(parents=True, exist_ok=True)
-    (top / "__init__.py").write_text("")
-    (top / "pkg" / "util.py").write_text("def helper():\n    return 1\n")
-    (top / "pkg" / "sub" / "__init__.py").write_text("")
+    (top / "__init__.py").write_text("", newline="\n")
+    (top / "pkg" / "util.py").write_text("def helper():\n    return 1\n", newline="\n")
+    (top / "pkg" / "sub" / "__init__.py").write_text("", newline="\n")
     init = top / "pkg" / "__init__.py"
     if not init.exists():
-        init.write_text("class Obj:\n    pass\n")
-    (top / target).write_text(source)
+        init.write_text("class Obj:\n    pass\n", newline="\n")
+    (top / target).write_text(source, newline="\n")
     cfg = config_lib.Config(root=tmp_path)
     built = project.build([top], cfg)
     records, resolver = built.records, built.resolver
@@ -1821,8 +1822,8 @@ def test_a_level_two_relative_import_is_rewritten_relative(tmp_path: pathlib.Pat
 def test_a_level_two_import_through_a_sibling_package(tmp_path: pathlib.Path) -> None:
     sibling = tmp_path / "top" / "pkg" / "sib"
     sibling.mkdir(parents=True)
-    (sibling / "__init__.py").write_text("")
-    (sibling / "mod.py").write_text("class X:\n    pass\n")
+    (sibling / "__init__.py").write_text("", newline="\n")
+    (sibling / "mod.py").write_text("class X:\n    pass\n", newline="\n")
     result = _fix_in(tmp_path, "pkg/sub/b.py", "from ..sib.mod import X\nx = X()\n")
     assert result.status == "fixed"
     assert result.source == "from ..sib import mod\nx = mod.X()\n"
@@ -1860,9 +1861,9 @@ def test_importing_from_a_top_level_package_itself_keeps_that_line(
     """
     solo = tmp_path / "solo"
     solo.mkdir()
-    (solo / "__init__.py").write_text("class Thing:\n    pass\n")
+    (solo / "__init__.py").write_text("class Thing:\n    pass\n", newline="\n")
     src = "from . import Thing\nfrom os.path import join\nx = Thing(join)\n"
-    (solo / "mod.py").write_text(src)
+    (solo / "mod.py").write_text(src, newline="\n")
     cfg = config_lib.Config(root=tmp_path)
     built = project.build([solo], cfg)
     records, resolver = built.records, built.resolver

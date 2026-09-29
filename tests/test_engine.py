@@ -19,9 +19,9 @@ _FIXED = "from demo import helpers\ntotal = helpers.THING\n"
 def tree(tmp_path: pathlib.Path) -> pathlib.Path:
     pkg = tmp_path / "demo"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("", encoding="utf-8")
-    (pkg / "helpers.py").write_text("THING = 42\n", encoding="utf-8")
-    (pkg / "consumer.py").write_text(_CONSUMER, encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (pkg / "helpers.py").write_text("THING = 42\n", encoding="utf-8", newline="\n")
+    (pkg / "consumer.py").write_text(_CONSUMER, encoding="utf-8", newline="\n")
     return tmp_path
 
 
@@ -119,7 +119,7 @@ def test_a_load_error_is_not_a_write_error(tree: pathlib.Path) -> None:
     ],
 )
 def test_exit_code(tree: pathlib.Path, source: str, *, strict: bool, expected: int) -> None:
-    (tree / "demo" / "consumer.py").write_text(source, encoding="utf-8")
+    (tree / "demo" / "consumer.py").write_text(source, encoding="utf-8", newline="\n")
     result = engine.run([tree / "demo"], config.Config(root=tree))
     assert result.errors == ()
     assert result.exit_code(strict=strict) == expected
@@ -146,6 +146,7 @@ def test_findings_are_sorted(tree: pathlib.Path) -> None:
     (tree / "demo" / "a.py").write_text(
         "from demo.helpers import THING\nfrom os.path import join\nx = THING, join\n",
         encoding="utf-8",
+        newline="\n",
     )
     result = engine.run([tree / "demo"], config.Config(root=tree))
     keys = [(str(f.path), f.line, f.column, f.code) for f in result.findings]
@@ -154,8 +155,10 @@ def test_findings_are_sorted(tree: pathlib.Path) -> None:
 
 
 def test_a_project_is_immutable_and_has_its_evidence(tree: pathlib.Path) -> None:
-    (tree / "demo" / "reexport.py").write_text("from demo.helpers import THING\n")
-    (tree / "demo" / "user.py").write_text("from demo.reexport import THING\nx = THING\n")
+    (tree / "demo" / "reexport.py").write_text("from demo.helpers import THING\n", newline="\n")
+    (tree / "demo" / "user.py").write_text(
+        "from demo.reexport import THING\nx = THING\n", newline="\n"
+    )
     built = project.build([tree / "demo"], config.Config(root=tree))
     for field in dataclasses.fields(built):
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -166,7 +169,7 @@ def test_a_project_is_immutable_and_has_its_evidence(tree: pathlib.Path) -> None
 
 
 def test_a_standalone_resolver_has_no_evidence(tree: pathlib.Path) -> None:
-    (tree / "demo" / "reexport.py").write_text("from demo.helpers import THING\n")
+    (tree / "demo" / "reexport.py").write_text("from demo.helpers import THING\n", newline="\n")
     module_map = firstparty.ModuleMap([tree])
     bare = resolver_lib.Resolver(module_map, evidence=resolver_lib.NO_EVIDENCE)
     assert not bare.is_load_bearing("demo.reexport", "THING")

@@ -12,10 +12,10 @@ from cleanporter import config
 
 def _project(tmp_path: pathlib.Path, table: str = "") -> pathlib.Path:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0"\n' + table, encoding="utf-8"
+        '[project]\nname = "demo"\nversion = "0"\n' + table, encoding="utf-8", newline="\n"
     )
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     return tmp_path
 
 
@@ -38,7 +38,7 @@ def test_search_walks_upward_from_a_file(tmp_path):
     _project(tmp_path)
     deep = tmp_path / "pkg" / "deep" / "mod.py"
     deep.parent.mkdir(parents=True)
-    deep.write_text("", encoding="utf-8")
+    deep.write_text("", encoding="utf-8", newline="\n")
     assert config.find_pyproject(deep) == tmp_path / "pyproject.toml"
     assert config.load_config(deep).root == tmp_path
 
@@ -189,7 +189,7 @@ def test_mismatch_warning_names_the_config_used_and_the_paths_it_ignores(tmp_pat
     second = _project(tmp_path / "two")
     nested = first / "pkg" / "inner"
     nested.mkdir()
-    (nested / "pyproject.toml").write_text("", encoding="utf-8")
+    (nested / "pyproject.toml").write_text("", encoding="utf-8", newline="\n")
     warning = config.mismatch_warning([first / "pkg", second / "pkg", nested, first])
     assert warning is not None
     assert str(first / "pyproject.toml") in warning

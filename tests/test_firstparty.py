@@ -14,8 +14,8 @@ from cleanporter import _bindings, firstparty, model
 def _pkg(tmp_path: pathlib.Path) -> pathlib.Path:
     root = tmp_path / "src"
     (root / "amb").mkdir(parents=True)
-    (root / "amb" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "amb" / "mod.py").write_text("Q = 1\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (root / "amb" / "mod.py").write_text("Q = 1\n", encoding="utf-8", newline="\n")
     return root
 
 
@@ -27,7 +27,7 @@ def test_py_submodule_is_a_module(tmp_path):
 
 def test_plain_object_is_not_a_module(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("Thing = object()\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text("Thing = object()\n", encoding="utf-8", newline="\n")
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "Thing") is model.Kind.OBJECT
 
@@ -63,7 +63,7 @@ def test_non_first_party_defers_to_the_probe(tmp_path):
 def test_submodule_shadowed_by_an_init_binding_is_ambiguous(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text(
-        'mod = "shadowing string, not the submodule"\n', encoding="utf-8"
+        'mod = "shadowing string, not the submodule"\n', encoding="utf-8", newline="\n"
     )
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "mod") is model.Kind.AMBIGUOUS
@@ -71,7 +71,7 @@ def test_submodule_shadowed_by_an_init_binding_is_ambiguous(tmp_path):
 
 def test_init_importing_its_own_submodule_is_not_ambiguous(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("from . import mod\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text("from . import mod\n", encoding="utf-8", newline="\n")
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "mod") is model.Kind.MODULE
 
@@ -86,7 +86,9 @@ def test_init_importing_its_own_submodule_absolutely_is_not_ambiguous(tmp_path):
     unresolvable.
     """
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("from amb import mod\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text(
+        "from amb import mod\n", encoding="utf-8", newline="\n"
+    )
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "mod") is model.Kind.MODULE
 
@@ -95,9 +97,11 @@ def test_an_absolute_import_of_another_packages_module_still_shadows(tmp_path):
     """Only the file's *own* package is discounted; anything else is a binding."""
     root = _pkg(tmp_path)
     (root / "other").mkdir()
-    (root / "other" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "other" / "mod.py").write_text("Q = 2\n", encoding="utf-8")
-    (root / "amb" / "__init__.py").write_text("from other import mod\n", encoding="utf-8")
+    (root / "other" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (root / "other" / "mod.py").write_text("Q = 2\n", encoding="utf-8", newline="\n")
+    (root / "amb" / "__init__.py").write_text(
+        "from other import mod\n", encoding="utf-8", newline="\n"
+    )
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "mod") is model.Kind.AMBIGUOUS
 
@@ -105,8 +109,10 @@ def test_an_absolute_import_of_another_packages_module_still_shadows(tmp_path):
 def test_an_aliased_absolute_self_import_still_shadows(tmp_path):
     """``from amb import mod as m`` binds ``m``, which nothing auto-populates."""
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("from amb import mod as m\n", encoding="utf-8")
-    (root / "amb" / "m.py").write_text("Q = 1\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text(
+        "from amb import mod as m\n", encoding="utf-8", newline="\n"
+    )
+    (root / "amb" / "m.py").write_text("Q = 1\n", encoding="utf-8", newline="\n")
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "m") is model.Kind.AMBIGUOUS
 
@@ -121,7 +127,7 @@ def test_a_competing_binding_beside_the_self_import_is_still_ambiguous(tmp_path)
     """
     root = _pkg(tmp_path)
     for init in ("from amb import mod\nmod = wrap(mod)\n", "from . import mod\nmod = 42\n"):
-        (root / "amb" / "__init__.py").write_text(init, encoding="utf-8")
+        (root / "amb" / "__init__.py").write_text(init, encoding="utf-8", newline="\n")
         mm = firstparty.ModuleMap([root])
         assert mm.classify("amb", "mod") is model.Kind.AMBIGUOUS, init
 
@@ -129,7 +135,7 @@ def test_a_competing_binding_beside_the_self_import_is_still_ambiguous(tmp_path)
 def test_for_loop_binding_that_shadows_a_submodule_is_ambiguous(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text(
-        'for mod in ["placeholder"]:\n    pass\n', encoding="utf-8"
+        'for mod in ["placeholder"]:\n    pass\n', encoding="utf-8", newline="\n"
     )
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "mod") is model.Kind.AMBIGUOUS
@@ -138,17 +144,21 @@ def test_for_loop_binding_that_shadows_a_submodule_is_ambiguous(tmp_path):
 def test_grandparent_relative_import_that_shadows_a_submodule_is_ambiguous(tmp_path):
     root = tmp_path / "src"
     (root / "pkg" / "sub").mkdir(parents=True)
-    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "pkg" / "sub" / "__init__.py").write_text("from .. import Y\n", encoding="utf-8")
-    (root / "pkg" / "sub" / "Y.py").write_text("Q = 1\n", encoding="utf-8")
+    (root / "pkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (root / "pkg" / "sub" / "__init__.py").write_text(
+        "from .. import Y\n", encoding="utf-8", newline="\n"
+    )
+    (root / "pkg" / "sub" / "Y.py").write_text("Q = 1\n", encoding="utf-8", newline="\n")
     mm = firstparty.ModuleMap([root])
     assert mm.classify("pkg.sub", "Y") is model.Kind.AMBIGUOUS
 
 
 def test_aliased_self_import_that_shadows_a_real_submodule_is_ambiguous(tmp_path):
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("from . import mod as m\n", encoding="utf-8")
-    (root / "amb" / "m.py").write_text("Q = 1\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text(
+        "from . import mod as m\n", encoding="utf-8", newline="\n"
+    )
+    (root / "amb" / "m.py").write_text("Q = 1\n", encoding="utf-8", newline="\n")
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "m") is model.Kind.AMBIGUOUS
 
@@ -156,7 +166,7 @@ def test_aliased_self_import_that_shadows_a_real_submodule_is_ambiguous(tmp_path
 def test_bare_annotation_does_not_bind_and_is_not_ambiguous(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text(
-        "from types import ModuleType\nmod: ModuleType\n", encoding="utf-8"
+        "from types import ModuleType\nmod: ModuleType\n", encoding="utf-8", newline="\n"
     )
     mm = firstparty.ModuleMap([root])
     assert mm.classify("amb", "mod") is model.Kind.MODULE
@@ -168,8 +178,10 @@ def test_bare_annotation_does_not_bind_and_is_not_ambiguous(tmp_path):
 def _shadowed_package(tmp_path: pathlib.Path) -> pathlib.Path:
     """``amb/`` re-exporting ``Q``, with a stale flat ``amb.py`` beside it."""
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("from amb.mod import Q\n", encoding="utf-8")
-    (root / "amb.py").write_text("Q = 2\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text(
+        "from amb.mod import Q\n", encoding="utf-8", newline="\n"
+    )
+    (root / "amb.py").write_text("Q = 2\n", encoding="utf-8", newline="\n")
     return root
 
 
@@ -197,8 +209,8 @@ def test_a_name_neither_claimant_reexports_is_not_a_reexport(tmp_path):
 def test_submodules_lists_the_immediate_children(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "deep").mkdir()
-    (root / "amb" / "deep" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "amb" / "deep" / "buried.py").write_text("", encoding="utf-8")
+    (root / "amb" / "deep" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (root / "amb" / "deep" / "buried.py").write_text("", encoding="utf-8", newline="\n")
     (root / "amb" / "accel.abi3.so").touch()
     mm = firstparty.ModuleMap([root])
     assert mm.submodules("amb") == frozenset({"mod", "deep", "accel"})
@@ -218,14 +230,16 @@ def test_submodules_of_a_plain_module_is_empty(tmp_path):
 def _src_layout(tmp_path: pathlib.Path) -> pathlib.Path:
     """A src-layout project whose ``tests/__init__.py`` drags the repo root in."""
     (tmp_path / "src" / "mypkg").mkdir(parents=True)
-    (tmp_path / "src" / "mypkg" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "src" / "mypkg" / "helpers.py").write_text("Widget = object\n", encoding="utf-8")
+    (tmp_path / "src" / "mypkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "src" / "mypkg" / "helpers.py").write_text(
+        "Widget = object\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "src" / "mypkg" / "consumer.py").write_text(
-        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
+        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "tests" / "test_it.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "tests" / "test_it.py").write_text("", encoding="utf-8", newline="\n")
     return tmp_path
 
 
@@ -265,22 +279,26 @@ def test_nesting_roots_is_reported_as_a_warning(tmp_path):
 def _flat_namespace(tmp_path: pathlib.Path) -> pathlib.Path:
     """``mypkg/`` with no ``__init__.py``; ``tests/`` drags in the repo root."""
     (tmp_path / "mypkg").mkdir()
-    (tmp_path / "mypkg" / "helpers.py").write_text("Widget = object\n", encoding="utf-8")
+    (tmp_path / "mypkg" / "helpers.py").write_text(
+        "Widget = object\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "mypkg" / "consumer.py").write_text(
-        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
+        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     return tmp_path
 
 
 def _nested_namespace(tmp_path: pathlib.Path) -> pathlib.Path:
     """``pkg/__init__.py`` plus a namespace subpackage ``pkg/sub/``."""
     (tmp_path / "pkg" / "sub").mkdir(parents=True)
-    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "pkg" / "sub" / "other.py").write_text("Thing = object\n", encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "pkg" / "sub" / "other.py").write_text(
+        "Thing = object\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "pkg" / "sub" / "mod.py").write_text(
-        "from .other import Thing\nt = Thing()\n", encoding="utf-8"
+        "from .other import Thing\nt = Thing()\n", encoding="utf-8", newline="\n"
     )
     return tmp_path
 
@@ -302,7 +320,9 @@ def test_a_namespace_subpackage_is_not_mistaken_for_an_import_root(tmp_path):
 
 def test_a_deeper_relative_import_pushes_the_root_further_up(tmp_path):
     root = _nested_namespace(tmp_path)
-    (root / "pkg" / "sub" / "mod.py").write_text("from ..other import Thing\n", encoding="utf-8")
+    (root / "pkg" / "sub" / "mod.py").write_text(
+        "from ..other import Thing\n", encoding="utf-8", newline="\n"
+    )
     mm = firstparty.ModuleMap.from_paths(sorted(root.rglob("*.py")))
     # `from ..x` needs two packages above it, which only the repo root gives.
     assert mm.qualname_for(root / "pkg" / "sub" / "mod.py", relative_level=2) == "pkg.sub.mod"
@@ -311,7 +331,7 @@ def test_a_deeper_relative_import_pushes_the_root_further_up(tmp_path):
 def test_a_namespace_package_init_is_qualified_against_its_parent(tmp_path):
     root = _nested_namespace(tmp_path)
     (root / "pkg" / "sub" / "__init__.py").write_text(
-        "from .other import Thing\n", encoding="utf-8"
+        "from .other import Thing\n", encoding="utf-8", newline="\n"
     )
     mm = firstparty.ModuleMap.from_paths(sorted(root.rglob("*.py")))
     assert mm.qualname_for(root / "pkg" / "sub" / "__init__.py", relative_level=1) == "pkg.sub"
@@ -327,9 +347,11 @@ def test_an_unanchorable_relative_import_still_gets_a_qualname(tmp_path):
 def _declared_namespace(tmp_path: pathlib.Path) -> pathlib.Path:
     """A src layout whose package is a PEP 420 namespace package."""
     (tmp_path / "src" / "mypkg").mkdir(parents=True)
-    (tmp_path / "src" / "mypkg" / "other.py").write_text("Thing = object\n", encoding="utf-8")
+    (tmp_path / "src" / "mypkg" / "other.py").write_text(
+        "Thing = object\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "src" / "mypkg" / "mod.py").write_text(
-        "from .other import Thing\nt = Thing()\n", encoding="utf-8"
+        "from .other import Thing\nt = Thing()\n", encoding="utf-8", newline="\n"
     )
     return tmp_path
 
@@ -359,14 +381,16 @@ def test_a_declared_root_is_kept_even_when_no_file_implies_it(tmp_path):
 
 def _namespace_with_subpackage(tmp_path: pathlib.Path) -> pathlib.Path:
     (tmp_path / "analytics" / "io").mkdir(parents=True)
-    (tmp_path / "analytics" / "io" / "readers.py").write_text("read = print\n", encoding="utf-8")
+    (tmp_path / "analytics" / "io" / "readers.py").write_text(
+        "read = print\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "analytics" / "io" / "__init__.py").write_text(
-        "from .readers import read\n", encoding="utf-8"
+        "from .readers import read\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "tests" / "test_it.py").write_text(
-        "from analytics.io import read\n", encoding="utf-8"
+        "from analytics.io import read\n", encoding="utf-8", newline="\n"
     )
     return tmp_path
 
@@ -418,7 +442,7 @@ def _write(root: pathlib.Path, files: dict[str, str]) -> None:
     for rel, text in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        path.write_text(text, encoding="utf-8", newline="\n")
 
 
 def _map(tmp_path: pathlib.Path, files: dict[str, str]) -> firstparty.ModuleMap:
@@ -698,7 +722,7 @@ def test_a_bom_prefixed_init_is_read(tmp_path: pathlib.Path) -> None:
 def test_an_init_that_cannot_be_parsed_proves_nothing(tmp_path: pathlib.Path) -> None:
     """Unreadable is not "binds nothing": every answer is the one that cannot hurt."""
     root = _pkg(tmp_path)
-    (root / "amb" / "__init__.py").write_text("def broken(:\n", encoding="utf-8")
+    (root / "amb" / "__init__.py").write_text("def broken(:\n", encoding="utf-8", newline="\n")
     mm = firstparty.ModuleMap([root])
     # A submodule it might shadow is not called reachable...
     assert "cannot be read or parsed" in _undetermined(mm, "amb", "mod")
@@ -1053,7 +1077,7 @@ def test_only_a_single_literal_all_is_static(
     tmp_path: pathlib.Path, source: str, expected: tuple[frozenset[str] | None, bool]
 ) -> None:
     path = tmp_path / "m.py"
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="\n")
     ns = _bindings.namespace(str(path))
     assert ns is not None
     assert (ns.all_names, ns.all_dynamic) == expected
@@ -1062,7 +1086,7 @@ def test_only_a_single_literal_all_is_static(
 def test_namespace_records_every_origin_of_a_name(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "m.py"
     source = "try:\n    from ._fast import f\nexcept ImportError:\n    from .slow import g as f\n"
-    path.write_text(source, encoding="utf-8")
+    path.write_text(source, encoding="utf-8", newline="\n")
     ns = _bindings.namespace(str(path))
     assert ns is not None
     assert ns.from_imports["f"] == ((1, "_fast", "f"), (1, "slow", "g"))
@@ -1103,7 +1127,7 @@ def test_a_package_named_build_below_a_root_is_scanned(tmp_path: pathlib.Path) -
 def test_a_directory_holding_no_python_is_still_first_party(tmp_path: pathlib.Path) -> None:
     root = _pkg(tmp_path)
     (root / "assets").mkdir()
-    (root / "assets" / "logo.svg").write_text("<svg/>", encoding="utf-8")
+    (root / "assets" / "logo.svg").write_text("<svg/>", encoding="utf-8", newline="\n")
     mm = firstparty.ModuleMap([root])
     assert mm.is_first_party("amb.anything")
     assert mm.is_first_party("assets")

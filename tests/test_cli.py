@@ -17,12 +17,14 @@ from cleanporter import cli
 def project(tmp_path: pathlib.Path) -> pathlib.Path:
     (tmp_path / "src" / "demo").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8"
+        '[project]\nname = "demo"\nversion = "0"\n', encoding="utf-8", newline="\n"
     )
-    (tmp_path / "src" / "demo" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "src" / "demo" / "helpers.py").write_text("THING = 42\n", encoding="utf-8")
+    (tmp_path / "src" / "demo" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "src" / "demo" / "helpers.py").write_text(
+        "THING = 42\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "src" / "demo" / "consumer.py").write_text(
-        "from demo.helpers import THING\ntotal = THING\n", encoding="utf-8"
+        "from demo.helpers import THING\ntotal = THING\n", encoding="utf-8", newline="\n"
     )
     return tmp_path
 
@@ -36,7 +38,7 @@ def test_check_reports_and_exits_1(project, capsys):
 
 def test_clean_tree_exits_0(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8"
+        "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8", newline="\n"
     )
     assert cli.main([str(project / "src")]) == 0
 
@@ -65,13 +67,14 @@ def test_typing_imports_are_exempt(project, capsys):
         "from typing import Any\nfrom collections.abc import Mapping\n"
         "x: Any = None\ny: Mapping = {}\n",
         encoding="utf-8",
+        newline="\n",
     )
     assert cli.main([str(project / "src")]) == 0
 
 
 def test_exempt_flag_extends_the_allowlist(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from demo.helpers import THING\n", encoding="utf-8"
+        "from demo.helpers import THING\n", encoding="utf-8", newline="\n"
     )
     assert cli.main(["--exempt", "demo.helpers", str(project / "src")]) == 0
 
@@ -81,13 +84,14 @@ def test_exclude_config_is_respected(project, capsys):
         '[project]\nname = "demo"\nversion = "0"\n'
         '[tool.cleanporter]\nexclude = ["**/consumer.py"]\n',
         encoding="utf-8",
+        newline="\n",
     )
     assert cli.main([str(project / "src")]) == 0
     assert "consumer.py" not in capsys.readouterr().out
 
 
 def test_syntax_error_exits_2(project, capsys):
-    (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8")
+    (project / "src" / "demo" / "broken.py").write_text("def (:\n", encoding="utf-8", newline="\n")
     assert cli.main([str(project / "src")]) == 2
 
 
@@ -95,6 +99,7 @@ def test_bad_config_exits_2(project, capsys):
     (project / "pyproject.toml").write_text(
         '[project]\nname = "demo"\nversion = "0"\n[tool.cleanporter]\nscope = "nonsense"\n',
         encoding="utf-8",
+        newline="\n",
     )
     assert cli.main([str(project / "src")]) == 2
     assert "configuration error" in capsys.readouterr().err
@@ -105,12 +110,13 @@ def test_scope_first_party_check_and_fix_agree(project, capsys):
     (project / "pyproject.toml").write_text(
         '[project]\nname = "demo"\nversion = "0"\n[tool.cleanporter]\nscope = "first-party"\n',
         encoding="utf-8",
+        newline="\n",
     )
     target = project / "src" / "demo" / "m.py"
     source = 'from os.path import join\nprint(join("a", "b"))\n'
-    target.write_text(source, encoding="utf-8")
+    target.write_text(source, encoding="utf-8", newline="\n")
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8"
+        "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8", newline="\n"
     )
     src = str(project / "src")
     assert cli.main([src]) == 0
@@ -130,7 +136,7 @@ def test_missing_path_warns_and_exits_0(project, capsys):
 
 def test_strict_promotes_unresolved_to_failure(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from definitely_missing_pkg_xyz import thing\n", encoding="utf-8"
+        "from definitely_missing_pkg_xyz import thing\n", encoding="utf-8", newline="\n"
     )
     assert cli.main([str(project / "src")]) == 0
     assert cli.main(["--strict", str(project / "src")]) == 1
@@ -143,6 +149,7 @@ def test_fix_still_reports_violations_it_declined(project, capsys):
         # be kept as never-read and the guard would never be reached.
         'from demo.helpers import THING\n__all__ = ["THING"]\nx = THING\n',
         encoding="utf-8",
+        newline="\n",
     )
     rc = cli.main(["--fix", str(project / "src")])
     err = capsys.readouterr().err
@@ -162,6 +169,7 @@ def test_summary_counts_match_the_printed_lines(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
         "from demo.helpers import THING\nfrom definitely_missing_pkg_xyz import other\n",
         encoding="utf-8",
+        newline="\n",
     )
     cli.main([str(project / "src")])
     out = capsys.readouterr().out
@@ -173,7 +181,7 @@ def test_summary_counts_match_the_printed_lines(project, capsys):
 
 def test_unanchorable_relative_import_is_counted(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from ..... import nothing\n", encoding="utf-8"
+        "from ..... import nothing\n", encoding="utf-8", newline="\n"
     )
     cli.main([str(project / "src")])
     out = capsys.readouterr().out
@@ -183,7 +191,7 @@ def test_unanchorable_relative_import_is_counted(project, capsys):
 
 def test_strict_exits_1_for_unanchorable_relative_import(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from ..... import nothing\n", encoding="utf-8"
+        "from ..... import nothing\n", encoding="utf-8", newline="\n"
     )
     assert cli.main(["--strict", str(project / "src")]) == 1
 
@@ -221,17 +229,17 @@ def src_layout(tmp_path: pathlib.Path) -> pathlib.Path:
     """A src-layout project with a `tests/` package, as most repos have."""
     (tmp_path / "src" / "mypkg").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "mypkg"\nversion = "0"\n', encoding="utf-8"
+        '[project]\nname = "mypkg"\nversion = "0"\n', encoding="utf-8", newline="\n"
     )
-    (tmp_path / "src" / "mypkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "mypkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "src" / "mypkg" / "helpers.py").write_text(
-        "class Widget:\n    pass\n", encoding="utf-8"
+        "class Widget:\n    pass\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "src" / "mypkg" / "consumer.py").write_text(
-        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
+        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     return tmp_path
 
 
@@ -352,13 +360,13 @@ def declared_namespace(tmp_path: pathlib.Path) -> pathlib.Path:
     only thing that says where the import root is."""
     (tmp_path / "src" / "mypkg").mkdir(parents=True)
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "mypkg"\nversion = "0"\n', encoding="utf-8"
+        '[project]\nname = "mypkg"\nversion = "0"\n', encoding="utf-8", newline="\n"
     )
     (tmp_path / "src" / "mypkg" / "other.py").write_text(
-        "class Thing:\n    pass\n", encoding="utf-8"
+        "class Thing:\n    pass\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "src" / "mypkg" / "mod.py").write_text(
-        "from .other import Thing\nt = Thing()\n", encoding="utf-8"
+        "from .other import Thing\nt = Thing()\n", encoding="utf-8", newline="\n"
     )
     return tmp_path
 
@@ -386,12 +394,14 @@ def test_an_explicit_root_beats_a_namespace_package_inferred_below_it(
 
 def test_a_flat_namespace_package_stays_importable_after_fix(tmp_path, monkeypatch, capsys):
     (tmp_path / "mypkg").mkdir()
-    (tmp_path / "mypkg" / "helpers.py").write_text("class Widget:\n    pass\n", encoding="utf-8")
+    (tmp_path / "mypkg" / "helpers.py").write_text(
+        "class Widget:\n    pass\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "mypkg" / "consumer.py").write_text(
-        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8"
+        "from .helpers import Widget\nw = Widget()\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     monkeypatch.chdir(tmp_path)
 
     cli.main(["--fix", "."])
@@ -406,10 +416,14 @@ def test_a_flat_namespace_package_stays_importable_after_fix(tmp_path, monkeypat
 
 def test_a_namespace_subpackage_reuses_its_existing_relative_import(tmp_path, monkeypatch, capsys):
     (tmp_path / "pkg" / "sub").mkdir(parents=True)
-    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "pkg" / "sub" / "other.py").write_text("class Thing:\n    pass\n", encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "pkg" / "sub" / "other.py").write_text(
+        "class Thing:\n    pass\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "pkg" / "sub" / "mod.py").write_text(
-        "from . import other\nfrom .other import Thing\nt = Thing()\n", encoding="utf-8"
+        "from . import other\nfrom .other import Thing\nt = Thing()\n",
+        encoding="utf-8",
+        newline="\n",
     )
     monkeypatch.chdir(tmp_path)
 
@@ -436,14 +450,18 @@ def shadowed_package(tmp_path: pathlib.Path) -> pathlib.Path:
     to a newer packaged one. The corpus ships exactly this: ``click_plugins.py``
     (2.0dev) beside ``click_plugins/`` (1.1.1.2).
     """
-    (tmp_path / "pkg.py").write_text('def helper():\n    return "flat"\n', encoding="utf-8")
+    (tmp_path / "pkg.py").write_text(
+        'def helper():\n    return "flat"\n', encoding="utf-8", newline="\n"
+    )
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / "__init__.py").write_text("from pkg.core import helper\n", encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text(
+        "from pkg.core import helper\n", encoding="utf-8", newline="\n"
+    )
     (tmp_path / "pkg" / "core.py").write_text(
-        'def helper():\n    return "packaged"\n', encoding="utf-8"
+        'def helper():\n    return "packaged"\n', encoding="utf-8", newline="\n"
     )
     (tmp_path / "consumer.py").write_text(
-        "from pkg import helper\n\nVALUE = helper()\n", encoding="utf-8"
+        "from pkg import helper\n\nVALUE = helper()\n", encoding="utf-8", newline="\n"
     )
     return tmp_path
 
@@ -510,7 +528,7 @@ def test_fix_notes_the_cross_file_limitation_on_stderr(project, monkeypatch, cap
 
 def test_no_note_when_fix_writes_nothing(project, monkeypatch, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8"
+        "from demo import helpers\ntotal = helpers.THING\n", encoding="utf-8", newline="\n"
     )
     monkeypatch.chdir(project)
     cli.main(["--fix", "src"])
@@ -532,15 +550,15 @@ def test_a_namespace_package_holding_a_subpackage_is_not_rewritten_to_stdlib(
     standard library, and the file still imports, so nothing catches it."""
     (tmp_path / "analytics" / "io").mkdir(parents=True)
     (tmp_path / "analytics" / "io" / "readers.py").write_text(
-        "def read():\n    return []\n", encoding="utf-8"
+        "def read():\n    return []\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "analytics" / "io" / "__init__.py").write_text(
-        "from .readers import read\n\nvalues = read()\n", encoding="utf-8"
+        "from .readers import read\n\nvalues = read()\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "tests" / "test_it.py").write_text(
-        "from analytics.io import values\n", encoding="utf-8"
+        "from analytics.io import values\n", encoding="utf-8", newline="\n"
     )
     monkeypatch.chdir(tmp_path)
 
@@ -567,13 +585,13 @@ def test_a_namespace_package_nothing_imports_is_rewritten_relative_not_to_stdlib
     name that: ``from io import readers`` is the standard library, and still
     imports. The relative spelling needs no root.
     """
-    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "analytics" / "io").mkdir(parents=True)
     (tmp_path / "analytics" / "io" / "readers.py").write_text(
-        "def read():\n    return 1\n", encoding="utf-8"
+        "def read():\n    return 1\n", encoding="utf-8", newline="\n"
     )
     init = tmp_path / "analytics" / "io" / "__init__.py"
-    init.write_text("from .readers import read\n\nprint(read())\n", encoding="utf-8")
+    init.write_text("from .readers import read\n\nprint(read())\n", encoding="utf-8", newline="\n")
     monkeypatch.chdir(tmp_path)
 
     cli.main(["--diff", "analytics"])
@@ -592,16 +610,18 @@ def test_a_namespace_package_nothing_imports_is_rewritten_relative_not_to_stdlib
 @pytest.fixture
 def nested_packages(tmp_path: pathlib.Path) -> pathlib.Path:
     """``top/pkg/sub``, each a regular package, with objects at every level."""
-    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "top" / "pkg" / "sub").mkdir(parents=True)
-    (tmp_path / "top" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "top" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "top" / "pkg" / "__init__.py").write_text(
-        "class Obj:\n    pass\n", encoding="utf-8"
+        "class Obj:\n    pass\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "top" / "pkg" / "util.py").write_text(
-        "def helper():\n    return 2\n", encoding="utf-8"
+        "def helper():\n    return 2\n", encoding="utf-8", newline="\n"
     )
-    (tmp_path / "top" / "pkg" / "sub" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "top" / "pkg" / "sub" / "__init__.py").write_text(
+        "", encoding="utf-8", newline="\n"
+    )
     return tmp_path
 
 
@@ -611,10 +631,12 @@ def test_importing_from_the_current_package_climbs_one_level_further(
     """``from . import Obj`` names the package itself; ``from .. import pkg`` reaches it."""
     project = nested_packages
     module = project / "top" / "pkg" / "a.py"
-    module.write_text("from . import Obj\nx = Obj()\n", encoding="utf-8")
+    module.write_text("from . import Obj\nx = Obj()\n", encoding="utf-8", newline="\n")
     deeper = project / "top" / "pkg" / "sub" / "b.py"
     deeper.write_text(
-        "from .. import Obj\nfrom ..util import helper\ny = Obj(), helper()\n", encoding="utf-8"
+        "from .. import Obj\nfrom ..util import helper\ny = Obj(), helper()\n",
+        encoding="utf-8",
+        newline="\n",
     )
     monkeypatch.chdir(project)
 
@@ -642,7 +664,9 @@ def test_a_package_init_importing_from_itself_climbs_one_level_further(
     project = nested_packages
     init = project / "top" / "pkg" / "__init__.py"
     init.write_text(
-        "class Obj:\n    pass\n\n\nfrom . import Obj as Alias\n\nx = Alias()\n", encoding="utf-8"
+        "class Obj:\n    pass\n\n\nfrom . import Obj as Alias\n\nx = Alias()\n",
+        encoding="utf-8",
+        newline="\n",
     )
     monkeypatch.chdir(project)
 
@@ -666,14 +690,15 @@ def test_importing_from_a_top_level_package_itself_keeps_that_line(
     import root where the original did not. That line is kept byte-identical
     with a ``CP003`` saying why; the rest of the file is still rewritten.
     """
-    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / "__init__.py").write_text("VERSION = '1'\n", encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text("VERSION = '1'\n", encoding="utf-8", newline="\n")
     target = tmp_path / "pkg" / filename
     head = "VERSION = '1'\n" if filename == "__init__.py" else ""
     target.write_text(
         head + "from . import VERSION as V\nfrom os.path import join\nprint(V, join('a'))\n",
         encoding="utf-8",
+        newline="\n",
     )
     monkeypatch.chdir(tmp_path)
 
@@ -696,15 +721,17 @@ def test_a_replacement_the_parent_package_shadows_keeps_that_line(tmp_path, monk
     shown to reach the package. The line is kept, the finding names the
     replacement as it would have been written, and the next line is fixed.
     """
-    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "top" / "pkg").mkdir(parents=True)
-    (tmp_path / "top" / "__init__.py").write_text("pkg = 1\n", encoding="utf-8")
+    (tmp_path / "top" / "__init__.py").write_text("pkg = 1\n", encoding="utf-8", newline="\n")
     (tmp_path / "top" / "pkg" / "__init__.py").write_text(
-        "class Obj:\n    pass\n", encoding="utf-8"
+        "class Obj:\n    pass\n", encoding="utf-8", newline="\n"
     )
     target = tmp_path / "top" / "pkg" / "a.py"
     target.write_text(
-        "from . import Obj\nfrom os.path import join\nx = Obj(), join('a')\n", encoding="utf-8"
+        "from . import Obj\nfrom os.path import join\nx = Obj(), join('a')\n",
+        encoding="utf-8",
+        newline="\n",
     )
     monkeypatch.chdir(tmp_path)
 
@@ -752,13 +779,15 @@ def _package_values(project: pathlib.Path) -> subprocess.CompletedProcess[str]:
 def _two_serializations(tmp_path: pathlib.Path, init: str) -> pathlib.Path:
     """`pkg` and `kombu` each holding a `serialization` submodule."""
     (tmp_path / "kombu").mkdir()
-    (tmp_path / "kombu" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "kombu" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "kombu" / "serialization.py").write_text(
-        'MARK = "kombu"\n\n\ndef loads(x):\n    return x\n', encoding="utf-8"
+        'MARK = "kombu"\n\n\ndef loads(x):\n    return x\n', encoding="utf-8", newline="\n"
     )
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / "serialization.py").write_text('MARK = "pkg"\n', encoding="utf-8")
-    (tmp_path / "pkg" / "__init__.py").write_text(init, encoding="utf-8")
+    (tmp_path / "pkg" / "serialization.py").write_text(
+        'MARK = "pkg"\n', encoding="utf-8", newline="\n"
+    )
+    (tmp_path / "pkg" / "__init__.py").write_text(init, encoding="utf-8", newline="\n")
     return tmp_path
 
 
@@ -907,16 +936,17 @@ def _lazy_reexport_project(tmp_path: pathlib.Path) -> pathlib.Path:
     disk, and `pkg.sub.mod` the *attribute* is a function.
     """
     (tmp_path / "pkg" / "sub").mkdir(parents=True)
-    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "pkg" / "sub" / "__init__.py").write_text(
-        "from pkg.sub.mod import mod\n", encoding="utf-8"
+        "from pkg.sub.mod import mod\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "pkg" / "sub" / "mod.py").write_text(
-        "OTHER = 2\n\n\ndef mod():\n    return 1\n", encoding="utf-8"
+        "OTHER = 2\n\n\ndef mod():\n    return 1\n", encoding="utf-8", newline="\n"
     )
     (tmp_path / "pkg" / "consumer.py").write_text(
         "from pkg.sub.mod import OTHER\n\n\ndef value():\n    return OTHER\n",
         encoding="utf-8",
+        newline="\n",
     )
     return tmp_path
 
@@ -943,7 +973,7 @@ def test_fix_declines_an_import_whose_replacement_the_parent_package_shadows(
     `transform_to_as_fieldop` under its own module's name.
     """
     project = _lazy_reexport_project(tmp_path)
-    (project / "pkg" / "plain.py").write_text("EXTRA = 3\n", encoding="utf-8")
+    (project / "pkg" / "plain.py").write_text("EXTRA = 3\n", encoding="utf-8", newline="\n")
     (project / "pkg" / "consumer.py").write_text(
         "from pkg.plain import EXTRA\n"
         "from pkg.sub.mod import OTHER\n"
@@ -952,6 +982,7 @@ def test_fix_declines_an_import_whose_replacement_the_parent_package_shadows(
         "def value():\n"
         "    return OTHER + EXTRA\n",
         encoding="utf-8",
+        newline="\n",
     )
     before = _reexport_consumer_value(project)
     assert before.stdout.split() == ["5"], before.stderr
@@ -982,7 +1013,9 @@ def test_fix_still_rewrites_when_the_package_imports_its_own_submodule(
 ):
     """`from . import mod` binds the module, so the replacement reaches it."""
     project = _lazy_reexport_project(tmp_path)
-    (project / "pkg" / "sub" / "__init__.py").write_text("from . import mod\n", encoding="utf-8")
+    (project / "pkg" / "sub" / "__init__.py").write_text(
+        "from . import mod\n", encoding="utf-8", newline="\n"
+    )
 
     monkeypatch.chdir(project)
     cli.main(["--fix", "."])
@@ -1007,10 +1040,11 @@ def test_fix_aliases_a_top_level_import_that_collides_with_a_submodule(
     `AttributeError` inside this very file.
     """
     (tmp_path / "pkg").mkdir()
-    (tmp_path / "pkg" / "json.py").write_text('MARK = "pkg-json"\n', encoding="utf-8")
+    (tmp_path / "pkg" / "json.py").write_text('MARK = "pkg-json"\n', encoding="utf-8", newline="\n")
     (tmp_path / "pkg" / "__init__.py").write_text(
         "from json import dumps\n\nVALUE = dumps([1])\n\n\ndef use():\n    return dumps([2])\n",
         encoding="utf-8",
+        newline="\n",
     )
     probe = [
         sys.executable,
@@ -1040,6 +1074,7 @@ def _with_skip(project: pathlib.Path, rule: str) -> None:
     (project / "pyproject.toml").write_text(
         '[project]\nname = "demo"\nversion = "0"\n[tool.cleanporter]\nskip = [' + rule + "]\n",
         encoding="utf-8",
+        newline="\n",
     )
 
 
@@ -1058,6 +1093,7 @@ def test_a_skipped_violation_does_not_fail_under_strict_either(project, capsys):
         "from demo.helpers import THING\nfrom definitely_missing_pkg_xyz import other\n"
         "total = THING + other\n",
         encoding="utf-8",
+        newline="\n",
     )
     assert cli.main(["--strict", str(project / "src")]) == 1, "CP002 fails under --strict"
     _with_skip(project, "{ file = '.*consumer[.]py' }")
@@ -1092,6 +1128,7 @@ def test_fix_explains_an_import_nothing_reads(project, capsys):
     (project / "src" / "demo" / "consumer.py").write_text(
         "from demo.helpers import THING\ndef test_it(THING):\n    return THING\n",
         encoding="utf-8",
+        newline="\n",
     )
     rc = cli.main(["--fix", str(project / "src")])
     err = capsys.readouterr().err
@@ -1109,17 +1146,19 @@ def test_a_rule_matching_the_rewritten_spelling_can_fail_a_run(project, capsys):
     go the other way.
     """
     (project / "src" / "demo" / "helpers.py").write_text(
-        "THING = 42\n\n\ndef deco(fn):\n    return fn\n", encoding="utf-8"
+        "THING = 42\n\n\ndef deco(fn):\n    return fn\n", encoding="utf-8", newline="\n"
     )
     (project / "src" / "demo" / "consumer.py").write_text(
         "from demo.helpers import THING, deco\n\n\n@deco\ndef go():\n    return THING\n",
         encoding="utf-8",
+        newline="\n",
     )
     assert cli.main(["--fix", str(project / "src")]) == 0
 
     (project / "src" / "demo" / "consumer.py").write_text(
         "from demo.helpers import THING, deco\n\n\n@deco\ndef go():\n    return THING\n",
         encoding="utf-8",
+        newline="\n",
     )
     _with_skip(project, "{ decorator = 'helpers[.]deco' }")
     assert cli.main(["--fix", str(project / "src")]) == 1
@@ -1135,9 +1174,9 @@ def _noisy_package(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> N
     site = tmp_path / "site"
     (site / "cli_noisy_pkg").mkdir(parents=True)
     (site / "cli_noisy_pkg" / "__init__.py").write_text(
-        "print('Welcome to noisy 1.0!')\n", encoding="utf-8"
+        "print('Welcome to noisy 1.0!')\n", encoding="utf-8", newline="\n"
     )
-    (site / "cli_noisy_pkg" / "leaf.py").write_text("X = 1\n", encoding="utf-8")
+    (site / "cli_noisy_pkg" / "leaf.py").write_text("X = 1\n", encoding="utf-8", newline="\n")
     monkeypatch.syspath_prepend(str(site))
     for dotted in ("cli_noisy_pkg", "cli_noisy_pkg.leaf"):
         monkeypatch.delitem(sys.modules, dotted, raising=False)
@@ -1146,7 +1185,7 @@ def _noisy_package(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> N
 def test_a_package_that_prints_on_import_stays_out_of_the_patch(project, monkeypatch, capsys):
     _noisy_package(project, monkeypatch)
     (project / "src" / "demo" / "noisy_user.py").write_text(
-        "from cli_noisy_pkg import leaf\nvalue = leaf.X\n", encoding="utf-8"
+        "from cli_noisy_pkg import leaf\nvalue = leaf.X\n", encoding="utf-8", newline="\n"
     )
     monkeypatch.chdir(project)
     cli.main(["--diff", "src"])
@@ -1160,10 +1199,12 @@ def test_a_package_that_prints_on_import_stays_out_of_the_patch(project, monkeyp
 @pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
 def test_a_failed_probe_is_explained_in_a_warning(project, monkeypatch, capsys):
     stub = project / "broken-python"
-    stub.write_text("#!/bin/sh\necho 'ImportError: no encodings' >&2\nexit 1\n", encoding="utf-8")
+    stub.write_text(
+        "#!/bin/sh\necho 'ImportError: no encodings' >&2\nexit 1\n", encoding="utf-8", newline="\n"
+    )
     stub.chmod(0o755)
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from functools import partial\nf = partial(print)\n", encoding="utf-8"
+        "from functools import partial\nf = partial(print)\n", encoding="utf-8", newline="\n"
     )
     monkeypatch.chdir(project)
     rc = cli.main(["--python", str(stub), "src"])
@@ -1177,7 +1218,9 @@ def test_a_failed_probe_is_explained_in_a_warning(project, monkeypatch, capsys):
 
 def _broken_interpreter(path: pathlib.Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\necho 'stub interpreter ran' >&2\nexit 1\n", encoding="utf-8")
+    path.write_text(
+        "#!/bin/sh\necho 'stub interpreter ran' >&2\nexit 1\n", encoding="utf-8", newline="\n"
+    )
     path.chmod(0o755)
 
 
@@ -1188,10 +1231,10 @@ def test_a_relative_python_in_config_is_found_from_a_subdirectory(project, monke
     The stub fails on purpose so the warning proves which file was executed.
     """
     _broken_interpreter(project / "tools" / "py")
-    with (project / "pyproject.toml").open("a", encoding="utf-8") as fh:
+    with (project / "pyproject.toml").open("a", encoding="utf-8", newline="\n") as fh:
         fh.write('[tool.cleanporter]\npython = "tools/py"\n')
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from functools import partial\nf = partial(print)\n", encoding="utf-8"
+        "from functools import partial\nf = partial(print)\n", encoding="utf-8", newline="\n"
     )
     monkeypatch.chdir(project / "src")
     cli.main(["demo"])
@@ -1205,7 +1248,7 @@ def test_the_python_flag_stays_relative_to_the_cwd(project, monkeypatch, capsys)
     """A CLI path argument means what the shell means; only the config key is anchored."""
     _broken_interpreter(project / "src" / "tools" / "py")
     (project / "src" / "demo" / "consumer.py").write_text(
-        "from functools import partial\nf = partial(print)\n", encoding="utf-8"
+        "from functools import partial\nf = partial(print)\n", encoding="utf-8", newline="\n"
     )
     monkeypatch.chdir(project / "src")
     cli.main(["--python", "tools/py", "demo"])
@@ -1224,8 +1267,10 @@ def test_an_empty_python_flag_is_an_error(project, capsys):
 def test_paths_from_different_projects_warn_which_config_is_used(project, tmp_path, capsys):
     other = tmp_path / "other"
     (other / "lib").mkdir(parents=True)
-    (other / "pyproject.toml").write_text('[tool.cleanporter]\nscope = "first-party"\n', "utf-8")
-    (other / "lib" / "mod.py").write_text("import os\n", encoding="utf-8")
+    (other / "pyproject.toml").write_text(
+        '[tool.cleanporter]\nscope = "first-party"\n', "utf-8", newline="\n"
+    )
+    (other / "lib" / "mod.py").write_text("import os\n", encoding="utf-8", newline="\n")
     cli.main([str(project / "src"), str(other / "lib")])
     out = capsys.readouterr().out
     assert "cleanporter: warning: the paths belong to different pyproject.toml files" in out
@@ -1248,8 +1293,8 @@ def test_a_submodule_missing_from_the_checkout_is_never_rewritten(project, capsy
     """
     init = "try:\n    from demo import _version\nexcept ImportError:\n    _version = None\n"
     consumer = "from demo import _version\n\nprint(_version.version)\n"
-    (project / "src" / "demo" / "__init__.py").write_text(init, encoding="utf-8")
-    (project / "src" / "demo" / "consumer.py").write_text(consumer, encoding="utf-8")
+    (project / "src" / "demo" / "__init__.py").write_text(init, encoding="utf-8", newline="\n")
+    (project / "src" / "demo" / "consumer.py").write_text(consumer, encoding="utf-8", newline="\n")
 
     assert cli.main(["--diff", str(project / "src")]) == 0
     captured = capsys.readouterr()
@@ -1282,12 +1327,12 @@ def test_a_shadowing_init_in_another_encoding_still_blocks_the_rewrite(tmp_path,
     """
     pkg = tmp_path / "src" / "app"
     (pkg / "P").mkdir(parents=True)
-    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     (pkg / "P" / "__init__.py").write_bytes(init)
-    (pkg / "P" / "S.py").write_text("def obj():\n    return 1\n", encoding="utf-8")
+    (pkg / "P" / "S.py").write_text("def obj():\n    return 1\n", encoding="utf-8", newline="\n")
     use = pkg / "use.py"
     source = "from app.P.S import obj\n\nobj()\n"
-    use.write_text(source, encoding="utf-8")
+    use.write_text(source, encoding="utf-8", newline="\n")
 
     assert cli.main(["--fix", str(use)]) == 1
     err = capsys.readouterr().err
@@ -1306,11 +1351,11 @@ def test_a_submodule_a_star_import_shadows_is_not_the_replacement(tmp_path, monk
     """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("from ._impl import *\n", encoding="utf-8")
-    (pkg / "_impl.py").write_text("def helpers():\n    return 0\n", encoding="utf-8")
-    (pkg / "helpers.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (pkg / "__init__.py").write_text("from ._impl import *\n", encoding="utf-8", newline="\n")
+    (pkg / "_impl.py").write_text("def helpers():\n    return 0\n", encoding="utf-8", newline="\n")
+    (pkg / "helpers.py").write_text("def f():\n    return 1\n", encoding="utf-8", newline="\n")
     source = "from pkg.helpers import f\n\nprint(f())\n"
-    (tmp_path / "app.py").write_text(source, encoding="utf-8")
+    (tmp_path / "app.py").write_text(source, encoding="utf-8", newline="\n")
     monkeypatch.chdir(tmp_path)
 
     assert cli.main(["--fix", "app.py"]) == 1
@@ -1333,10 +1378,16 @@ def test_a_circular_reexport_gets_the_same_verdict_however_the_run_is_scoped(
     """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("from .m import *\n\nver = None\n", encoding="utf-8")
-    (pkg / "m.py").write_text("from pkg import ver\n", encoding="utf-8")
-    (tmp_path / "app.py").write_text("from pkg.m import ver\n\nprint(ver)\n", encoding="utf-8")
-    (tmp_path / "app2.py").write_text("from pkg import ver\n\nprint(ver)\n", encoding="utf-8")
+    (pkg / "__init__.py").write_text(
+        "from .m import *\n\nver = None\n", encoding="utf-8", newline="\n"
+    )
+    (pkg / "m.py").write_text("from pkg import ver\n", encoding="utf-8", newline="\n")
+    (tmp_path / "app.py").write_text(
+        "from pkg.m import ver\n\nprint(ver)\n", encoding="utf-8", newline="\n"
+    )
+    (tmp_path / "app2.py").write_text(
+        "from pkg import ver\n\nprint(ver)\n", encoding="utf-8", newline="\n"
+    )
     monkeypatch.chdir(tmp_path)
     for paths in (["app.py"], ["app2.py", "app.py"], ["app.py", "app2.py"]):
         assert cli.main(["--strict", *paths]) == 1
@@ -1354,19 +1405,21 @@ def test_a_module_reexported_under_another_name_is_not_a_violation(project, caps
     equivalent ``import json as codec`` was not.
     """
     demo = project / "src" / "demo"
-    (demo / "_version.py").write_text('__version__ = "1"\n', encoding="utf-8")
+    (demo / "_version.py").write_text('__version__ = "1"\n', encoding="utf-8", newline="\n")
     (demo / "sub").mkdir()
-    (demo / "sub" / "__init__.py").write_text("", encoding="utf-8")
-    (demo / "sub" / "tools.py").write_text("X = 1\n", encoding="utf-8")
+    (demo / "sub" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (demo / "sub" / "tools.py").write_text("X = 1\n", encoding="utf-8", newline="\n")
     (demo / "__init__.py").write_text(
         "from . import _version as version\nfrom .sub import tools\nfrom os import path\n"
         "import json as codec\n",
         encoding="utf-8",
+        newline="\n",
     )
     (demo / "consumer.py").write_text(
         "from demo import version, tools, path, codec\n\n"
         "print(version.__version__, tools.X, path.sep, codec.dumps(1))\n",
         encoding="utf-8",
+        newline="\n",
     )
     assert cli.main(["--strict", str(project / "src")]) == 0
     assert "0 violation(s)" in capsys.readouterr().out
@@ -1613,7 +1666,7 @@ def test_fix_preserves_permission_bits(project, capsys):
 def test_fix_writes_through_a_symlink(project, tmp_path, capsys):
     """The link stays a link; the file it points at is what changes."""
     real = tmp_path / "elsewhere.py"
-    real.write_text("from os.path import join\nprint(join('a'))\n", encoding="utf-8")
+    real.write_text("from os.path import join\nprint(join('a'))\n", encoding="utf-8", newline="\n")
     link = project / "src" / "demo" / "linked.py"
     try:
         link.symlink_to(real)

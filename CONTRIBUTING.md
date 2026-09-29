@@ -279,6 +279,12 @@ are made in a `try` that skips on `OSError`, since creating one on Windows
 needs a privilege. The checkout is LF on every platform (`.gitattributes`), so
 a test that needs CRLF writes the bytes itself.
 
+**Pass `newline="\n"` to every `write_text` in a test.** Without it, Windows
+writes `\r\n` for each `\n`; the fixer preserves those line endings, and the
+test's expected output — spelled with `\n` — no longer matches. This failed a
+dozen tests on Windows and nothing on Linux, which is why
+`tests/test_portability.py` now rejects a `write_text` call without `newline=`.
+
 zuban used to have a CI job of its own that reported disagreements as a warning
 annotation and always exited 0. It is gone: zuban is a hook like the others
 now, so it gates through the lint job.
