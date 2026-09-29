@@ -1,4 +1,4 @@
-"""Machine-readable reports of a finished run: ``--format json|sarif|github``.
+r"""Machine-readable reports of a finished run: ``--format json|sarif|github``.
 
 Every function here is pure: it takes an `engine.RunResult` and the few
 facts about the invocation the result does not carry (``--strict``,

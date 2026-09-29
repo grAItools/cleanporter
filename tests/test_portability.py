@@ -41,3 +41,25 @@ def test_every_write_text_in_the_suite_pins_its_newlines() -> None:
 def test_the_check_sees_a_write_without_newline() -> None:
     assert _unpinned_writes('p.write_text("x\\n", encoding="utf-8")\n') == [1]
     assert _unpinned_writes('p.write_text("x\\n", encoding="utf-8", newline="\\n")\n') == []
+
+
+def _surrogate_literals(source: str) -> list[int]:
+    """Lines of the string literals in *source* that hold a lone surrogate."""
+    return [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and any("\ud800" <= char <= "\udfff" for char in node.value)
+    ]
+
+
+def test_no_module_carries_a_lone_surrogate_in_a_string() -> None:
+    # Python 3.13 cannot import a module whose docstring holds one (a
+    # ``\udcff`` escape where ``\\udcff`` was meant): it fails encoding it.
+    offenders = [
+        f"{path.relative_to(TESTS.parent)}:{line}"
+        for path in sorted((TESTS.parent / "src").rglob("*.py"))
+        for line in _surrogate_literals(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], "escape the backslash of a \\uDxxx escape: " + ", ".join(offenders)
