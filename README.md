@@ -137,20 +137,16 @@ reported. See
 
 ## Dogfooding
 
-cleanporter is run over its own source. `src/` and `tests/` are compliant,
-with one deliberate exception: the package's public API is re-exported from
-`cleanporter/__init__.py`, so `cleanporter .` reports those re-exports as
-`CP001` — or `CP003`, for a name the test suite reads through the package —
-and exits 1.
+cleanporter is run over its own source, and `cleanporter .` exits 0: `src/`
+and `tests/` are compliant.
 
-That is not an oversight, and it is not silenced with an `exclude`. The
-findings are true — the package really does import objects by name there —
-and the fixer declines to rewrite them on its own terms: nothing in
-`__init__.py` reads those names, so rewriting the imports would only delete
-the public surface (and, behind that, the names appear in `__all__` as string
-literals, which a rewrite would leave naming attributes the module no longer
-binds). It is a fair demonstration of both the rule and the guards that keep
-the fixer honest.
+That includes the package's public API, re-exported from
+`cleanporter/__init__.py` with `from .engine import Mode, RunResult, run` and
+the like. It is not silenced with an `exclude` or a `skip` rule: a
+module-level import in a package's `__init__.py` is the package's public
+surface, the conventional exception to §2.2, so cleanporter treats it as
+compliant everywhere — never reported, never rewritten (see
+[A package's `__init__.py`](https://graitools.github.io/cleanporter/configuration/#a-packages-__init__py)).
 
 ## Documentation
 

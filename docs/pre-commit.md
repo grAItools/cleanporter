@@ -140,9 +140,9 @@ The whole project is one `pyproject.toml`'s directory, and nothing outside it
 is read. In a repository of nested projects or a uv workspace, a consumer in
 *another* project is invisible, as it is to any run. Say
 `libs/foo/pyproject.toml` and `apps/web/pyproject.toml`, with
-`libs/foo/src/foo/__init__.py` re-exporting `helper` (`from foo.core import
-helper`) and only `apps/web/app.py` importing it from there (`from foo import
-helper`). A commit touching `libs/foo` runs on `libs/foo`'s project;
+`libs/foo/src/foo/api.py` re-exporting `helper` (`from foo.core import
+helper`) and only `apps/web/app.py` importing it from there (`from foo.api
+import helper`). A commit touching `libs/foo` runs on `libs/foo`'s project;
 `apps/web` is not evidence, so the re-export looks unused, and
 `cleanporter-fix` rewrites it and breaks `apps/web` at import time.
 `--whole-project` judges a changed file on a full run over its own project,

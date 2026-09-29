@@ -120,17 +120,14 @@ pass" while unformatted this way.
   ignore list. Never introduce black, isort, flake8 or autopep8; never add a
   bare `# noqa` or a new ruff ignore without a comment giving the reason.
 - **The package complies with its own rule.** `src/` and `tests/` are both
-  clean under `cleanporter`; keep them that way -- write `from cleanporter
-  import model` and `model.Status`, not `from cleanporter.model import Status`.
-  The sole exception is the public-API re-export block in `__init__.py`,
-  which is deliberately *not* silenced with an `exclude` or a `skip` rule. Do
-  not add one. It is held by the never-read guard -- nothing in `__init__.py`
-  reads those names, so rewriting the imports would only delete the public
-  surface -- and behind that by the string-mention guard, since the same names
-  appear in `__all__` as string literals. `cleanporter .` reports them as
-  `CP001` -- or `CP003` for a name another analysed file reads
-  (`cleanporter.run` in a test: the load-bearing guard) -- and exits 1 either
-  way; under `--fix` they are all `CP003` and the file is left byte-identical.
+  clean under `cleanporter`, and `cleanporter .` exits 0; keep them that way
+  -- write `from cleanporter import model` and `model.Status`, not `from
+  cleanporter.model import Status`. The public-API re-export block in
+  `__init__.py` is compliant by rule, not by exception: a module-level import
+  in a package `__init__.py` is its public surface
+  (`analyze.Decider.public_surface`), never reported or rewritten. It needs
+  no `exclude` or `skip` rule; do not add one. An import inside a function
+  there is decided like any other.
 - **`libcst` is the only runtime dependency.** Tooling belongs in a dependency
   group.
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `test:`, `perf:`,

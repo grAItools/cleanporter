@@ -123,6 +123,21 @@ def _starts_from_metadata(tree: cst.Module) -> dict[cst.ImportFrom, tuple[int, i
     }
 
 
+def _nested(source: str) -> list[bool]:
+    """Per ``from`` import in source order: is it inside a ``def`` or ``class`` body?"""
+    found: list[tuple[int, int, bool]] = []
+    scopes = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+
+    def walk(node: ast.AST, *, nested: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ImportFrom):
+                found.append((child.lineno, child.col_offset, nested))
+            walk(child, nested=nested or isinstance(child, scopes))
+
+    walk(ast.parse(source), nested=False)
+    return [flag for _line, _col, flag in sorted(found)]
+
+
 @pytest.mark.parametrize("path", FILES, ids=lambda p: str(p.relative_to(REPO)))
 def test_facts_match_the_walks_they_replaced(path: pathlib.Path) -> None:
     source = path.read_text(encoding="utf-8")
@@ -130,6 +145,7 @@ def test_facts_match_the_walks_they_replaced(path: pathlib.Path) -> None:
     facts = analyze.collect_facts(tree)
 
     assert list(facts.import_froms) == _import_froms(tree)
+    assert [n in facts.nested_import_froms for n in facts.import_froms] == _nested(source)
     assert facts.absolute_import_heads() == _heads(tree)
     assert facts.max_relative_level() == max(
         (_imports.relative_level(n) for n in _import_froms(tree)), default=0
@@ -238,6 +254,28 @@ def test_a_count_mismatch_is_declined() -> None:
     tree = cst.parse_module(source)
     nodes = analyze.collect_facts(tree).import_froms
     assert analyze._import_from_starts(source, tree, nodes[:1]) is None
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("from a import b\ntry:\n    from c import d\nexcept ImportError:\n    pass\n", [0, 0]),
+        ("if x:\n    from a import b\nwith y:\n    from c import d\n", [0, 0]),
+        ("def f():\n    from a import b\n", [1]),
+        ("async def f():\n    from a import b\n", [1]),
+        ("class C:\n    from a import b\n", [1]),
+        (
+            "def f():\n    class C:\n        from a import b\n    return C\nfrom c import d\n",
+            [1, 0],
+        ),
+    ],
+    ids=["try", "if-with", "def", "async-def", "class", "nested-then-module"],
+)
+def test_nested_imports_are_those_inside_a_def_or_class(source: str, expected: list[int]) -> None:
+    """Module level is everything outside a ``def``/``class`` body, blocks included."""
+    facts = analyze.collect_facts(cst.parse_module(source))
+    flags = [n in facts.nested_import_froms for n in facts.import_froms]
+    assert flags == [bool(e) for e in expected] == _nested(source)
 
 
 def test_record_facts_are_collected_once() -> None:

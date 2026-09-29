@@ -464,14 +464,19 @@ def test_the_library_refuses_a_baseline_for_other_modes(project: pathlib.Path) -
 def test_cp001_and_cp003_match_each_other(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A re-export is load-bearing only in a run that includes its importer."""
+    """A re-export is load-bearing only in a run that includes its importer.
+
+    In ``demo/api.py``, not ``demo/__init__.py``: a module-level import there
+    is the package's public surface, compliant in every run.
+    """
     _write(tmp_path / "pyproject.toml", '[project]\nname = "demo"\n')
+    _write(tmp_path / "demo" / "__init__.py", "")
     _write(tmp_path / "demo" / "core.py", "def helper():\n    return 1\n")
     _write(
-        tmp_path / "demo" / "__init__.py",
+        tmp_path / "demo" / "api.py",
         "from demo.core import helper\n\n\ndef run():\n    return helper()\n",
     )
-    _write(tmp_path / "consumer.py", "import demo\n\ndemo.helper()\n")
+    _write(tmp_path / "consumer.py", "import demo.api\n\ndemo.api.helper()\n")
     monkeypatch.chdir(tmp_path)
     cfg = config.Config(root=tmp_path)
     whole = engine.run([pathlib.Path()], cfg)
