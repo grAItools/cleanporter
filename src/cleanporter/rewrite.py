@@ -44,7 +44,8 @@ file, and writing it into the file is how a PEP 420 namespace package once
 turned ``from .readers import read`` into ``from io import readers``. See
 `_imports.module_import_spelling` for the spellings, including the one case
 with none (``from . import C`` in a top-level package), which `analyze.Decider`
-keeps as written.
+keeps as written -- unless the file's import root is one the user declared,
+where the absolute ``import pkg`` is the spelling the user vouched for.
 
 Scope metadata is the expensive part of a fix, and most files in a run have
 nothing to fix. So `fix_record` first asks the same decision whether *any*
@@ -507,7 +508,7 @@ class _Fixer(cst.CSTTransformer):
         # new statements: one module import per (deduped) parent, plus kept names
         new_lines: list[cst.BaseStatement] = []
         bind, need_new_line = self._binding_for(
-            scope, (parent, _imports.relative_level(imp) > 0), extra_avoid
+            scope, (parent, spelling[0].startswith(".")), extra_avoid
         )
         if need_new_line:
             new_lines.append(_module_import_stmt(spelling, bind))
@@ -600,8 +601,14 @@ class _Fixer(cst.CSTTransformer):
         # `analyze.Decider` keeps every name on a line with no spelling, so a
         # line that reaches here always has one. Should the two ever disagree,
         # the file is declined rather than written with a guessed name.
-        spelling = _imports.module_import_spelling(imp, parent)
-        return _imports.unspellable_reason(imp, parent) if spelling is None else spelling
+        spelling = _imports.module_import_spelling(
+            imp, parent, declared_root=self._rec.declared_root
+        )
+        if spelling is None:
+            return _imports.unspellable_reason(
+                imp, parent, root_hint=self._rec.root_hint, own_init=self._decider.own_init(parent)
+            )
+        return spelling
 
     def _local_names(self, scope: metadata.Scope) -> set[str]:
         """Names assigned directly in *scope*, ignoring enclosing scopes.
@@ -700,8 +707,10 @@ class _Fixer(cst.CSTTransformer):
         pre-existing import already in the file, can be reused as-is.
 
         *module* is ``(parent, relative)``: the absolute module and whether
-        this line spells it relatively. Only a binding spelled the same way
-        is reused -- see `_build_existing`.
+        this line's replacement spells it relatively -- which it does exactly
+        when the line is relative, except for a top-level package's ``from .
+        import C`` under a declared root, spelled ``import pkg``. Only a
+        binding spelled the same way is reused -- see `_build_existing`.
         """
         parent, relative = module
         key = (scope, parent, relative)

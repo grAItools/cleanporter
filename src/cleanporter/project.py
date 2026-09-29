@@ -159,6 +159,10 @@ def _records(
     records: list[analyze.FileRecord] = []
     for p in parsed:
         level = p.facts.max_relative_level()
+        # A root that could vouch for `import pkg`: allowed when declared,
+        # offered in the CP003 message when inferred.
+        sound = module_map.root_for_absolute_spelling(p.path, level, project_root=config.root)
+        declared = sound is not None and sound in module_map.declared
         records.append(
             analyze.FileRecord(
                 p.path,
@@ -170,6 +174,8 @@ def _records(
                 skip_rules=config.skip,
                 encoding=p.decoded.encoding,
                 raw=p.decoded.raw,
+                declared_root=declared,
+                root_hint=str(sound) if sound is not None and not declared else "",
                 _facts=p.facts,
             )
         )

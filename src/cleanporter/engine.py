@@ -536,4 +536,6 @@ def _reparse(rec: analyze.FileRecord, source: str, raw: bytes | None = None) -> 
         skip_rules=rec.skip_rules,
         encoding=rec.encoding,
         raw=raw,
+        declared_root=rec.declared_root,
+        root_hint=rec.root_hint,
     )

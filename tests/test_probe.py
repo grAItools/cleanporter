@@ -375,3 +375,55 @@ def test_a_probe_that_fails_the_same_way_repeatedly_is_reported_once(tmp_path):
         assert resolver.is_module("collections", name) is None
     (warning,) = resolver.take_warnings()
     assert "5 import(s) left unresolved" in warning
+
+
+# -- what a probed package prints is bytes, in no known encoding --------------
+
+#: An ``__init__`` that writes bytes no codec agrees on to both descriptors:
+#: invalid UTF-8, and undefined in cp1252 (``\x81``, ``\x8d``).
+_UNDECODABLE_INIT = (
+    "import os\n"
+    "os.write(1, b'\\xff\\x81\\x8d banner\\n')\n"
+    "os.write(2, b'\\xff\\x81\\x8d warning\\n')\n"
+    "def greet():\n"
+    "    return 1\n"
+)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_undecodable_output_around_the_reply_does_not_take_the_run_down(tmp_path, monkeypatch):
+    """A locale decode of the child's pipes raised UnicodeDecodeError out of the run."""
+    _package_on_path(tmp_path, monkeypatch, "probe_bytes_pkg", _UNDECODABLE_INIT)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    resolver = _resolver(_fake_interpreter(tmp_path, f'exec {sys.executable} "$@"'))
+    resolver.warm([("probe_bytes_pkg", "leaf"), ("probe_bytes_pkg", "greet")])
+    assert resolver.is_module("probe_bytes_pkg", "leaf") is True
+    assert resolver.is_module("probe_bytes_pkg", "greet") is False
+    assert resolver.take_warnings() == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_a_failed_probe_quotes_undecodable_stderr_with_replacements(tmp_path):
+    stub = _fake_interpreter(tmp_path, "printf 'boom \\377\\201\\n' >&2\nexit 3")
+    resolver = _resolver(stub)
+    assert resolver.is_module("os", "path") is None
+    (warning,) = resolver.take_warnings()
+    assert "boom \ufffd\ufffd" in warning
+
+
+@pytest.mark.skipif(os.name != "posix", reason="uses a /bin/sh stub interpreter")
+def test_the_child_writes_its_streams_in_utf8_whatever_the_environment_says(tmp_path, monkeypatch):
+    """The stderr a warning quotes arrives in UTF-8, not the child's locale.
+
+    ``PYTHONIOENCODING=ascii`` stands in for a narrow locale (cp1252 cannot
+    encode a check mark either): under it the child escapes the banner to
+    ``\\u2713``, and the warning would quote the escape, not the text.
+    """
+    _package_on_path(tmp_path, monkeypatch, "probe_utf8_pkg", "print('ready \\u2713')\n")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setenv("PYTHONIOENCODING", "ascii")
+    stub = _fake_interpreter(tmp_path, f'{sys.executable} "$@"\nexit 3')
+    resolver = _resolver(stub)
+    assert resolver.is_module("probe_utf8_pkg", "leaf") is None
+    (warning,) = resolver.take_warnings()
+    assert "ready \u2713" in warning

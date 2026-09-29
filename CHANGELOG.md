@@ -103,6 +103,24 @@ Breaking under the pre-1.0 policy above:
   besides a path or command, so `--python auto` restores detection over a
   configured interpreter. Documented under
   [The probe interpreter](https://graitools.github.io/cleanporter/configuration/#the-probe-interpreter).
+- **A declared root lets `--fix` rewrite a top-level package's own import.**
+  `from . import C` in `pkg/cli.py` (or `from .. import C` in
+  `pkg/sub/mod.py`), where `pkg` is top-level and `C` an object, has no
+  relative replacement, so it was a `CP003` in every mode. When the file is
+  anchored in a root you declared with `--root` or `source_roots`, the
+  absolute `import pkg` names the package you said is on `sys.path`, and the
+  import is now a `CP001` that `--fix` rewrites to `import pkg` plus `pkg.C`.
+  Only a structurally sound declaration counts: the `CP003` stays when the
+  declared directory, or one above it up to the project root, is a package
+  (holds an `__init__.py`), when it nests in or around another
+  import root, when another root also holds `pkg`, in `pkg/__init__.py`
+  itself (with a reason of its own), and when `pkg` is named like a standard-library module of any
+  supported Python (`import io` is the standard library's). An inferred root
+  keeps the `CP003`; when declaring it would pass those checks, the message
+  now names it: "if `<root>` is where Python imports it from, declaring it
+  with --root or source_roots lets --fix write 'import pkg'".
+  Documented under
+  [Known limitations](https://graitools.github.io/cleanporter/safety/#known-limitations).
 
 ### Changed
 
@@ -119,6 +137,17 @@ Breaking under the pre-1.0 policy above:
   (34 of 297 files still with a `CP001`), `--diff` went from 200 s to 112 s,
   against 33 s for a check; over libcst as released, where 261 of the 297 files
   have one, it is unchanged at about 232 s.
+- **A relative import's `CP001` advises a relative replacement.** The message
+  used to say only "import the module and use 'readers.read'", leaving the
+  reader to derive the import from the absolute module it names — which, for a
+  relative import, is only as good as the inferred import root and can even
+  look like the standard library (`io.readers` for a PEP 420 namespace
+  directory). It now quotes the replacement spelled by the fixer's own
+  function: `import the module ('from . import readers') and use
+  'readers.read'`. It is advice, not the exact statement: `--fix` may reuse an
+  existing binding or allocate an alias. Absolute imports' messages are
+  unchanged. `model.Finding` gains a trailing `module_import` field (empty
+  unless the finding is such a `CP001`), which the message quotes.
 
 ### Fixed
 
@@ -129,6 +158,13 @@ Breaking under the pre-1.0 policy above:
   the URI's host, rather than `file:////server/share/...`, and an
   extended-length `\\?\C:\...` path is `file:///C:/...`. The test suite now
   also runs on Windows in CI.
+- **An out-of-process probe no longer crashes on output it cannot decode.**
+  The probe's pipes were decoded in the locale's encoding, so a probed package
+  that printed bytes that encoding rejects -- anything cp1252 leaves undefined
+  on Windows, or invalid UTF-8 elsewhere -- raised `UnicodeDecodeError` out of
+  the run. They are now read as bytes and decoded as UTF-8 with replacement,
+  the probe is told to write UTF-8 (`PYTHONIOENCODING`), and its reply is
+  ASCII JSON inside its frame whatever the child's encoding.
 
 ## [0.4.0] - 2026-09-28
 

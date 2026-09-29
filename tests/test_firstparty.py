@@ -371,6 +371,93 @@ def test_a_declared_root_is_kept_even_when_no_file_implies_it(tmp_path):
     assert mm.classify("mypkg", "other") is model.Kind.MODULE
 
 
+def _regular_src(tmp_path: pathlib.Path, extra: dict[str, str] | None = None) -> pathlib.Path:
+    """``src/toppkg`` with an ``__init__.py`` and a ``cli.py``, plus *extra*."""
+    _write(
+        tmp_path,
+        {"src/toppkg/__init__.py": "def helper(): ...\n", "src/toppkg/cli.py": "", **(extra or {})},
+    )
+    return tmp_path
+
+
+def _sound_root(
+    root: pathlib.Path, file: str, *declared: str, level: int = 1
+) -> pathlib.Path | None:
+    files = sorted(root.rglob("*.py"))
+    mm = firstparty.ModuleMap.from_paths(files, declared=tuple(root / d for d in declared))
+    return mm.root_for_absolute_spelling(root / file, level, project_root=root)
+
+
+def test_a_plain_source_root_can_vouch_for_the_absolute_spelling(tmp_path):
+    root = _regular_src(tmp_path)
+    assert _sound_root(root, "src/toppkg/cli.py", "src") == (root / "src").resolve()
+    # Inferred, it is the same root: `project` offers it in the message.
+    assert _sound_root(root, "src/toppkg/cli.py") == (root / "src").resolve()
+    # A depth no root can hold: the best-effort qualname is not an anchor.
+    assert _sound_root(root, "src/toppkg/cli.py", "src", level=9) is None
+
+
+def test_the_package_own_init_is_never_spelled_absolutely(tmp_path):
+    root = _regular_src(tmp_path)
+    assert _sound_root(root, "src/toppkg/__init__.py", "src") is None
+
+
+def test_a_root_inside_a_package_cannot_vouch(tmp_path):
+    """``source_roots = ["src/toppkg"]`` puts a package's inside on sys.path."""
+    root = _regular_src(
+        tmp_path, {"src/toppkg/utils/__init__.py": "", "src/toppkg/utils/cli.py": ""}
+    )
+    assert _sound_root(root, "src/toppkg/utils/cli.py", "src/toppkg") is None
+
+
+def test_a_root_below_a_package_cannot_vouch(tmp_path):
+    """``lib/vendor`` has no ``__init__.py``, but ``lib`` does.
+
+    So ``toppkg`` is really ``lib.vendor.toppkg``.
+    """
+    _write(
+        tmp_path,
+        {
+            "lib/__init__.py": "from .vendor.toppkg import cli\n",
+            "lib/vendor/toppkg/__init__.py": "",
+            "lib/vendor/toppkg/cli.py": "",
+        },
+    )
+    cli = tmp_path / "lib/vendor/toppkg/cli.py"
+    # Given only the subtree, the map never sees `lib/__init__.py`: the disk does.
+    mm = firstparty.ModuleMap.from_paths([cli], declared=(tmp_path / "lib/vendor",))
+    assert mm.root_for_absolute_spelling(cli, 1, project_root=tmp_path) is None
+    assert _sound_root(tmp_path, "lib/vendor/toppkg/cli.py", "lib/vendor") is None
+
+
+def test_the_walk_above_a_root_stops_at_the_project_root(tmp_path):
+    """A package *around* the project is not the project's business."""
+    project = tmp_path / "outer" / "project"
+    _write(tmp_path, {"outer/__init__.py": ""})
+    _regular_src(project)
+    assert _sound_root(project, "src/toppkg/cli.py", "src") == (project / "src").resolve()
+
+
+def test_nested_roots_cannot_vouch(tmp_path):
+    """A ``tests/__init__.py`` infers the repository root, which contains ``src``."""
+    root = _regular_src(tmp_path, {"tests/__init__.py": "", "tests/test_it.py": ""})
+    assert _sound_root(root, "src/toppkg/cli.py", "src") is None
+
+
+def test_a_name_two_roots_hold_cannot_vouch(tmp_path):
+    _write(
+        tmp_path,
+        {
+            "a/toppkg/__init__.py": "",
+            "a/toppkg/cli.py": "",
+            "b/toppkg/__init__.py": "",
+            "b/toppkg/cli.py": "",
+        },
+    )
+    assert _sound_root(tmp_path, "a/toppkg/cli.py", "a", "b") is None
+    assert _sound_root(tmp_path, "b/toppkg/cli.py", "a", "b") is None
+
+
 # -- a namespace package holding a regular subpackage ------------------------
 #
 # `analytics/` (no `__init__.py`) around `analytics/io/__init__.py` is the
@@ -1002,6 +1089,45 @@ def test_a_third_party_star_import_leaves_the_name_undetermined(tmp_path: pathli
     mm = _map(tmp_path, {"amb/__init__.py": "from os.path import *\ndef mine(): ...\n"})
     for name in ("join", "mine"):
         assert "'os.path', which is not first-party" in _undetermined(mm, "amb", name)
+
+
+def test_a_definition_after_a_third_party_star_is_still_undetermined(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Statement order is not read: the definition wins only once the module has run.
+
+    ``from app import c`` in the middle is a circular import, and ``app.c``
+    reads ``app.m.path`` while ``m`` is half-initialised -- the star's
+    ``os.path``, not the function below it. An order rule that called
+    ``path`` an object had ``--fix`` turn ``path.join`` into an
+    AttributeError. Any future attempt at order must keep this `CP002`.
+    """
+    mm = _map(
+        tmp_path,
+        {
+            "app/__init__.py": "",
+            "app/m.py": 'from os import *\nfrom app import c\ndef path():\n    return "func"\n',
+            "app/c.py": 'from app.m import path\ndef f():\n    return path.join("a", "b")\n',
+        },
+    )
+    assert "'os', which is not first-party" in _undetermined(mm, "app.m", "path")
+
+
+def test_a_later_definition_does_not_override_a_module_binding(tmp_path: pathlib.Path) -> None:
+    """``import os.path as path`` then ``def path``: the bindings disagree, and stay `CP002`.
+
+    ``import app.c`` between them runs ``app.c`` while ``path`` is still the
+    module, so which one a reader sees depends on when it reads.
+    """
+    mm = _map(
+        tmp_path,
+        {
+            "app/__init__.py": "",
+            "app/m.py": 'import os.path as path\nimport app.c\ndef path():\n    return "func"\n',
+            "app/c.py": 'from app import m\ndef f():\n    return m.path.join("a", "b")\n',
+        },
+    )
+    assert "binds 'path' more than once" in _undetermined(mm, "app.m", "path")
 
 
 def test_a_star_import_cycle_terminates(tmp_path: pathlib.Path) -> None:
