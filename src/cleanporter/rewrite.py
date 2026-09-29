@@ -95,6 +95,18 @@ from cleanporter import aliases, analyze, config, model, resolver, skip, suppres
 from . import _annotations, _imports, _nodes, _source, _type_checking, guards
 
 
+@dataclasses.dataclass(frozen=True)
+class _Site:
+    """The import line being rewritten: where it is, and the reads it will qualify."""
+
+    #: Its line number, for a blocker.
+    line: int
+    #: The statement, which is where a new module import is written.
+    stmt: cst.SimpleStatementLine
+    #: Every read of a name it binds that the rewrite qualifies.
+    reads: tuple[metadata.Access, ...]
+
+
 @dataclasses.dataclass
 class _Plan:
     line_repl: dict[int, list[cst.BaseStatement]] = dataclasses.field(default_factory=dict)
@@ -114,7 +126,11 @@ def _module_import_stmt(spelling: tuple[str, str], bind: str) -> cst.SimpleState
 
 
 class _Fixer(cst.CSTTransformer):
-    METADATA_DEPENDENCIES = (metadata.ScopeProvider, metadata.PositionProvider)
+    METADATA_DEPENDENCIES = (
+        metadata.ScopeProvider,
+        metadata.PositionProvider,
+        metadata.ParentNodeProvider,
+    )
 
     def __init__(
         self, rec: analyze.FileRecord, resolver: resolver.Resolver, config: config.Config
@@ -129,6 +145,10 @@ class _Fixer(cst.CSTTransformer):
         self._module_binding: dict[tuple[metadata.Scope, str, bool], str] = {}
         #: (already-imported module, spelled relative) -> the name it is bound to.
         self._existing: dict[tuple[str, bool], str] = {}
+        #: The same key -> the statement that binds it, for `_holds_before`.
+        self._existing_at: dict[tuple[str, bool], cst.CSTNode] = {}
+        #: `_module_binding` key -> the statement whose binding it memoizes.
+        self._module_binding_at: dict[tuple[metadata.Scope, str, bool], cst.CSTNode] = {}
         #: Names bound at module scope. Kept *live*: grows as `_binding_for`
         #: allocates new module-level tokens, so a later function scope's
         #: collision check sees them (fix-round-1 Critical 2).
@@ -170,6 +190,8 @@ class _Fixer(cst.CSTTransformer):
         #: nothing; see `_free_names_below`. Built on first use. ``None`` for
         #: a read whose names cannot be read off its node.
         self._free_reads: list[tuple[metadata.Scope, str | None]] | None = None
+        #: The module being fixed (`visit_Module`), the owner of its global scope.
+        self._module_node = cst.Module(body=[])
         #: Every scope in the file (`_scopes`). Built on first use.
         self._all_scopes: list[metadata.Scope] | None = None
         #: The alias conventions every new binding follows (`_allocate_token`).
@@ -177,6 +199,7 @@ class _Fixer(cst.CSTTransformer):
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
+        self._module_node = node
         self._tc_ids = _type_checking.import_ids(node)
         self._del_names = _nodes.deleted_names(node)
         # Names already bound at module scope, seen from *any* scope's
@@ -361,6 +384,7 @@ class _Fixer(cst.CSTTransformer):
             for name, asname, _alias in _imports.imported_names(imp):
                 if self._resolver.is_module(parent, name) is True:
                     self._existing[f"{parent}.{name}", relative] = asname or name
+                    self._existing_at[f"{parent}.{name}", relative] = imp
         # plain ``import a`` / ``import a as z`` (top-level modules only)
         for plain in _nodes.plain_imports(node):
             scope = self.get_metadata(metadata.ScopeProvider, plain, None)
@@ -380,8 +404,10 @@ class _Fixer(cst.CSTTransformer):
                 bound = as_node.value if isinstance(as_node, cst.Name) else None
                 if bound is not None:
                     self._existing[mod, False] = bound
+                    self._existing_at[mod, False] = plain
                 elif "." not in mod:
                     self._existing[mod, False] = mod
+                    self._existing_at[mod, False] = plain
 
     def _import_lines(
         self, node: cst.Module
@@ -503,8 +529,13 @@ class _Fixer(cst.CSTTransformer):
 
         # new statements: one module import per (deduped) parent, plus kept names
         new_lines: list[cst.BaseStatement] = []
+        site = _Site(
+            self._line_of(imp),
+            line,
+            tuple(ref for _n, _b, ours in rewrites for a in ours for ref in a.references),
+        )
         bind, need_new_line = self._binding_for(
-            scope, (parent, spelling[0].startswith(".")), extra_avoid, self._line_of(imp)
+            scope, (parent, spelling[0].startswith(".")), extra_avoid, site
         )
         if need_new_line:
             new_lines.append(_module_import_stmt(spelling, bind))
@@ -746,7 +777,7 @@ class _Fixer(cst.CSTTransformer):
         return names
 
     def _binding_for(
-        self, scope: metadata.Scope, module: tuple[str, bool], extra_avoid: set[str], line: int
+        self, scope: metadata.Scope, module: tuple[str, bool], extra_avoid: set[str], site: _Site
     ) -> tuple[str, bool]:
         """Token to qualify *this line's* references through.
 
@@ -781,19 +812,26 @@ class _Fixer(cst.CSTTransformer):
         import C`` under a declared root, spelled ``import pkg``. Only a
         binding spelled the same way is reused -- see `_build_existing`.
 
-        *line* is where the import being rewritten sits, for the blocker
-        `_allocate_token` raises when a configured alias is taken.
+        *site* is the line being rewritten: where it sits, for the blocker
+        `_allocate_token` raises when a configured alias is taken, and the
+        reads it qualifies. A binding is reused only where it is bound when
+        each of those reads runs (`_holds_before`): an import below them, or
+        one under an ``if``, would turn working code into a ``NameError``.
         """
         parent, relative = module
         key = (scope, parent, relative)
         memoized = self._module_binding.get(key)
         if memoized is not None:
-            if memoized not in extra_avoid:
+            if memoized not in extra_avoid and self._holds_before(
+                self._module_binding_at[key], self._owner(scope), site.reads
+            ):
                 return memoized, False
-            return self._allocate_token(scope, parent, extra_avoid, line), True
+            return self._allocate_token(scope, parent, extra_avoid, site.line), True
 
         existing = self._existing.get(module)
-        if existing is not None:
+        if existing is not None and self._holds_before(
+            self._existing_at[module], self._module_node, site.reads
+        ):
             # A module-level import is visible from nested scopes unless
             # *this* scope or an enclosing function/class scope assigns
             # that name itself -- a closure variable shadows it just as
@@ -829,11 +867,72 @@ class _Fixer(cst.CSTTransformer):
             )
             if not shadowed:
                 self._module_binding[key] = existing
+                self._module_binding_at[key] = self._existing_at[module]
                 return existing, False
 
-        bind = self._allocate_token(scope, parent, extra_avoid, line)
+        bind = self._allocate_token(scope, parent, extra_avoid, site.line)
         self._module_binding[key] = bind
+        self._module_binding_at[key] = site.stmt
         return bind, True
+
+    def _parent(self, node: cst.CSTNode) -> cst.CSTNode | None:
+        parent = self.get_metadata(metadata.ParentNodeProvider, node, None)
+        return parent if isinstance(parent, cst.CSTNode) else None
+
+    def _owner(self, scope: metadata.Scope) -> cst.CSTNode:
+        """The node whose body *scope* binds in: a function, a class, or the module."""
+        return (
+            scope.node
+            if isinstance(scope, (metadata.FunctionScope, metadata.ClassScope))
+            else self._module_node
+        )
+
+    def _holds_before(
+        self, stmt: cst.CSTNode, owner: cst.CSTNode, reads: tuple[metadata.Access, ...]
+    ) -> bool:
+        """Whether the binding *stmt* makes is in place whenever one of *reads* runs.
+
+        Proven only for the one shape that needs no flow analysis: *stmt*
+        sits directly in the body of *owner* -- the module, or the function
+        or class whose scope it binds in -- so nothing (``if``, ``try``,
+        ``with``, a loop, ``match``) decides whether it runs, and it ends
+        textually before every read. A read in a function defined above the
+        import could still run after it, but that is exactly what cannot be
+        shown without following calls, so it counts as before. Anything
+        else is not reused: ``from json import dumps`` / ``x = dumps(1)`` /
+        ``import json`` must not become ``json.dumps(1)`` above ``import
+        json``, and an ``import json`` under ``if sys.version_info < (3,
+        0):`` binds nothing.
+        """
+        line = stmt if isinstance(stmt, cst.SimpleStatementLine) else self._parent(stmt)
+        if line is None:
+            return False
+        anchor: cst.CSTNode = line
+        container = self._parent(anchor)
+        # `if not TYPE_CHECKING:` always runs its body (`_type_checking`).
+        guard = self._parent(container) if container is not None else None
+        while (
+            isinstance(guard, cst.If)
+            and guard.body is container
+            and _type_checking.body_always_runs(guard, self._module_node)
+        ):
+            anchor, container = guard, self._parent(guard)
+            guard = self._parent(container) if container is not None else None
+        if isinstance(owner, cst.Module):
+            direct = container is owner
+        else:
+            direct = isinstance(container, cst.IndentedBlock) and self._parent(container) is owner
+        if not direct:
+            return False
+        span = self.get_metadata(metadata.PositionProvider, line, None)
+        if span is None:
+            return False
+        end = span.end
+        for read in reads:
+            start = self.get_metadata(metadata.PositionProvider, read.node, None)
+            if start is None or (start.start.line, start.start.column) < (end.line, end.column):
+                return False
+        return True
 
     def _free_names_below(self, scope: metadata.Scope) -> tuple[set[str], bool]:
         """Names read in *scope*, or a scope nested in it, that no assignment in the file binds.

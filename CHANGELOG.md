@@ -72,6 +72,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of the name that could see the import -- in its scope, or a nested scope
   that does not bind the name itself -- must now be one the scope analysis
   ties to it; otherwise the file is declined with a `CP003`.
+- `--fix` reused an existing binding of a module wherever it was:
+  `from json import dumps` / `x = dumps(1)` / `import json` became
+  `json.dumps(1)` above `import json`, and an `import json` under `if
+  sys.version_info < (3, 0):` was leaned on as if it always ran -- both
+  `NameError`. The same held for a binding the fix itself wrote inside an
+  `if` and then reused for a later line. A binding is now reused only when it
+  sits directly in the body of its module or function (or under `if not
+  TYPE_CHECKING:`) and ends before every read it would serve; otherwise the
+  line gets its own import, aliased if the name is taken.
 
 ## [0.5.0] - 2026-09-29
 

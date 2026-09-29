@@ -30,6 +30,15 @@ import binding being rewritten. Concretely:
   its own binding, tracked independently of any module-level import of the
   same module.
 
+A module the file already imports is reused as the binding — `import json`
+plus `from json import dumps` becomes `json.dumps` — but only when that import
+is certain to have run by the time each rewritten read does: it sits directly
+in the body of its module or function (not under an `if`, `try`, `with`,
+loop or `match`; `if not TYPE_CHECKING:` counts as direct, since it always
+runs) and ends textually before every one of those reads. Otherwise the line
+gets its own import, aliased (`json_2`) if the name is taken. The same holds
+for a binding one rewritten line creates and a later one would share.
+
 Formatting survives because libCST is a *concrete* syntax tree: it round-trips
 the source, so what the fixer does not deliberately change is reproduced
 byte-for-byte. The structural changes are the inserted or replaced import

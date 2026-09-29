@@ -1970,3 +1970,46 @@ def test_a_nested_function_reading_a_later_import_is_still_rewritten():
     result = outcome("def g():\n    return dumps(1)\n\n\nfrom json import dumps\n")
     assert result.status == "fixed"
     assert result.source == "def g():\n    return json.dumps(1)\n\n\nimport json\n"
+
+
+# -- reusing an existing binding: only one bound unconditionally, before the reads --
+
+
+def test_a_binding_imported_below_the_reads_is_not_reused():
+    result = outcome("from json import dumps\nx = dumps(1)\nimport json\n")
+    assert result.status == "fixed"
+    assert result.source == "import json as json_2\nx = json_2.dumps(1)\nimport json\n"
+
+
+def test_a_conditionally_imported_binding_is_not_reused():
+    src = (
+        "import sys\nfrom json import dumps\n"
+        "if sys.version_info < (3, 0):\n    import json\nprint(dumps(1))\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "import sys\nimport json as json_2\n"
+        "if sys.version_info < (3, 0):\n    import json\nprint(json_2.dumps(1))\n"
+    )
+
+
+def test_a_binding_written_by_a_conditional_rewrite_is_not_reused():
+    src = (
+        "import sys\n"
+        "if sys.version_info < (3, 0):\n    from json import dumps\n    dumps(1)\n"
+        "from json import loads\nprint(loads('1'))\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "import sys\n"
+        "if sys.version_info < (3, 0):\n    import json\n    json.dumps(1)\n"
+        "import json as json_2\nprint(json_2.loads('1'))\n"
+    )
+
+
+def test_an_unconditional_earlier_binding_is_still_reused():
+    result = outcome("import json\nfrom json import dumps\nx = dumps(1)\n")
+    assert result.status == "fixed"
+    assert result.source == "import json\nx = json.dumps(1)\n"
