@@ -73,6 +73,7 @@ block hides (`_type_checking`), which string literals are annotations or
 from __future__ import annotations
 
 import ast
+import collections
 import dataclasses
 import re
 
@@ -1079,21 +1080,27 @@ def _suppression_moved(
     )
 
 
-def _coverage(rec: analyze.FileRecord, rewritten: set[int]) -> list[frozenset[tuple[str, str]]]:
+def _coverage(
+    rec: analyze.FileRecord, rewritten: set[int]
+) -> list[collections.Counter[tuple[str, str, str | None]]]:
     """Per suppression comment in *rec*, the imports it covers that are not in *rewritten*.
 
-    An import is ``(parent, bound name)``; relative parents resolve the same
-    way on both sides, since the file's package does not change.
+    An import is ``(parent, name, asname)``, counted rather than collected: a
+    set keyed on less, or a set at all, lets two imports sharing a key
+    collapse into one -- ``mystery, Widget, mystery`` with ``Widget``
+    rewritten would compare equal before and after while the comment moved
+    onto the first ``mystery``. Relative parents resolve the same way on both
+    sides, since the file's package does not change.
     """
-    covered: dict[suppress.Suppression, set[tuple[str, str]]] = {
-        s: set() for s in rec.suppressions.comments
+    covered: dict[suppress.Suppression, collections.Counter[tuple[str, str, str | None]]] = {
+        s: collections.Counter() for s in rec.suppressions.comments
     }
     for unit in rec.units:
         if unit.alias is not None and id(unit.alias) in rewritten:
             continue
         for s in rec.suppressions.covering(unit.node, unit.alias):
-            covered[s].add((unit.parent or "?", unit.asname or unit.name))
-    return [frozenset(covered[s]) for s in rec.suppressions.comments]
+            covered[s][unit.parent or "?", unit.name, unit.asname] += 1
+    return [covered[s] for s in rec.suppressions.comments]
 
 
 def _source_lines(source: str) -> list[str]:

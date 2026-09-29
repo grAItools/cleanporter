@@ -410,20 +410,43 @@ _MOVING = {
         "\n"
         "print(Widget, mystery)\n"
     ),
+    # d1: two imports bound to one name, told apart by what they import.
+    "same-binding": (
+        "from demo.helpers import mystery as m, \\\n"
+        "    Widget, other as m  # cleanporter: ignore[CP002]\n"
+        "\n"
+        "print(Widget, m)\n"
+    ),
+    # d5: the same import twice; the comment covers only the second.
+    "same-import-twice": (
+        "from demo.helpers import mystery, \\\n"
+        "    Widget, mystery  # cleanporter: ignore[CP002]\n"
+        "\n"
+        "print(Widget, mystery)\n"
+    ),
+}
+
+#: What plain ``--strict`` check reports for each `_MOVING` source.
+_MOVING_CHECK = {
+    "continuation": ["CP001", "CP002", "CP005"],
+    "closing-paren": ["CP001", "CP002", "CP005"],
+    "same-binding": ["CP001", "CP002", "CP004"],
+    "same-import-twice": ["CP001", "CP002", "CP004"],
 }
 
 
-@pytest.mark.parametrize("source", list(_MOVING.values()), ids=list(_MOVING))
+@pytest.mark.parametrize("case", list(_MOVING))
 def test_fix_never_moves_a_suppression_onto_kept_names(
-    project: pathlib.Path, capsys: pytest.CaptureFixture[str], source: str
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str], case: str
 ) -> None:
     """``--fix --strict`` must not turn the failing run green by re-aiming a comment."""
+    source = _MOVING[case]
     target = _consumer(project, source)
-    rc_check, out, _ = _run(capsys, "--strict", "src")
+    rc_check, out, _ = _run(capsys, "--strict", "--show-skipped", "src")
     check = sorted(code for _line, code in _findings(out))
     assert rc_check == 1
-    assert check == ["CP001", "CP002", "CP005"]
-    rc_fix, _out, err = _run(capsys, "--fix", "--strict", "src")
+    assert check == _MOVING_CHECK[case]
+    rc_fix, _out, err = _run(capsys, "--fix", "--strict", "--show-skipped", "src")
     assert rc_fix == 1
     assert target.read_bytes() == source.encode()
     assert _MOVED in err

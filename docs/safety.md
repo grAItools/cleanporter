@@ -223,8 +223,10 @@ An [inline suppression](configuration.md#inline-suppressions) covers the
 imports on its physical line. A partial rewrite writes the kept names on one
 line with the statement's trailing comment, so a comment that covered only a
 rewritten name, or none, could end up covering — and suppressing — the kept
-ones. The coverage of every suppression is recomputed on the output, and a
-comment that would cover any import it did not cover before declines the file.
+ones. The coverage of every suppression is recomputed on the output, counting
+each import separately (the same name imported twice is two imports), and any
+comment whose coverage changes — other than losing the names the rewrite takes
+away — declines the file.
 
 ### The file's encoding cannot hold the rewrite unchanged
 

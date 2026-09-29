@@ -509,9 +509,10 @@ suppressed.
     comment. A comment that covered only a rewritten name, or nothing at all
     (one on a closing `)`), would then cover the kept names and start
     suppressing them. cleanporter recomputes which imports every suppression
-    covers on its own output, and when any comment would cover an import it
-    did not cover before — a kept name, or the module import just written —
-    it declines the whole file (`CP003`: *the rewrite would move this
+    covers on its own output, and when what any comment covers changes —
+    beyond losing the names the rewrite takes away: a kept name, a second
+    import of the same name, or the module import just written — it declines
+    the whole file (`CP003`: *the rewrite would move this
     suppression comment onto imports it does not cover now*). Give the
     suppressed names a statement of their own, or delete a stale comment.
 
