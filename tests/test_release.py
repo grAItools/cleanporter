@@ -111,11 +111,28 @@ def test_the_workflow_runs_every_check_before_building() -> None:
         "release.py check-tag",
         "release.py notes",
         "pytest",
+        "git status --porcelain",  # and nothing left in the tree to be packed
     ):
         assert next(i for i, run in enumerate(runs) if check in run) < build, check
     checkout = steps[0]
     assert isinstance(checkout, dict)
     assert checkout["with"] == {"fetch-depth": 0}  # or origin/main is not there to compare
+
+
+def test_the_release_notes_are_written_outside_the_checkout() -> None:
+    """Inside it, they would be packed into the sdist -- which PyPI never lets be replaced."""
+    steps = _jobs()["build"]["steps"]
+    assert isinstance(steps, list)
+    [notes] = [s for s in steps if isinstance(s, dict) and "release.py notes" in str(s.get("run"))]
+    run = str(notes["run"])
+    assert '> "$RUNNER_TEMP/notes/notes.md"' in run
+    assert run.count(">") == 1  # the one redirection is that one
+    [upload] = [
+        s for s in steps if isinstance(s, dict) and s.get("name") == "Upload the release notes"
+    ]
+    upload_with = upload["with"]
+    assert isinstance(upload_with, dict)
+    assert str(upload_with["path"]).startswith("${{ runner.temp }}/")
 
 
 def test_pypi_is_opt_in_and_uses_trusted_publishing() -> None:

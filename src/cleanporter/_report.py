@@ -270,15 +270,19 @@ def _file_uri(path: pathlib.PurePath, *, directory: bool = False) -> str:
     ``as_uri`` keeps it (``file:///C:/x``): percent-encoded, ``C%3A`` is a
     spelling SARIF viewers do not map back to the file. A UNC path names its
     server as the URI's authority, again as ``as_uri`` does:
-    ``\\server\share\x`` is ``file://server/share/x``.
+    ``\\server\share\x`` is ``file://server/share/x``. An extended-length
+    path to a drive, ``\\?\C:\x``, is that drive's ``file:///C:/x``.
     """
     posix = path.as_posix()
     drive = ""
-    if path.drive.endswith(":"):  # C:/x -> /C: + /x
-        drive, posix = f"/{path.drive}", posix[len(path.drive) :]
+    unc = False
+    if path.drive.endswith(":"):  # C:/x -> /C: + /x; \\?\C:\x -> /C: + /x
+        drive, posix = f"/{path.drive[-2:]}", posix[len(path.drive) :]
+    elif path.drive.startswith("\\\\"):  # UNC, //server/share/x: the server is the authority
+        unc = True
     if directory and not posix.endswith("/"):
         posix = f"{posix}/"
-    if path.drive.startswith("\\\\"):  # UNC, //server/share/x: the server is the authority
+    if unc:
         return f"file:{_uri(posix)}"
     return f"file://{drive}{_uri(posix)}"
 

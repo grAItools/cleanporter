@@ -320,6 +320,10 @@ def test_a_windows_drive_keeps_its_colon_in_a_file_uri():
     assert _report._file_uri(unc) == unc.as_uri() == "file://server/share/x.py"
     share = pathlib.PureWindowsPath("//server/share/")
     assert _report._file_uri(share, directory=True) == "file://server/share/"
+    # An extended-length path keeps its drive, not the UNC branch's spelling.
+    extended = pathlib.PureWindowsPath("\\\\?\\C:\\x.py")
+    assert extended.drive == "\\\\?\\C:"
+    assert _report._file_uri(extended) == "file:///C:/x.py"
     # POSIX keeps a leading `//` as written; it is a path there, not a server.
     doubled = pathlib.PurePosixPath("//srv/x.py")
     assert _report._file_uri(doubled) == "file:////srv/x.py"

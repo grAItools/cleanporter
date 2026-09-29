@@ -111,7 +111,8 @@ Breaking under the pre-1.0 policy above:
   working directory, and `SRCROOT` itself, were written `file:///C%3A/...`;
   they are now `file:///C:/...`, as `pathlib` spells them and SARIF viewers
   resolve them. A UNC path is `file://server/share/...`, with the server as
-  the URI's host, rather than `file:////server/share/...`. The test suite now
+  the URI's host, rather than `file:////server/share/...`, and an
+  extended-length `\\?\C:\...` path is `file:///C:/...`. The test suite now
   also runs on Windows in CI.
 
 ## [0.4.0] - 2026-09-28

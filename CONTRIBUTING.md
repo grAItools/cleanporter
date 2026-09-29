@@ -316,6 +316,8 @@ The workflow then, in one `build` job that stops at the first failure:
 - takes the release notes from the `## [X.Y.Z] - DATE` section of
   `CHANGELOG.md`, and stops if there is none;
 - runs the test suite on the tagged commit;
+- checks that nothing was left in the checkout (the sdist packs every file
+  there that git does not ignore; the notes are written outside it);
 - builds the sdist and wheel once, with `uv build --no-sources`.
 
 Only after all of that succeeds do two jobs start, side by side and
