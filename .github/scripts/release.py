@@ -2,10 +2,12 @@
 """The two checks `.github/workflows/release.yml` makes before anything is published.
 
 ``check-tag vX.Y.Z`` exits 1 unless the pushed tag names exactly
-``project.version`` in pyproject.toml. The wheel and sdist take their version
-from pyproject.toml, not from the tag, so a tag that disagrees would publish
-one version under another's name -- and PyPI never lets a version be
-re-uploaded, so the mistake could not be taken back.
+``project.version`` in pyproject.toml, and that version is a normalised public
+PEP 440 version (``0.5.0``, ``0.5.0rc1``, ``0.5.0.post1``; not ``0.05``,
+``0.5.0-rc1`` or ``0.5.0+local``, which PyPI would rewrite or refuse). The
+wheel and sdist take their version from pyproject.toml, not from the tag, so a
+tag that disagrees would publish one version under another's name -- and PyPI
+never lets a version be re-uploaded, so the mistake could not be taken back.
 
 ``notes X.Y.Z`` prints the body of CHANGELOG.md's ``## [X.Y.Z] - DATE``
 section, the release notes, and exits 1 when there is no such section or it
@@ -13,11 +15,13 @@ is empty: a release whose notes say nothing is a release whose changelog step
 was skipped.
 
 Standard library only, and run with ``uv run --no-project``: the release must
-not depend on installing the project it is about to build.
+not depend on installing the project it is about to build. Output is UTF-8
+whatever the platform's pipe encoding, since the changelog is not ASCII.
 """
 
 from __future__ import annotations
 
+import io
 import pathlib
 import re
 import sys
@@ -26,6 +30,19 @@ import tomllib
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 _USAGE = "usage: release.py check-tag vX.Y.Z | release.py notes X.Y.Z\n"
+
+#: A normalised public PEP 440 version without an epoch: what `packaging`
+#: would print back unchanged, and what PyPI stores as written.
+_NORMALISED = re.compile(
+    r"(0|[1-9]\d*)(\.(0|[1-9]\d*))*"
+    r"((a|b|rc)(0|[1-9]\d*))?"
+    r"(\.post(0|[1-9]\d*))?"
+    r"(\.dev(0|[1-9]\d*))?"
+)
+
+#: CHANGELOG.md's own words for its preamble, which the notes do not carry.
+_ABOVE = "the pre-1.0 policy above"
+_CHANGELOG_URL = "https://github.com/grAItools/cleanporter/blob/main/CHANGELOG.md"
 
 
 def project_version() -> str:
@@ -43,18 +60,26 @@ def changelog_section(version: str, changelog: str) -> str | None:
 
     It runs to the next ``## `` heading or to the link reference definitions
     (``[0.4.0]: https://...``) that close the file. ``None`` when there is
-    no such heading.
+    no such heading. A reference to the changelog's preamble ("the pre-1.0
+    policy above") is pointed at the changelog, since the notes stand alone.
     """
     heading = re.compile(rf"^## \[{re.escape(version)}\] - \S.*$", re.MULTILINE)
     match = heading.search(changelog)
     if match is None:
         return None
     end = re.compile(r"^(## |\[[^\]]+\]: )", re.MULTILINE).search(changelog, match.end())
-    return changelog[match.end() : end.start() if end else len(changelog)].strip()
+    body = changelog[match.end() : end.start() if end else len(changelog)].strip()
+    return body.replace(_ABOVE, f"the [pre-1.0 policy]({_CHANGELOG_URL})")
 
 
 def _check_tag(tag: str) -> int:
     version = project_version()
+    if not tag.startswith("v") or not _NORMALISED.fullmatch(tag[1:]):
+        sys.stderr.write(
+            f"release: the tag {tag!r} is not 'v' + a normalised public version "
+            f"(pyproject.toml has {version!r}, so the tag is v{version})\n"
+        )
+        return 1
     if tag != f"v{version}":
         sys.stderr.write(
             f"release: the tag {tag!r} does not name pyproject.toml's version {version!r}; "
@@ -78,6 +103,9 @@ def _notes(version: str) -> int:
 
 def main(argv: list[str]) -> int:
     """Run the subcommand in *argv*; 0 when the check passes, 1 when not, 2 on misuse."""
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, io.TextIOWrapper):  # a cp1252 pipe on Windows otherwise
+            stream.reconfigure(encoding="utf-8")
     match argv:
         case ["check-tag", tag]:
             return _check_tag(tag)

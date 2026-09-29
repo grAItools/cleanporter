@@ -307,18 +307,31 @@ A release is a version tag; `.github/workflows/release.yml` does the rest.
    git push origin vX.Y.Z
    ```
 
-The workflow then:
+The workflow then, in one `build` job that stops at the first failure:
 
-- checks that the tag is exactly `v` + `project.version` and stops if not —
-  the wheel takes its version from `pyproject.toml`, not from the tag;
+- checks that the tagged commit is on `main` — tag the merge, not a branch;
+- checks that the tag is exactly `v` + `project.version`, a normalised public
+  version (`0.5.0`, `0.5.0rc1`; not `0.5.0-rc1` or `0.5.0+local`) — the wheel
+  takes its version from `pyproject.toml`, not from the tag;
 - takes the release notes from the `## [X.Y.Z] - DATE` section of
   `CHANGELOG.md`, and stops if there is none;
-- builds the sdist and wheel once, with `uv build`;
-- creates the GitHub release for the tag, with those notes and both files
-  attached (marked a pre-release for an `rc`, `a`, `b` or `dev` version);
-- uploads the same files to PyPI — **only if PyPI publishing is enabled**.
+- runs the test suite on the tagged commit;
+- builds the sdist and wheel once, with `uv build --no-sources`.
 
-Both checks are `.github/scripts/release.py`, which you can run before tagging:
+Only after all of that succeeds do two jobs start, side by side and
+independent of each other:
+
+- the GitHub release for the tag, with those notes and both files attached
+  (marked a pre-release for an `rc`, `a`, `b` or `dev` version);
+- the upload of the same files to PyPI — **only if PyPI publishing is
+  enabled**.
+
+So a failed check publishes nothing anywhere, but once the build is done a
+PyPI failure does not hold back the GitHub release, nor the other way round;
+re-run the failed job from the Actions tab.
+
+The tag and notes checks are `.github/scripts/release.py`, which you can run
+before tagging:
 `uv run --no-project python .github/scripts/release.py check-tag vX.Y.Z`.
 
 ### Enabling PyPI publishing

@@ -13,7 +13,10 @@ on:
 permissions:
   contents: read
 
-# Never cancel a release half-way: a second tag push waits for the first.
+# One run per tag at a time: the group is the tag itself, so different tags
+# never wait on each other, and a run for a tag that is deleted and pushed
+# again queues behind the one in progress instead of cancelling it half-way
+# through a publish.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -23,7 +26,10 @@ jobs:
     name: Build and check
     runs-on: ubuntu-latest
     steps:
+      # Full history, so the tagged commit can be checked against main.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # No cache: nothing restored from an earlier run should be able to end
       # up in a published artifact.
@@ -32,20 +38,39 @@ jobs:
         with:
           enable-cache: false
 
+      # A release is a merged commit: a tag on a branch that never went
+      # through review, CI and a merge is refused.
+      - name: The tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "release: $GITHUB_REF_NAME ($GITHUB_SHA) is not on main; tag a merged commit" >&2
+            exit 1
+          fi
+
       # The wheel takes its version from pyproject.toml, not from the tag, and
       # PyPI never accepts a version twice: a mismatch has to stop here.
       - name: The tag names project.version
-        run: uv run --no-project python .github/scripts/release.py check-tag "$GITHUB_REF_NAME"
+        run: >-
+          uv run --no-project --python 3.12
+          python .github/scripts/release.py check-tag "$GITHUB_REF_NAME"
 
       - name: Release notes from CHANGELOG.md
         run: |
           mkdir notes
-          uv run --no-project python .github/scripts/release.py notes "${GITHUB_REF_NAME#v}" \
-            > notes/notes.md
+          uv run --no-project --python 3.12 \
+            python .github/scripts/release.py notes "${GITHUB_REF_NAME#v}" > notes/notes.md
           cat notes/notes.md
 
+      # CI ran on the merge, but this is the exact tree being published.
+      - name: The test suite passes on the tagged commit
+        run: |
+          uv sync --locked --python 3.12
+          uv run --python 3.12 pytest -q
+
+      # --no-sources: build as a user's installer would, ignoring any
+      # [tool.uv.sources] override that only exists in this checkout.
       - name: Build the sdist and wheel
-        run: uv build
+        run: uv build --no-sources
 
       - name: Upload the distributions
         uses: actions/upload-artifact@v4
@@ -119,4 +144,4 @@ jobs:
           path: dist
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.13.0
+        uses: pypa/gh-action-pypi-publish@v1.14.2
