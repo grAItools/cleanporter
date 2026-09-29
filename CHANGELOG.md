@@ -65,6 +65,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotation (`def f(x: "list[int]")`) -- so the binding is suffixed
   (`list_2`) -- or, under an alias rule asking for that name, the file is
   declined with a `CP003`.
+- `--fix` could leave a read of a rewritten name behind. libCST does not tie a
+  read to an import below it in the same scope, so in `for i in range(2): if
+  i: out.append(dumps(1)) else: from json import dumps` the first `dumps` was
+  never qualified and raised `NameError` once the import was gone. Every read
+  of the name that could see the import -- in its scope, or a nested scope
+  that does not bind the name itself -- must now be one the scope analysis
+  ties to it; otherwise the file is declined with a `CP003`.
 
 ## [0.5.0] - 2026-09-29
 

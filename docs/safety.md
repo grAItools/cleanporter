@@ -169,6 +169,17 @@ scope, libCST's scopes are not flow-sensitive: an access lists both the import
 and the assignment as its referents, so there is no safe subset to rewrite.
 The file is declined.
 
+### A read the scope analysis does not tie to the import
+
+Only the reads libCST links to the import are qualified, and it does not link
+a read that comes *before* the import in the same scope: it looks for an
+earlier binding, finds none, and falls back to the enclosing scope. In a loop
+that is working code — `for i in range(2): if i: out.append(dumps(1)) else:
+from json import dumps` — and the read left unqualified would raise
+`NameError` once the import is gone. So every read of the name that could see
+the import (in its scope, or a nested one that does not bind the name itself)
+must be one libCST ties to it; any other declines the file.
+
 ### `global` / `nonlocal` declarations naming it
 
 Such a declaration keeps the name writable from another scope. Qualifying the

@@ -1925,3 +1925,48 @@ def test_absolute_imports_keep_their_absolute_spelling():
     result = outcome(src)
     assert result.status == "fixed"
     assert result.source == "from pkg.sub import mod\nx = mod.Thing(), mod.go()\n"
+
+
+# -- a read the scope analysis does not tie to the import -------------------------
+
+_LOOP_MODULE = (
+    "out = []\n"
+    "for i in range(2):\n"
+    "    if i:\n"
+    "        out.append(dumps(1))\n"
+    "    else:\n"
+    "        from json import dumps\n"
+    "print(out, dumps(2))\n"
+)
+_LOOP_FUNCTION = (
+    "def f():\n"
+    "    out = []\n"
+    "    for i in range(2):\n"
+    "        if i:\n"
+    "            out.append(dumps(1))\n"
+    "        else:\n"
+    "            from json import dumps\n"
+    "    return out, dumps(2)\n"
+)
+
+
+def test_a_read_above_the_import_in_a_loop_declines_the_file():
+    # libcst drops a same-scope read that comes before the binding textually,
+    # so it would be left unqualified: `dumps` then raises NameError.
+    for src in (_LOOP_MODULE, _LOOP_FUNCTION):
+        result = outcome(src)
+        assert result.status == "skipped", result.source
+        assert result.source == src
+        assert [f.detail for f in result.blockers] == [
+            (
+                "a read of 'dumps' is not tied to this import by the scope analysis (it "
+                "comes before the import, or resolves elsewhere), so rewriting would leave "
+                "it behind"
+            )
+        ]
+
+
+def test_a_nested_function_reading_a_later_import_is_still_rewritten():
+    result = outcome("def g():\n    return dumps(1)\n\n\nfrom json import dumps\n")
+    assert result.status == "fixed"
+    assert result.source == "def g():\n    return json.dumps(1)\n\n\nimport json\n"

@@ -170,6 +170,8 @@ class _Fixer(cst.CSTTransformer):
         #: nothing; see `_free_names_below`. Built on first use. ``None`` for
         #: a read whose names cannot be read off its node.
         self._free_reads: list[tuple[metadata.Scope, str | None]] | None = None
+        #: Every scope in the file (`_scopes`). Built on first use.
+        self._all_scopes: list[metadata.Scope] | None = None
         #: The alias conventions every new binding follows (`_allocate_token`).
         self._conventions = config.conventions
 
@@ -487,39 +489,10 @@ class _Fixer(cst.CSTTransformer):
         extra_avoid: set[str] = set()
         for name, asname in fix:
             bound = asname or name
-            if bound in self._del_names:
-                # `del bound` reads as an access, not an assignment, so the
-                # `others` check below cannot see it (see `_nodes.deleted_names`).
-                self.blockers.append(
-                    (
-                        self._line_of(imp),
-                        (
-                            f"local '{bound}' is unbound with `del`; qualifying it would "
-                            "delete an attribute of the imported module"
-                        ),
-                    )
-                )
-                continue
             ours = [a for a in scope[bound] if getattr(a, "node", None) is imp]
-            # No BuiltinAssignment filter needed here: libcst only ever puts
-            # BuiltinAssignment objects in a BuiltinScope's own assignments,
-            # never in a GlobalScope's or a LocalScope's (FunctionScope /
-            # ClassScope, now that non-module scopes are fixed too).
-            # GlobalScope.__getitem__ and LocalScope's (via
-            # LocalScope._resolve_scope_for_access) both return the scope's
-            # own assignments directly whenever the name is present there at
-            # all, and `ours` being non-empty means `bound` is already
-            # present in *this* scope's own assignments -- so a builtin can
-            # never show up alongside our import, regardless of whether
-            # `scope` is global, a function, or a class body.
-            others = [a for a in scope[bound] if getattr(a, "node", None) is not imp]
-            if ours and others:
-                # libcst's scopes are not flow-sensitive, so accesses of a
-                # rebound name list both the import and the assignment as
-                # referents. There is no safe subset to rewrite.
-                self.blockers.append(
-                    (self._line_of(imp), f"local '{bound}' is rebound in the same scope")
-                )
+            reason = self._name_blocker(imp, bound, scope, ours)
+            if reason is not None:
+                self.blockers.append((self._line_of(imp), reason))
                 continue
             rewrites.append((name, bound, ours))
             for assignment in ours:
@@ -632,6 +605,79 @@ class _Fixer(cst.CSTTransformer):
                 imp, parent, root_hint=self._rec.root_hint, own_init=self._decider.own_init(parent)
             )
         return spelling
+
+    def _name_blocker(
+        self,
+        imp: cst.ImportFrom,
+        bound: str,
+        scope: metadata.Scope,
+        ours: list[metadata.BaseAssignment],
+    ) -> str | None:
+        """Why the local *bound*, which *imp* binds in *scope* as *ours*, cannot be qualified."""
+        if bound in self._del_names:
+            # `del bound` reads as an access, not an assignment, so the
+            # `others` check below cannot see it (see `_nodes.deleted_names`).
+            return (
+                f"local '{bound}' is unbound with `del`; qualifying it would "
+                "delete an attribute of the imported module"
+            )
+        # No BuiltinAssignment filter needed here: libcst only ever puts
+        # BuiltinAssignment objects in a BuiltinScope's own assignments,
+        # never in a GlobalScope's or a LocalScope's (FunctionScope /
+        # ClassScope, now that non-module scopes are fixed too).
+        # GlobalScope.__getitem__ and LocalScope's (via
+        # LocalScope._resolve_scope_for_access) both return the scope's
+        # own assignments directly whenever the name is present there at
+        # all, and `ours` being non-empty means `bound` is already
+        # present in *this* scope's own assignments -- so a builtin can
+        # never show up alongside our import, regardless of whether
+        # `scope` is global, a function, or a class body.
+        others = [a for a in scope[bound] if getattr(a, "node", None) is not imp]
+        if ours and others:
+            # libcst's scopes are not flow-sensitive, so accesses of a
+            # rebound name list both the import and the assignment as
+            # referents. There is no safe subset to rewrite.
+            return f"local '{bound}' is rebound in the same scope"
+        if self._unlinked_read(bound, scope, ours):
+            return _unlinked_reason(bound)
+        return None
+
+    def _unlinked_read(
+        self, name: str, scope: metadata.Scope, ours: list[metadata.BaseAssignment]
+    ) -> bool:
+        """Whether a read of *name* that sees the binding in *scope* is not one of *ours*'.
+
+        Only the reads in ``assignment.references`` are rewritten, and libcst
+        leaves a read out of them when it sits in the binding's own scope
+        textually *before* the binding: its `libcst.metadata.Access` looks for
+        an earlier assignment and, finding none, falls back to the enclosing
+        scope. In a loop that is working code -- ``for i in range(2): if i:
+        out.append(dumps(1)) else: from json import dumps`` -- and the read
+        left behind raises ``NameError`` once the import is gone. So every
+        read of *name* in *scope*, or in a scope nested in it that does not
+        bind *name* itself (`_reads_through`), must be one of the binding's
+        references; otherwise the file is declined. A read the scope analysis
+        ties to some other binding is caught the same way.
+        """
+        linked = {id(ref) for assignment in ours for ref in assignment.references}
+        for each in self._scopes():
+            if not _reads_through(each, scope, name):
+                continue
+            if any(id(access) not in linked for access in each.accesses[name]):
+                return True
+        return False
+
+    def _scopes(self) -> list[metadata.Scope]:
+        """Every scope in the file, once."""
+        if self._all_scopes is None:
+            self._all_scopes = list(
+                {
+                    s
+                    for s in self.metadata[metadata.ScopeProvider].values()
+                    if isinstance(s, metadata.Scope)
+                }
+            )
+        return self._all_scopes
 
     def _local_names(self, scope: metadata.Scope) -> set[str]:
         """Names assigned directly in *scope*, ignoring enclosing scopes.
@@ -1002,6 +1048,33 @@ class _Fixer(cst.CSTTransformer):
         # All-or-nothing. libcst hands us the pristine original tree, so
         # returning it discards every edit made to the children.
         return original_node if self.blockers else updated_node
+
+
+def _unlinked_reason(name: str) -> str:
+    return (
+        f"a read of '{name}' is not tied to this import by the scope analysis (it comes "
+        "before the import, or resolves elsewhere), so rewriting would leave it behind"
+    )
+
+
+def _reads_through(inner: metadata.Scope, scope: metadata.Scope, name: str) -> bool:
+    """Whether a read of *name* in *inner* could reach a binding of it in *scope*.
+
+    True when *inner* is *scope*, or nested in it with no scope on the way
+    binding *name* for itself. A class body only hides its names from reads
+    in that body, not from the functions nested in it -- the rule
+    `_Fixer._targets_visible_from` follows too.
+    """
+    current: metadata.Scope | None = inner
+    own = True
+    while current is not None and current is not scope:
+        if isinstance(current, metadata.GlobalScope):
+            return False
+        if (own or not isinstance(current, metadata.ClassScope)) and current.assignments[name]:
+            return False
+        own = False
+        current = current.parent
+    return current is scope
 
 
 def _read_names(access: metadata.Access) -> list[str | None]:
