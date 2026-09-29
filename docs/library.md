@@ -76,6 +76,8 @@ It returns a `RunResult`:
 | `write_errors` | Just the failed writes among `errors` (the `write_error` of each such patch), so they can be told apart from files that never loaded. |
 | `warnings` | Every warning, in the order it arose. |
 | `notes` | Every note, in the order it arose — today, which interpreter was detected for the probe and why (see [Side effects](#side-effects)). Informational: never counted by `exit_code`. |
+| `checked` | The paths of the files `files_checked` counts, in discovery order. |
+| `baselined`, `stale_baseline` | `None` from `run`. Set by `baseline.apply` (below): how many findings the baseline took out of `findings`, and how many of its entries that could have matched did not. |
 | `violations`, `skipped`, `unresolved`, `skipped_by_config` | Counts of `CP001`, `CP003`, `CP002` and `CP004` in `findings`. |
 | `changed`, `wrote` | How many files were rewritten (written under `Mode.FIX`, diffed under `Mode.DIFF`; a failed write does not count), and whether anything was written to disk. |
 
@@ -83,6 +85,33 @@ It returns a `RunResult`:
 command uses exactly this: `2` when `errors` is non-empty, else `1` when
 `violations + skipped` (plus `unresolved` when `strict`, as under `--strict`
 or `treat_unresolved_as_error`) is non-zero, else `0`. `CP004` never counts.
+
+`Config.select` and `Config.ignore` (the `select` / `ignore` keys, and
+`--select` / `--ignore`) are applied by `run` itself: `findings`, the counts
+and so `exit_code()` cover only the codes `Config.reports` accepts. They never
+change what is fixed: under `Mode.FIX` the rewrites are the same either way.
+
+### Baselines: `cleanporter.baseline`
+
+`Config.baseline` is *not* read by `run`; the command applies it afterwards,
+and a library caller does the same with `cleanporter.baseline` (`from
+cleanporter import baseline`):
+
+```python
+accepted = baseline.load(cfg.baseline)           # raises baseline.BaselineError
+result = baseline.apply(cleanporter.run(paths, cfg), accepted, cfg)
+```
+
+`apply(result, entries, config)` is pure: it returns a copy of the result
+without the findings the entries accept (each entry takes out at most one
+finding; `CP001` and `CP003` match each other), with `baselined` and
+`stale_baseline` set and, when any entry is stale, a note saying so added to
+`notes`. It takes a `Mode.CHECK` result only, as `entries` does, and raises
+`ValueError` for any other. `entries(result, root)` is what
+`--write-baseline` records — every finding but `CP004`, as sorted `Entry`
+values — and `write(path, entries)` writes the file; `load(path)` reads one
+back. The key and the file format are described under
+[Adopting cleanporter on an existing codebase](usage.md#adopting-cleanporter-on-an-existing-codebase).
 
 A literal dotted path in another analysed file or in `pyproject.toml` keeps
 the import it names, but `--fix` cannot see every reference from elsewhere — a

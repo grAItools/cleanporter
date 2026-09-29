@@ -85,6 +85,13 @@ For CI, `--format json`, `--format sarif` (GitHub code scanning) and
 stdout instead; see
 [Machine-readable output](https://graitools.github.io/cleanporter/usage/#machine-readable-output).
 
+Adopting it on a codebase with a backlog? `cleanporter --write-baseline
+cleanporter-baseline.json .` records today's findings, and `baseline =
+"cleanporter-baseline.json"` under `[tool.cleanporter]` (or `--baseline`)
+then fails only on new ones; `--select` / `--ignore` narrow the report to
+chosen codes. See
+[Adopting cleanporter on an existing codebase](https://graitools.github.io/cleanporter/usage/#adopting-cleanporter-on-an-existing-codebase).
+
 Some code is off-limits for reasons no analysis can discover — a body a
 framework re-parses with its own frontend, a `conftest.py` whose namespace
 *is* pytest's fixture registry. Declare those with

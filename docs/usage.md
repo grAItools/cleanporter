@@ -6,6 +6,8 @@ cleanporter is one command. By default it *checks*; passing `--fix` makes it
 ```text
 cleanporter [--fix] [--diff] [--python PATH] [--exempt MODULE] [--root PATH]
             [--strict] [--whole-project] [--show-skipped]
+            [--select CODES] [--ignore CODES]
+            [--baseline FILE] [--write-baseline FILE]
             [--format {text,json,sarif,github}] [--version] [paths ...]
 ```
 
@@ -27,11 +29,16 @@ cleanporter [--fix] [--diff] [--python PATH] [--exempt MODULE] [--root PATH]
 | `--strict` | Also fail (exit `1`) on imports that could not be classified (`CP002`). Equivalent to turning on `treat_unresolved_as_error` for this run. |
 | `--whole-project` | Read the whole project for evidence, but fix, report and count only the files under `paths`. The project is the directory of the `pyproject.toml` the listed paths sit under — looked up from each path as written, not from a symlink's target — and every listed path that has one must share it: paths from two projects (a nested `examples/` project beside its parent, say) exit `2`, as does a list where none has one. Every listed path, and every file a listed directory expands to, must also lie inside that directory, both as written and with symlinks resolved: one that does not (a script under no `pyproject.toml`, a symlink into another project) is reported as `file not processed`, and the whole run exits `2` with nothing analysed or written. The project is walked as `cleanporter .` run from that directory would walk it. A listed file the walk leaves out — matched by `exclude`, or in a skipped directory — is not reported. A file elsewhere in the tree that cannot be parsed is a warning, not exit `2`. Built for [pre-commit](pre-commit.md), which passes only the changed files: see there for what a run over those alone gets wrong. |
 | `--show-skipped` | List the imports a [`skip` rule](configuration.md#skip-rules) took out of the run (`CP004`). They are counted in the summary either way; this prints them, which is how you check what a pattern actually swallowed. |
+| `--select CODES` | Report and count only these finding codes: comma-separated (`CP001,CP003`), case-insensitive, repeatable. Replaces `select` from the configuration. It filters the *report*: `--fix` still rewrites exactly what it would have, and the exit code follows only the selected codes — `--select CP002` exits `1` on a `CP002` only under `--strict`, as without it. `CP004` is still printed only under `--show-skipped`. An unknown code is a usage error (exit `2`). |
+| `--ignore CODES` | Neither report nor count these finding codes; the same syntax as `--select`, applied after it, and replacing `ignore` from the configuration. Reporting only, too: `--fix --ignore CP001` still rewrites every `CP001` it can — it just does not list the ones it cannot. |
+| `--baseline FILE` | Leave out the findings recorded in a baseline file (written by `--write-baseline`), so only *new* findings are reported and counted. Replaces `baseline` from the configuration; a relative path is read from the current directory. A recorded finding that is gone is counted in a note on stderr, never a failure. A missing or malformed file, or no `pyproject.toml` above the first path, exits `2`. Check runs only: with `--fix` or `--diff` it is a usage error, and a configured `baseline` is skipped under them with a note. See [Adopting cleanporter on an existing codebase](#adopting-cleanporter-on-an-existing-codebase). |
+| `--write-baseline FILE` | Record the current findings in `FILE` instead of reporting them, and exit `0`. Records what the run reports — after `--select` and `--ignore`, before any baseline, and never `CP004` — so the file always holds the complete current state. Check mode only: combined with `--fix`, `--diff` or `--format` it is a usage error (exit `2`). Needs a `pyproject.toml` above the first path. A run in which a file could not be read or parsed writes nothing and exits `2`. |
 | `--format FORMAT` | How to report: `text` (the default, the human report described on this page), `json`, `sarif` (SARIF 2.1.0, for code scanning) or `github` (GitHub Actions workflow commands, which annotate the lines in a pull request). A structured format puts one document on stdout and nothing else; see [Machine-readable output](#machine-readable-output). `--diff` cannot be combined with `sarif` or `github`, not even alongside `--fix`. |
 | `--version` | Print the version and exit. |
 | `--help` | Print usage and exit. |
 
-Every flag except `--python`, `--format` and `--version` is additive with the
+Every flag except `--python`, `--select`, `--ignore`, `--baseline`,
+`--write-baseline`, `--format` and `--version` is additive with the
 configuration file rather than overriding it — see
 [Configuration](configuration.md#how-cli-flags-layer-on-top-of-config).
 `--format` has no configuration key at all: the format is chosen by whoever
@@ -106,7 +113,7 @@ An import inside a function there is checked like any other.
 |-----:| --- |
 | `0` | Clean — nothing remains to report. |
 | `1` | Violations found (or left behind after `--fix`). |
-| `2` | Operational error: a file that could not be read, decoded, parsed or (under `--fix`) written, or a malformed `[tool.cleanporter]` table. |
+| `2` | Operational error: a file that could not be read, decoded, parsed or (under `--fix`) written, a malformed `[tool.cleanporter]` table, a usage error (an unknown `--select` / `--ignore` code, say), a baseline file that is missing or malformed, or `--baseline` / `--write-baseline` (or a configured `baseline`) with no `pyproject.toml` above the first path. |
 
 In short: 0 = clean, 1 = violations, 2 = operational error.
 
@@ -228,7 +235,9 @@ format:
   `[tool.cleanporter]` table, a usage error — exits `2` with its message on
   stderr and **no document** on stdout; check the exit code before parsing.
 - **The findings are the ones the text report prints.** `CP004` is listed only
-  under `--show-skipped`, though it is counted either way.
+  under `--show-skipped`, though it is counted either way. A code `--select`
+  or `--ignore` left out, or a finding a baseline accepted, is in no format
+  and no count.
 - **Severity is the effect on the exit code:** `CP001` and `CP003` are errors;
   `CP002` is a warning, or an error under `--strict`; `CP004` is a note.
 - **Paths**: JSON spells them as the text report does (as found from the path
@@ -268,7 +277,7 @@ One JSON object, keys in this order:
 | `mode` | `"check"`, `"diff"` or `"fix"`. |
 | `strict` | Whether `--strict` / `treat_unresolved_as_error` was in effect. |
 | `exit_code` | The process's exit code. |
-| `counts` | `files_checked`, `changed` (files rewritten, or diffed under `--diff`), `violations` (`CP001`), `not_rewritten` (`CP003`), `unresolved` (`CP002`), `skipped_by_config` (`CP004`) and `errors` (files not processed) — the summary line's numbers. |
+| `counts` | `files_checked`, `changed` (files rewritten, or diffed under `--diff`), `violations` (`CP001`), `not_rewritten` (`CP003`), `unresolved` (`CP002`), `skipped_by_config` (`CP004`) and `errors` (files not processed) — the summary line's numbers, after `--select`, `--ignore` and any baseline. With a baseline applied (`--baseline` or `baseline`), also `baselined` (findings it left out) and `stale_baseline` (its entries that matched no finding); both keys are absent without one. |
 | `findings` | One object per finding (below), sorted by path, line, column and code. |
 | `errors` | One object per file that could not be read, decoded, parsed or written: `code` (`CP002`), `path`, `line`, `column`, `message`. Not findings; any of them makes the exit code `2`. |
 | `warnings`, `notes` | Lists of strings, without the `cleanporter: warning:` / `note:` prefix. |
@@ -400,6 +409,96 @@ actually has them installed, with `--python` or `python =` in
 ```bash
 cleanporter --python /opt/envs/proj/bin/python src/
 ```
+
+### Adopting cleanporter on an existing codebase
+
+A codebase that has never followed the rule can have hundreds of findings,
+far more than one change should fix. Record them in a baseline, and the gate
+checks only what is *new* from the first day:
+
+```bash
+cleanporter --write-baseline cleanporter-baseline.json .   # exit 0; commit the file
+```
+
+```toml
+[tool.cleanporter]
+baseline = "cleanporter-baseline.json"   # relative to this pyproject.toml
+```
+
+From then on `cleanporter .` leaves every recorded finding out of the report
+and the exit code, and fails on any other one. Pay the backlog down at your
+own pace — `cleanporter --fix` still rewrites every violation it can, recorded
+or not, so a sweep of one package at a time works as it always has — and
+rewrite the file when you do, so it shrinks with the backlog.
+
+Both flags need a `pyproject.toml`: a baseline's paths are relative to the
+project root, and without one there is no root that stays the same from
+`cleanporter .` to `cleanporter src/`. With none above the first path, they
+exit `2`.
+
+**What a recorded finding is.** Its path relative to the project root (with
+`/` separators, so one file serves every platform), its code, and the
+`parent` and `name` it imports — which already identify the import, whatever
+its spelling. There is no line number and nothing of the statement's text.
+So a finding stays recorded when:
+
+- the lines above it move;
+- its statement is reformatted: whitespace, parentheses, one line exploded
+  into several or joined back, a backslash continuation;
+- its statement's names are reordered, or another name is added to it (only
+  the new name is reported);
+- a relative import is spelled absolutely, or the other way round;
+- its alias changes (`as h`, or none), or it moves to another scope in the
+  same file — from module level into a function, say.
+
+It comes back when the import changes what it imports — another name or
+another module — or moves to another file.
+
+`CP001` and `CP003` match each other. Whether the fixer would decline an
+import can depend on which files are in the run — a re-export is
+load-bearing only when the run includes a file that imports it — so a
+baseline written from `.` still holds for a run over `src/`, or a
+`--whole-project` [pre-commit hook](pre-commit.md) handed only the changed
+files. The code in the file is the one reported when it was written. `CP002`
+does not match `CP001`: once the environment can classify an unresolved
+import, the violation is reported, and `--write-baseline` says how many
+`CP002` it recorded so you know to rewrite the file after fixing the
+environment.
+
+Recorded findings are counted, not just listed: two imports of the same name
+from the same module in one file are two entries, and a third is reported.
+With no line in the key, which of the three is reported is not tracked — it
+may be one of the old imports rather than the one just added.
+
+**Stale entries.** A recorded finding that no longer occurs — fixed, changed
+or deleted — is *stale*. Fixing something must never fail a run, so the run
+passes and says how many entries are stale in a note on stderr
+(`cleanporter: note: 3 baseline entries match no finding any more …`);
+re-run `--write-baseline` to drop them. Entries for files the run did not
+check, or for codes it does not report, are not counted as stale. With
+`--format json` the `counts` object carries `baselined` and `stale_baseline`.
+
+**Check runs only.** A baseline is written and applied by *check* runs. Under
+`--fix` and `--diff` the same import can be reported differently — a name
+nothing reads is a `CP001` in a check and a `CP003` once the fixer has looked
+— and the fixer adds file-level `CP003` findings that name no import. So
+`--baseline` with `--fix` or `--diff` is a usage error, and a configured
+`baseline` is not applied under them: every finding is reported, with a
+one-line note on stderr saying so. The `cleanporter-fix` pre-commit hook is
+such a run; the `cleanporter` hook applies the baseline.
+
+**The file** is JSON — `{"version": 1, "findings": [...]}`, each entry with
+`path`, `code`, `parent` and `name` — sorted and indented, so it diffs well in
+review, and written atomically. `CP004` is never recorded (it never fails a
+run), a run under `--select` or `--ignore` records only what it reports, and
+a run in which a file could not be read or parsed writes nothing and exits
+`2`. `--write-baseline` prints no report, so it cannot be combined with
+`--format`.
+
+To silence a *kind* of finding rather than a list of them, use `--select` /
+`--ignore` (or `select` / `ignore` in the configuration): `--ignore CP002`,
+say, while the environment is not yet complete enough to classify every
+import.
 
 ### As a pre-commit hook
 

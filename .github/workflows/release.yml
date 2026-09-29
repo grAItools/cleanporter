@@ -1,32 +1,74 @@
 name: Release
 
-# Pushing a version tag is the whole release: build once, check the tag against
-# pyproject.toml, then publish those same files as a GitHub release and --
-# only where the repository has opted in -- to PyPI. See CONTRIBUTING.md,
-# "Releasing".
+# A release is a version tag, and there are two ways to make one (see
+# CONTRIBUTING.md, "Releasing"):
+#
+# - push the tag: the release is of the tagged commit;
+# - run this workflow from the Actions tab on `main`, naming the tag: an
+#   existing tag is released as if it had just been pushed, and a missing one
+#   is created on the dispatched commit of `main` by the GitHub-release job.
+#
+# Either way: build once, check the tag against pyproject.toml, then publish
+# those same files as a GitHub release and -- only where the repository has
+# opted in -- to PyPI.
+#
+# The release machinery (.github/scripts/release.py and the curated notes in
+# .github/release-notes/) always comes from this workflow's own revision,
+# $GITHUB_SHA -- the tag on a push, `main` on a dispatch -- while what is
+# tested and built is the tag's tree. So a tag that predates the machinery
+# (v0.4.0) can still be released, by a dispatch from `main`.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          The tag to release, e.g. v0.4.0. If it does not exist, it is created
+          on the commit of main this run is for.
+        required: true
+        type: string
 
 # Least privilege by default; the two jobs that write get exactly what they
 # write with, and nothing else does.
 permissions:
   contents: read
 
-# One run per tag at a time: the group is the tag itself, so different tags
-# never wait on each other, and a run for a tag that is deleted and pushed
-# again queues behind the one in progress instead of cancelling it half-way
+# One run per tag at a time: the group is the tag itself, however the run was
+# started, so different tags never wait on each other, and a second run for a
+# tag queues behind the one in progress instead of cancelling it half-way
 # through a publish.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
+
+# Handed to every script through the environment, never spliced into one: on a
+# dispatch it is free text.
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
     name: Build and check
     runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.subject.outputs.commit }}
+      create-tag: ${{ steps.subject.outputs.create-tag }}
     steps:
-      # Full history, so the tagged commit can be checked against main.
+      # First, before the tag reaches any command or URL: on a dispatch it is
+      # free text. The shape is `v` + a normalised public version (check-tag
+      # below holds the exact rule and compares it with project.version), so
+      # nothing in it can be read as an option, a path or a URL part.
+      - name: The tag is a version tag
+        run: |
+          if ! [[ $TAG =~ ^v[0-9]+(\.[0-9]+)*((a|b|rc)[0-9]+)?(\.post[0-9]+)?(\.dev[0-9]+)?$ ]]; then
+            echo "release: '$TAG' is not a version tag such as v0.5.0 or v0.5.0rc1" >&2
+            exit 1
+          fi
+
+      # Full history and every tag, so the tag can be found and checked
+      # against main. This checks out $GITHUB_SHA; the step that settles what
+      # is released checks out the tag's tree.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -38,41 +80,97 @@ jobs:
         with:
           enable-cache: false
 
+      # Read out of git rather than the working tree, and kept outside the
+      # checkout: the tag's tree replaces the working tree below and may not
+      # have these files at all, and anything left in the checkout would be
+      # packed into the sdist. release.py finds the notes relative to itself,
+      # so the copy keeps the repository's layout.
+      - name: The release machinery from this workflow's revision
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "release: run this workflow from main, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          machinery="$RUNNER_TEMP/machinery"
+          mkdir -p "$machinery/.github/scripts" "$machinery/.github/release-notes"
+          git show "$GITHUB_SHA:.github/scripts/release.py" \
+            > "$machinery/.github/scripts/release.py"
+          # A missing notes file stays missing: release.py says so, clearly.
+          notes=".github/release-notes/${TAG#v}.md"
+          if git cat-file -e "$GITHUB_SHA:$notes" 2>/dev/null; then
+            git show "$GITHUB_SHA:$notes" > "$machinery/$notes"
+          fi
+
+      # What is released: the tag's commit if the tag exists; otherwise, on a
+      # dispatch only, the dispatched commit of main, which the GitHub-release
+      # job tags. An existing GitHub release is never overwritten.
+      - name: The tag, and no release for it yet
+        id: subject
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if commit=$(git rev-parse --quiet --verify "refs/tags/$TAG^{commit}"); then
+            create_tag=false
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            commit=$GITHUB_SHA
+            create_tag=true
+            echo "release: $TAG does not exist; it will be created on main at $commit"
+          else
+            echo "release: the tag $TAG is not in the checkout" >&2
+            exit 1
+          fi
+          if response=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>&1); then
+            echo "release: a GitHub release for $TAG already exists; not overwriting it" >&2
+            exit 1
+          elif [[ "$response" != *"HTTP 404"* ]]; then
+            echo "$response" >&2
+            echo "release: could not check for an existing GitHub release of $TAG" >&2
+            exit 1
+          fi
+          git checkout --quiet --detach "$commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "create-tag=$create_tag" >> "$GITHUB_OUTPUT"
+
       # A release is a merged commit: a tag on a branch that never went
       # through review, CI and a merge is refused.
-      - name: The tagged commit is on main
+      - name: The released commit is on main
+        env:
+          COMMIT: ${{ steps.subject.outputs.commit }}
         run: |
-          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
-            echo "release: $GITHUB_REF_NAME ($GITHUB_SHA) is not on main; tag a merged commit" >&2
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "release: $TAG ($COMMIT) is not on main; tag a merged commit" >&2
             exit 1
           fi
 
       # The wheel takes its version from pyproject.toml, not from the tag, and
-      # PyPI never accepts a version twice: a mismatch has to stop here.
+      # PyPI never accepts a version twice: a mismatch has to stop here. The
+      # script is this revision's; the pyproject.toml is the released tree's.
       - name: The tag names project.version
         run: >-
           uv run --no-project --python 3.12
-          python .github/scripts/release.py check-tag "$GITHUB_REF_NAME"
+          python "$RUNNER_TEMP/machinery/.github/scripts/release.py"
+          check-tag "$TAG" pyproject.toml
 
       # Outside the checkout: the sdist takes every file there that git does
       # not ignore, and a published sdist can never be replaced.
-      - name: Release notes from CHANGELOG.md
+      - name: Release notes from .github/release-notes
         run: |
           mkdir "$RUNNER_TEMP/notes"
           uv run --no-project --python 3.12 \
-            python .github/scripts/release.py notes "${GITHUB_REF_NAME#v}" \
+            python "$RUNNER_TEMP/machinery/.github/scripts/release.py" notes "${TAG#v}" \
             > "$RUNNER_TEMP/notes/notes.md"
           cat "$RUNNER_TEMP/notes/notes.md"
 
-      # CI ran on the merge, but this is the exact tree being published.
-      - name: The test suite passes on the tagged commit
+      # CI ran on the merge, but this is the exact tree being published, with
+      # its own lockfile.
+      - name: The test suite passes on the released commit
         run: |
           uv sync --locked --python 3.12
           uv run --python 3.12 pytest -q
 
-      # The sdist is the tagged tree and nothing else: a file any step above
+      # The sdist is the released tree and nothing else: a file any step above
       # left behind (not ignored by .gitignore) would be published with it.
-      - name: The checkout is exactly the tagged commit
+      - name: The checkout is exactly the released commit
         run: |
           if [ -n "$(git status --porcelain)" ]; then
             git status --porcelain >&2
@@ -117,23 +215,50 @@ jobs:
           name: notes
           path: notes
 
+      # Only when a dispatch named a tag that did not exist: an annotated tag
+      # on $GITHUB_SHA, the commit of main the build checked. Creating the ref
+      # is the atomic step -- it fails (HTTP 422) if the tag exists by then,
+      # whoever made it and wherever it points, so there is no window between
+      # a check and the act. A tag created with GITHUB_TOKEN does not trigger
+      # workflows, so this does not start a second, push-triggered run of this
+      # workflow.
+      - name: Create the tag
+        if: needs.build.outputs.create-tag == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          object=$(gh api -X POST "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="$TAG" \
+            -f message="cleanporter ${TAG#v}" \
+            -f object="$GITHUB_SHA" \
+            -f type=commit \
+            --jq .sha)
+          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" \
+            -f sha="$object" \
+            > /dev/null
+          echo "release: created $TAG on $GITHUB_SHA"
+
       # A PEP 440 pre- or dev-release (0.5.0rc1, 1.0.0b2, 0.5.0.dev0,
       # 0.5.0rc1.post1, 0.5.0.post1.dev0) is marked as a pre-release, so it
       # is never shown as "Latest". check-tag has already required the
       # normalised form, so a, b, rc or dev anywhere after the release
-      # numbers makes one; only `.postN` alone does not.
+      # numbers makes one; only `.postN` alone does not. Any other release is
+      # made "Latest", even of a version older than the newest release.
+      #
+      # The tag always exists by now (--verify-tag): pushed, or created above.
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           prerelease=()
-          [[ "${GITHUB_REF_NAME#v}" =~ ^[0-9]+(\.[0-9]+)*(.*)$ ]]
+          [[ "${TAG#v}" =~ ^[0-9]+(\.[0-9]+)*(.*)$ ]]
           if [[ "${BASH_REMATCH[2]}" =~ (a|b|rc|dev)[0-9] ]]; then
             prerelease=(--prerelease)
           fi
-          gh release create "$GITHUB_REF_NAME" dist/* \
+          gh release create "$TAG" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
+            --title "$TAG" \
             --notes-file notes/notes.md \
             --verify-tag \
             "${prerelease[@]}"
@@ -142,13 +267,19 @@ jobs:
   # Secrets and variables > Actions > Variables). Without it the job is
   # skipped, not failed, and the GitHub release above still happens.
   #
+  # Last, after the GitHub release: an upload to PyPI can never be taken back,
+  # so a version reaches PyPI only once its tag and GitHub release exist -- in
+  # particular a tag a dispatch asked for, which the GitHub-release job
+  # creates. `if` without a status function implies success(), so a failed
+  # GitHub release skips this job.
+  #
   # Trusted publishing: no token is stored anywhere. PyPI trusts an OIDC token
   # minted for this repository, this workflow file (release.yml) and the
   # `pypi` environment -- the publisher configured on pypi.org must name all
   # three, and the environment is where required reviewers can be added.
   pypi:
     name: PyPI
-    needs: build
+    needs: [build, github-release]
     if: vars.PUBLISH_TO_PYPI == 'true'
     runs-on: ubuntu-latest
     environment:

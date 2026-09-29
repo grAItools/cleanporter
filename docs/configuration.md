@@ -39,6 +39,9 @@ treat_unresolved_as_error = false
 exempt_modules = ["six.moves"]    # extends the built-in defaults
 exempt_names = ["THING"]
 # python = "/path/to/target/venv/bin/python"   # omit (or "auto") = detect; "self" = cleanporter's own
+# select = ["CP001", "CP003"]     # omit = every code
+ignore = []
+# baseline = "cleanporter-baseline.json"   # written by --write-baseline
 
 skip = [
     { decorator = 'field_operator|scan_operator|program', reason = "GT4Py re-parses these bodies" },
@@ -58,6 +61,9 @@ skip = [
 | `exempt_names` | `[]` | Individual bound names that are always allowed, whatever module they came from. Checked before the module is even looked at. |
 | `python` | absent (detect the project's interpreter) | The interpreter used for the stdlib/third-party classification probe: a non-empty string. Omit the key, or write `"auto"`, to detect the project's own interpreter; write `"self"` for the interpreter running cleanporter, probed in process — see [The probe interpreter](#the-probe-interpreter). Any other value names an interpreter (an interpreter literally called `auto` or `self` is named with a separator, `"./self"`). A value containing a path separator is a path, and a *relative* one is read against the `pyproject.toml` directory, like every other path here — so `".venv/bin/python"` works from any subdirectory. A value with no separator (`"python3"`) is a command name, looked up on `PATH` as usual. A leading `~` or `~user` is expanded first (an unknown user, or no home directory, is an error). Environment variables are *not* expanded, and symlinks are not resolved. A Windows drive also makes the value a path: `'C:\venv\Scripts\python.exe'` and `'\\server\share\python.exe'` are used as written, while a drive with no root, `'C:python.exe'`, is an error — it is relative to that drive's current directory, which the project root cannot stand in for. Drives are recognised on every platform, so a configuration means the same everywhere — which means a single letter followed by a colon reads as a drive even on Linux and macOS: `'a:b/python'` is drive `a:` with no root, and so an error, not a relative path under a directory called `a:b`. |
 | `skip` | `[]` | Regions of your code the tool must not analyse or rewrite, as a list of rule tables. See [`skip` rules](#skip-rules) below. |
+| `select` | absent (every code) | The finding codes reported and counted, as a list (`["CP001", "CP003"]`); must name at least one. Reporting only: `--fix` rewrites exactly what it would have without it, and the exit code follows only what is reported (a selected `CP002` still fails the run only under `treat_unresolved_as_error`). An unknown code is an error. Replaced by `--select`. |
+| `ignore` | `[]` | Finding codes neither reported nor counted, applied after `select`. Reporting only, like `select`. Replaced by `--ignore`. |
+| `baseline` | absent | A baseline file (written by `--write-baseline`) whose findings are left out of the report and the exit code, relative to the `pyproject.toml` directory. The file must exist. Applied by check runs only: under `--fix` or `--diff` it is skipped, with a note. Replaced by `--baseline`. See [Adopting cleanporter on an existing codebase](usage.md#adopting-cleanporter-on-an-existing-codebase). |
 
 !!! tip "`exempt_modules` matches ancestors"
 
@@ -185,8 +191,7 @@ and never a rewrite. `python = "self"` (or `--python self`) turns detection off.
 
 ## How CLI flags layer on top of config
 
-Flags do not replace configured values; with one exception they extend or
-strengthen them. This means a developer can tighten a run locally without
+Most flags do not replace configured values: they extend or strengthen them. This means a developer can tighten a run locally without
 having to restate what the project already declares.
 
 | Flag | Effect on the loaded config |
@@ -194,6 +199,8 @@ having to restate what the project already declares.
 | `--exempt MODULE` | Added to `exempt_modules` (which already contains the built-in defaults). |
 | `--root PATH` | Appended to `source_roots`. Relative values resolve against the project root, i.e. the `pyproject.toml` directory. |
 | `--strict` | OR-ed into `treat_unresolved_as_error`. `--strict` can turn it on; it can never turn it off. |
+| `--select CODES`, `--ignore CODES` | **Override** `select` and `ignore`, each only when given: `--select` replaces the configured `select` while the configured `ignore` still applies, until `--ignore` replaces that too. |
+| `--baseline FILE` | **Overrides** the `baseline` key. A relative value is read against the current directory. |
 | `--python PATH` | **Overrides** the `python` key, but only when the flag is actually given — so `--python auto` restores detection over a configured interpreter, and `--python self` turns it off. Like any path on the command line, a relative value is read against the current directory, not the project root. An empty value (`--python ""`) is an error (exit `2`). |
 
 There is no flag that removes an exemption, drops a source root, or relaxes
