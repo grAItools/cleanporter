@@ -325,17 +325,20 @@ def test_a_name_both_imported_and_defined_is_not_protected(tmp_path: pathlib.Pat
 
 
 def _shadowed_package_tree(tmp_path: pathlib.Path) -> pathlib.Path:
-    """``pkg/`` re-exporting ``helper``, with a stale flat ``pkg.py`` beside it.
+    """``pkg/`` beside a stale flat ``pkg.py``, only the flat one re-exporting ``helper``.
 
     The shape a package picks up when an older single-file release is left in
     place next to a newer packaged one -- the corpus has exactly this in
-    ``click_plugins.py`` (2.0dev) beside ``click_plugins/`` (1.1.1.2).
+    ``click_plugins.py`` (2.0dev) beside ``click_plugins/`` (1.1.1.2). The
+    re-export is in the flat module, not ``pkg/__init__.py``: a module-level
+    import there is the package's public surface, never decided at all, so
+    only a claimant that is a plain module can show the guard at work.
     """
-    (tmp_path / "pkg.py").write_text('def helper():\n    return "flat"\n', newline="\n")
+    (tmp_path / "flatcore.py").write_text('def helper():\n    return "flat"\n', newline="\n")
+    (tmp_path / "pkg.py").write_text("from flatcore import helper\n", newline="\n")
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("from pkg.core import helper\n", newline="\n")
-    (pkg / "core.py").write_text('def helper():\n    return "from package"\n', newline="\n")
+    (pkg / "__init__.py").write_text('def helper():\n    return "package"\n', newline="\n")
     (tmp_path / "consumer.py").write_text("from pkg import helper\nx = helper()\n", newline="\n")
     return tmp_path
 
@@ -343,32 +346,30 @@ def _shadowed_package_tree(tmp_path: pathlib.Path) -> pathlib.Path:
 def test_a_reexport_is_protected_through_a_module_of_the_same_name(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A flat ``pkg.py`` must not make ``pkg/__init__.py`` look rewritable.
+    """Every file claiming ``pkg`` is asked whether it re-exports ``helper``.
 
-    Python resolves ``import pkg`` to the *package* and ignores the flat
-    module, but the module map kept one source file per dotted name and the
-    flat module was scanned last, so the re-export guard read ``pkg.py``,
-    found no re-export and stood down. ``--fix`` then deleted ``pkg.helper``
-    while rewriting ``consumer.py`` to read it. Found in the corpus:
-    ``click_plugins.py`` beside ``click_plugins/`` broke
-    ``celery.bin.celery``.
-
-    A module-level import in a package ``__init__`` is now its public surface
-    and never reported at all, so the evidence is asserted on the resolver
-    directly: the load-bearing guard still sees the package, not the flat
-    module, for the ``__init__`` imports it still decides (one in a function).
+    Which of ``pkg.py`` and ``pkg/`` an interpreter imports is a ``sys.path``
+    question the filesystem does not settle, so the re-export guard must not
+    stop at whichever claimant the module map happened to keep. It once
+    kept one source file per dotted name, read the claimant that did not
+    re-export, and stood down: ``--fix`` then deleted ``pkg.helper`` while
+    rewriting ``consumer.py`` to read it. Found in the corpus:
+    ``click_plugins.py`` beside ``click_plugins/`` broke ``celery.bin.celery``.
     """
     tree = _shadowed_package_tree(tmp_path)
     by_file = _findings_by_file(tree)
-    assert by_file["__init__.py"] == []
-    built = project.build([tree], config.Config(root=tree))
-    assert built.resolver.is_load_bearing("pkg", "helper") is True
+    assert [f.code for f in by_file["pkg.py"]] == ["CP003"]
+    assert "another file imports 'helper' from 'pkg'" in by_file["pkg.py"][0].detail
+    before = (tree / "pkg.py").read_bytes()
+    result = engine.run([tree], config.Config(root=tree), engine.Mode.FIX)
+    assert [(f.path.name, f.code) for f in result.findings] == [("pkg.py", "CP003")]
+    assert (tree / "pkg.py").read_bytes() == before
 
 
 def test_the_consumer_of_a_shadowed_reexport_is_still_a_violation(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Protecting the package's ``__init__`` is what keeps the consumer fixable."""
+    """Protecting the re-exporting claimant is what keeps the consumer fixable."""
     by_file = _findings_by_file(_shadowed_package_tree(tmp_path))
     assert [f.code for f in by_file["consumer.py"]] == ["CP001"]
 

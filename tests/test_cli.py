@@ -816,16 +816,16 @@ def test_fix_does_not_bind_another_module_over_a_submodules_name(tmp_path, monke
     """A new global in `pkg/__init__.py` must not take `pkg.serialization`'s slot.
 
     Rewriting `from kombu.serialization import loads` to `from kombu import
-    serialization` puts *kombu's* module in the attribute belonging to
-    `pkg.serialization`. The next line's `from pkg import serialization` then
-    reads that attribute instead of importing the submodule -- `from X import
-    Y` falls back to importing the submodule only when `X` has no attribute
-    `Y` -- so it silently binds the wrong module. Nothing raises. Found in the
-    corpus as `celery/security/__init__.py`, where the name meant for
-    `celery.security.serialization` became `kombu.serialization`.
+    serialization` put *kombu's* module in the attribute belonging to
+    `pkg.serialization`, and the next line's `from pkg import serialization`
+    silently bound the wrong module. Found in the corpus as
+    `celery/security/__init__.py`. Module-level imports in an `__init__` are
+    now its public surface and never rewritten at all, so the file is
+    compliant and byte-identical; the alias allocator's sibling-submodule
+    rule (`rewrite._Fixer._allocate_token`) stays behind that as defence in
+    depth.
     """
-    project = _two_serializations(
-        tmp_path,
+    init = (
         "from kombu.serialization import loads\n"
         "from pkg.serialization import MARK\n"
         "\n"
@@ -833,21 +833,20 @@ def test_fix_does_not_bind_another_module_over_a_submodules_name(tmp_path, monke
         "\n"
         "\n"
         "def use():\n"
-        "    return loads(1)\n",
+        "    return loads(1)\n"
     )
+    project = _two_serializations(tmp_path, init)
     before = _package_values(project)
     assert before.stdout.split() == ["pkg", "1"], before.stderr
 
     monkeypatch.chdir(project)
-    cli.main(["--fix", "."])
+    assert cli.main(["--fix", "."]) == 0
     capsys.readouterr()
 
+    assert (project / "pkg" / "__init__.py").read_text(encoding="utf-8") == init
     after = _package_values(project)
     assert after.returncode == 0, after.stderr
-    assert after.stdout.split() == ["pkg", "1"], (
-        f"the rewrite changed what the package evaluates to:\n"
-        f"{(project / 'pkg' / '__init__.py').read_text(encoding='utf-8')}"
-    )
+    assert after.stdout.split() == ["pkg", "1"]
 
 
 def test_fix_does_not_qualify_through_a_binding_already_in_a_submodules_slot(
@@ -855,22 +854,24 @@ def test_fix_does_not_qualify_through_a_binding_already_in_a_submodules_slot(
 ):
     """Reusing a binding is subject to the same rule as allocating one.
 
-    The author's `from kombu import serialization` already sits in
+    The author's module-level `from kombu import serialization` sits in
     `pkg.serialization`'s slot, and that was harmless only while nothing
-    depended on it. Qualifying `loads` through it is what would make it
-    load-bearing -- and the first `import pkg.serialization` anywhere
-    replaces it, after which `serialization.loads` raises. A fresh alias is
-    bound instead, and the author's own import is left untouched.
+    depended on it. The function-local `from kombu.serialization import
+    loads` is still rewritten, and qualifying `loads` through that global is
+    what would make it load-bearing -- the first `import pkg.serialization`
+    anywhere replaces it, after which `serialization.loads` raises. A fresh
+    alias is bound instead, and the author's own import is left untouched.
     """
     project = _two_serializations(
         tmp_path,
         "from kombu import serialization\n"
-        "from kombu.serialization import loads\n"
         "\n"
         'VALUE = "pkg"\n'
         "\n"
         "\n"
         "def use():\n"
+        "    from kombu.serialization import loads\n"
+        "\n"
         "    return loads(1)\n",
     )
     before = _package_values(project)
@@ -880,6 +881,17 @@ def test_fix_does_not_qualify_through_a_binding_already_in_a_submodules_slot(
     cli.main(["--fix", "."])
     capsys.readouterr()
 
+    assert (project / "pkg" / "__init__.py").read_text(encoding="utf-8") == (
+        "from kombu import serialization\n"
+        "\n"
+        'VALUE = "pkg"\n'
+        "\n"
+        "\n"
+        "def use():\n"
+        "    from kombu import serialization as serialization_2\n"
+        "\n"
+        "    return serialization_2.loads(1)\n"
+    )
     after = _package_values(project)
     assert after.returncode == 0, after.stderr
     assert after.stdout.split() == ["pkg", "1"], (

@@ -106,8 +106,10 @@ count towards the exit code.
 
 "Module level" means outside every `def` and `class` body, so an import under
 a module-level `try`, `if` or `with` counts — it binds a package attribute all
-the same. An import inside a function in `__init__.py` binds a local, and is
-reported and fixed like any other. The rule is about the file name, not the
+the same. An import inside a function in `__init__.py` binds a local (one
+in a class body, a class attribute), and is reported and fixed like any
+other; one a `global` statement makes a module global is declined by the
+fixer's `global`/`nonlocal` guard, as anywhere. The rule is about the file name, not the
 directory: `__main__.py` and every other module in the package are checked as
 usual, and a namespace package has no `__init__.py` to exempt. Like the
 modules above, it is built in and cannot be switched off.

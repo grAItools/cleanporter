@@ -744,7 +744,9 @@ class Decider:
         A ``__main__.py`` is not a package's surface, a namespace package has
         no ``__init__.py`` to hold one, and a stub (``__init__.pyi``) is not
         analysed; an import inside a function in ``__init__.py`` binds a local
-        and is decided like any other.
+        (in a class body, a class attribute) and is decided like any other --
+        one a ``global`` statement makes a package attribute again is declined
+        by the fixer's ``global``/``nonlocal`` guard.
         """
         return (
             self._rec.path.name == "__init__.py" and node not in self._rec.facts.nested_import_froms

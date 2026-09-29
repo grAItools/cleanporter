@@ -134,7 +134,9 @@ class _Fixer(cst.CSTTransformer):
         #: Leaf names of this module's own submodules. Non-empty only when
         #: this file is a package ``__init__`` (a plain module has no
         #: children), which is exactly when a module-level name here is also
-        #: an attribute of that package -- see `_allocate_token`.
+        #: an attribute of that package -- see `_submodule_slots`. Live for
+        #: *reusing* a module-level binding (`_binding_for`); for allocating
+        #: one it is defence in depth (`_allocate_token`).
         self._sibling_modules: frozenset[str] = (
             resolver.submodules(rec.qualname) if rec.qualname else frozenset()
         )
@@ -782,6 +784,15 @@ class _Fixer(cst.CSTTransformer):
 
         Empty for every file that is not a package ``__init__``, since a plain
         module has no submodules and its globals are nobody's attributes.
+
+        Two callers, and only one is live. A module-level import in an
+        ``__init__`` is its public surface (`analyze.Decider.public_surface`)
+        and never rewritten, so the fixer only rewrites imports inside a
+        ``def`` or ``class`` there, and never *allocates* a module-scope
+        binding in one (`_allocate_token`). But such an import can still
+        *reuse* a module-level binding the author wrote (`_binding_for`), and
+        that is what this set refuses when the binding sits in a submodule's
+        slot.
         """
         return {
             sibling
@@ -825,7 +836,12 @@ class _Fixer(cst.CSTTransformer):
         found it.
 
         The avoidance applies at `GlobalScope` only: a function-local or class
-        body name is not an attribute of the module.
+        body name is not an attribute of the module. And at `GlobalScope` in
+        an ``__init__`` it is now defence in depth: module-level imports there
+        are the package's public surface (`analyze.Decider.public_surface`)
+        and never rewritten, so no module-scope token is allocated in an
+        ``__init__`` any more. It is kept, and documented, so that the rule
+        cannot silently lose this protection if that decision ever changes.
         """
         token = parent.rsplit(".", 1)[-1]
         taken = self._names_in_scope(scope) | extra_avoid
