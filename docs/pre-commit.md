@@ -19,14 +19,14 @@ Add one of them to your project's `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: vX.Y.Z  # a release tag
+    rev: v0.5.0  # a release tag
     hooks:
       - id: cleanporter
       # or, to rewrite what is provably safe:
       # - id: cleanporter-fix
 ```
 
-`rev` is a release tag. The hooks first ship in the release after `0.4.0`;
+`rev` is a release tag. The hooks first ship in `0.5.0`;
 `pre-commit autoupdate` (`prek autoupdate`) moves `rev` to the latest one.
 
 Both hooks run on `*.py` files only (`types: [python]` plus `files: \.py$`:
@@ -120,7 +120,7 @@ project's files:
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: vX.Y.Z
+    rev: v0.5.0
     hooks:
       # The outer project, without the nested one.
       - id: cleanporter

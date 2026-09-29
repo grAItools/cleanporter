@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-29
+
 Breaking under the pre-1.0 policy above:
 
 - With no `--python` and no `python` key, the probe now runs under the
@@ -1098,6 +1100,7 @@ never-guess design, and the rewriter gained its all-or-nothing safety model.
   the annotation rewrite.
 - An existing binding that is rebound or deleted is never reused for a rewrite.
 
-[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/grAItools/cleanporter/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/grAItools/cleanporter/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/grAItools/cleanporter/releases/tag/v0.3.0

@@ -108,7 +108,7 @@ reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: vX.Y.Z  # a release tag
+    rev: v0.5.0  # a release tag
     hooks:
       - id: cleanporter        # or cleanporter-fix, to rewrite
 ```
