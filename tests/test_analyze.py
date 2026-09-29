@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 import pathlib
 import shutil
+import subprocess
+import sys
 
 import libcst as cst
 
@@ -711,6 +713,9 @@ _AGREEMENT_CONFIGS: dict[str, dict[str, object]] = {
     "skip": {"skip": [{"function": "kept"}]},
     "skip-file": {"skip": [{"file": r".*user\.py"}]},
     "first-party+skip": {"scope": "first-party", "skip": [{"function": "kept"}]},
+    # `app`'s parent declared as a root: `near.py`'s `from . import THING`
+    # may then be spelled `import app`, and is a `CP001` in both modes.
+    "declared-root": {"source_roots": ["."]},
 }
 
 _Key = tuple[int, str, str]
@@ -837,6 +842,18 @@ def test_the_agreement_tree_reaches_every_outcome(tmp_path):
     assert ("os.path", "join") not in names("first-party")
 
 
+def test_a_declared_root_turns_the_unspellable_import_into_a_cp001(tmp_path):
+    """The one config that changes `near.py`'s answer, in both modes at once."""
+    inferred = _agreement(tmp_path / "inferred", {})["near.py"]
+    assert [_rung(f) for f in inferred.check] == ["CP003 no relative spelling"]
+    assert "declare the root" in inferred.check[0].detail
+    assert inferred.rewritten == set()
+    declared = _agreement(tmp_path / "declared", {"source_roots": ["."]})["near.py"]
+    assert [f.code for f in declared.check] == ["CP001"]
+    assert [f.code for f in declared.fix_mode] == ["CP001"]
+    assert declared.rewritten == {(1, "app", "THING")}
+
+
 def test_the_agreement_check_is_not_vacuous(tmp_path):
     user = _agreement(tmp_path / "all", {})["user.py"]
     assert {(3, "os.path", "join"), (5, "app.helpers", "go")} <= user.rewritten
@@ -937,3 +954,73 @@ def test_a_file_without_a_cp001_gets_no_scope_analysis(tmp_path, monkeypatch):
     assert len(wrapped) == len(set(wrapped)), "one metadata build per file"
     assert set(wrapped) == with_cp001
     assert 0 < len(with_cp001) < len(_AGREEMENT_TREE)
+
+
+# -- a declared root spells a top-level package's own import absolutely --------
+def _top_level_tree(root: pathlib.Path, package: str = "toppkg") -> pathlib.Path:
+    files = {
+        "__init__.py": "VERSION = '1.0'\n\ndef helper():\n    return 'h'\n",
+        "cli.py": "from . import VERSION, helper\n\ndef main():\n    return VERSION, helper()\n",
+        "sub/__init__.py": "",
+        "sub/deep.py": "from .. import helper\n\ndef run():\n    return helper()\n",
+    }
+    for rel, text in files.items():
+        path = root / package / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+    return root / package
+
+
+def test_a_declared_root_lets_fix_rewrite_a_top_level_package_import(tmp_path):
+    pkg = _top_level_tree(tmp_path)
+    cfg = config._parse_table({"source_roots": ["."]}, tmp_path)
+    checked = engine.run([pkg], cfg)
+    assert {(f.path.name, f.name, f.code) for f in checked.findings} == {
+        ("cli.py", "VERSION", "CP001"),
+        ("cli.py", "helper", "CP001"),
+        ("deep.py", "helper", "CP001"),
+    }
+    fixed = engine.run([pkg], cfg, engine.Mode.FIX)
+    assert fixed.exit_code() == 0, fixed.findings
+    assert (pkg / "cli.py").read_text(encoding="utf-8") == (
+        "import toppkg\n\ndef main():\n    return toppkg.VERSION, toppkg.helper()\n"
+    )
+    assert (pkg / "sub" / "deep.py").read_text(encoding="utf-8") == (
+        "import toppkg\n\ndef run():\n    return toppkg.helper()\n"
+    )
+    # And the rewritten package still runs.
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import toppkg.cli, toppkg.sub.deep; print(toppkg.cli.main(), toppkg.sub.deep.run())",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == "('1.0', 'h') h"
+
+
+def test_an_inferred_root_keeps_the_top_level_package_import(tmp_path):
+    pkg = _top_level_tree(tmp_path)
+    cfg = config.Config(root=tmp_path)
+    before = {p: p.read_bytes() for p in pkg.rglob("*.py")}
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([pkg], cfg, mode)
+        assert {f.code for f in result.findings} == {"CP003"}, mode
+    assert {p: p.read_bytes() for p in pkg.rglob("*.py")} == before
+
+
+def test_a_declared_root_never_spells_a_stdlib_name(tmp_path):
+    """`import io` is the standard library's, whatever the declared root holds."""
+    pkg = _top_level_tree(tmp_path, package="io")
+    cfg = config._parse_table({"source_roots": ["."]}, tmp_path)
+    before = {p: p.read_bytes() for p in pkg.rglob("*.py")}
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([pkg], cfg, mode)
+        found = [f for f in result.findings if f.path.name == "cli.py"]
+        assert {f.code for f in found} == {"CP003"}, mode
+        assert all("standard library's 'io'" in f.detail for f in found)
+    assert {p: p.read_bytes() for p in pkg.rglob("*.py")} == before

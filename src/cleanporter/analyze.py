@@ -72,6 +72,11 @@ class FileRecord:
     #: Diffs are computed against these, and the fixer declines a file whose
     #: decoded text would not encode back to them.
     raw: bytes | None = dataclasses.field(default=None, repr=False, compare=False)
+    #: Whether the file is anchored in an import root the user *declared*
+    #: (`firstparty.ModuleMap.anchored_in_declared_root`), which is what lets
+    #: a top-level package's ``from . import C`` be spelled ``import pkg``
+    #: (`_imports.module_import_spelling`).
+    declared_root: bool = False
     #: The tree's `FileFacts`, when the caller already walked it for them
     #: (`project.build` must, before it can know ``base_pkg``); otherwise
     #: collected on first use.
@@ -685,9 +690,16 @@ class Decider:
         root (`_imports.module_import_spelling`), or the one there is cannot
         be shown to bind the module.
         """
-        spelling = _imports.module_import_spelling(unit.node, parent)
+        spelling = _imports.module_import_spelling(
+            unit.node, parent, declared_root=self._rec.declared_root
+        )
         if spelling is None:
-            return Decision(model.Status.SKIPPED, _imports.unspellable_reason(unit.node, parent))
+            return Decision(
+                model.Status.SKIPPED,
+                _imports.unspellable_reason(
+                    unit.node, parent, declared_root=self._rec.declared_root
+                ),
+            )
         unreachable = self._resolver.replacement_unreachable(
             parent, _imports.render_import(spelling)
         )

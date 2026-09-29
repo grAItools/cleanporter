@@ -103,6 +103,18 @@ Breaking under the pre-1.0 policy above:
   besides a path or command, so `--python auto` restores detection over a
   configured interpreter. Documented under
   [The probe interpreter](https://graitools.github.io/cleanporter/configuration/#the-probe-interpreter).
+- **A declared root lets `--fix` rewrite a top-level package's own import.**
+  `from . import C` in `pkg/cli.py` (or `from .. import C` in
+  `pkg/sub/mod.py`), where `pkg` is top-level and `C` an object, has no
+  relative replacement, so it was a `CP003` in every mode. When the file is
+  anchored in a root you declared with `--root` or `source_roots`, the
+  absolute `import pkg` names the package you said is on `sys.path`, and the
+  import is now a `CP001` that `--fix` rewrites to `import pkg` plus `pkg.C`.
+  An inferred root keeps the `CP003`, whose message now says that declaring
+  the root lifts it; a package named like a standard-library module keeps it
+  under a declared root too, since `import io` is the standard library's.
+  Documented under
+  [Known limitations](https://graitools.github.io/cleanporter/safety/#known-limitations).
 
 ### Changed
 

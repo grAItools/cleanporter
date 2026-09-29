@@ -846,9 +846,31 @@ class ModuleMap:
         import; the best-ranked candidate is returned anyway so the import is
         reported as CP002 rather than vanishing.
         """
+        anchor = self._anchor(path, relative_level)
+        return None if anchor is None else anchor[1]
+
+    def anchored_in_declared_root(self, path: pathlib.Path, relative_level: int = 0) -> bool:
+        """Whether `qualname_for` anchors *path* in a root the user declared.
+
+        True only when the winning root is both usable by rules 1 and 1b --
+        the file's relative imports can really anchor there -- and one of
+        `declared`. An inferred root is a reading of the directory tree, which
+        a PEP 420 namespace directory can fool; a declared one is the user
+        saying which directory is on ``sys.path``. That is the one fact the
+        absolute spelling of a top-level package's own import needs
+        (`_imports.module_import_spelling`), so it is only ever taken from
+        here, never inferred.
+        """
+        anchor = self._anchor(path, relative_level)
+        return anchor is not None and anchor[2] and anchor[0] in self.declared
+
+    def _anchor(
+        self, path: pathlib.Path, relative_level: int
+    ) -> tuple[pathlib.Path, str, bool] | None:
+        """``(root, dotted name, usable)`` for *path* by the rules in `qualname_for`."""
         path = path.resolve()
-        best: tuple[tuple[bool, int], str] | None = None
-        chosen: tuple[tuple[bool, int], str] | None = None
+        best: tuple[tuple[bool, int], pathlib.Path, str] | None = None
+        chosen: tuple[tuple[bool, int], pathlib.Path, str] | None = None
         for root in self.roots:
             try:
                 rel = path.relative_to(root)
@@ -861,10 +883,11 @@ class ModuleMap:
             if parts and parts[-1] == "__init__":
                 parts.pop()
             rank = (root in self.declared, len(root.parts))  # rules 2 then 3
-            candidate = (rank, ".".join(parts))
+            candidate = (rank, root, ".".join(parts))
             if best is None or rank > best[0]:
                 best = candidate
             if usable and (chosen is None or rank > chosen[0]):
                 chosen = candidate
-        winner = chosen or best
-        return None if winner is None else winner[1]
+        if chosen is not None:
+            return chosen[1], chosen[2], True
+        return None if best is None else (best[1], best[2], False)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import libcst as cst
 
 
@@ -42,7 +44,9 @@ def resolve_parent(node: cst.ImportFrom, base_pkg: str) -> str | None:
     return ".".join(parts) or None
 
 
-def module_import_spelling(node: cst.ImportFrom, parent: str) -> tuple[str, str] | None:
+def module_import_spelling(
+    node: cst.ImportFrom, parent: str, *, declared_root: bool = False
+) -> tuple[str, str] | None:
     """How to spell an import of *parent*, the module *node* imports from.
 
     Returns ``(package, token)``: the statement is ``from <package> import
@@ -78,6 +82,18 @@ def module_import_spelling(node: cst.ImportFrom, parent: str) -> tuple[str, str]
     relative spelling at all; an absolute ``import pkg`` would depend on the
     root in exactly the silent way the relative form does not, so this
     returns ``None`` and the import is kept (`unspellable_reason`).
+
+    Unless the root is *declared*. *declared_root* says the file is anchored
+    in a root the user named (``--root`` / ``source_roots``;
+    `firstparty.ModuleMap.anchored_in_declared_root`), and then *parent* is
+    not a reading of the directory tree but the name the user said the
+    package has on ``sys.path``: ``import pkg`` binds exactly the package the
+    dots reach, on the same footing as any absolute import the fixer writes.
+    Only this case consults it -- every relative spelling above stays
+    relative, since it needs no root at all. A package named like a
+    standard-library module is still kept: ``import io`` is the standard
+    library's whatever the user's root holds, which is precisely the silent
+    rebinding the relative spelling exists to avoid.
     """
     level = relative_level(node)
     if level == 0:
@@ -89,7 +105,7 @@ def module_import_spelling(node: cst.ImportFrom, parent: str) -> tuple[str, str]
         return "." * level + head, token
     package, _, token = parent.rpartition(".")
     if not package:
-        return None
+        return ("", token) if declared_root and not _is_stdlib(token) else None
     return "." * (level + 1), token
 
 
@@ -102,14 +118,26 @@ def render_import(spelling: tuple[str, str], bind: str | None = None) -> str:
     return code
 
 
-def unspellable_reason(node: cst.ImportFrom, parent: str) -> str:
+def _is_stdlib(name: str) -> bool:
+    """Whether *name* is a top-level standard-library module of this interpreter."""
+    return name in sys.stdlib_module_names
+
+
+def unspellable_reason(node: cst.ImportFrom, parent: str, *, declared_root: bool = False) -> str:
     """Why *node*, for which `module_import_spelling` is ``None``, is kept."""
     dots = "." * relative_level(node)
+    if declared_root:
+        return (
+            f"`from {dots} import` names the top-level package '{parent}' itself, whose "
+            f"only spelling is the absolute 'import {parent}', and that is the standard "
+            f"library's '{parent}', not this package"
+        )
     return (
         f"`from {dots} import` names the package '{parent}' itself, and a relative import "
         f"can reach a package only from its parent, which '{parent}' does not have under "
         "this run's import roots; an absolute spelling would depend on the import root, "
-        "which the original relative import did not"
+        "which the original relative import did not (declare the root with --root or "
+        f"source_roots to have it rewritten to 'import {parent}')"
     )
 
 

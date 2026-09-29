@@ -170,6 +170,7 @@ def _records(
                 skip_rules=config.skip,
                 encoding=p.decoded.encoding,
                 raw=p.decoded.raw,
+                declared_root=module_map.anchored_in_declared_root(p.path, level),
                 _facts=p.facts,
             )
         )

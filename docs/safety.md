@@ -342,6 +342,15 @@ configuration would have forbidden. Prefer the bare last-component spelling
     and kept exactly as written, in every mode; the rest of the file is still
     fixed.
 
+    Unless the root is *declared*. When the file sits under a root you named
+    with `--root` or `source_roots` — and that root is the one the file is
+    qualified against — the package's name is no longer a reading of the
+    directory tree but what you said is on `sys.path`, so `import pkg` binds
+    exactly the package the dots reached. There the import is an ordinary
+    `CP001`, in `check` and `--fix` alike, and `--fix` writes `import pkg`
+    plus `pkg.C`. An inferred root keeps the `CP003`, and its message says
+    that declaring the root is what lifts it.
+
     A relative and an absolute import of the same module in one file are
     given separate module bindings (one of them aliased, `mod_2`): they are
     the same module only if the inferred root is right. Two relative imports
@@ -557,7 +566,8 @@ configuration would have forbidden. Prefer the bare last-component spelling
   import, an explicit `S as S` re-export, a load-bearing re-export, a
   re-export another file names by its dotted path, a
   replacement that cannot be shown to bind the module it names, and
-  `from . import C` where the package is top-level are all reported in every
+  `from . import C` where the package is top-level under an inferred root
+  (declare the root to have it rewritten) are all reported in every
   mode and are never rewritten, and the exit code counts `CP003` toward
   failure. A project that legitimately uses those idioms therefore cannot
   reach exit `0` on the strength of `--fix` alone; the finding is a true

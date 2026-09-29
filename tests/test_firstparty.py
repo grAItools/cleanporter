@@ -371,6 +371,18 @@ def test_a_declared_root_is_kept_even_when_no_file_implies_it(tmp_path):
     assert mm.classify("mypkg", "other") is model.Kind.MODULE
 
 
+def test_only_a_usable_declared_root_counts_as_declared_anchoring(tmp_path):
+    root = _declared_namespace(tmp_path)
+    mod = root / "src" / "mypkg" / "mod.py"
+    files = sorted(root.rglob("*.py"))
+    declared = firstparty.ModuleMap.from_paths(files, declared=(root / "src",))
+    assert declared.anchored_in_declared_root(mod, relative_level=1)
+    # A depth no root can hold: the best-effort qualname is not an anchor.
+    assert not declared.anchored_in_declared_root(mod, relative_level=9)
+    assert not firstparty.ModuleMap.from_paths(files).anchored_in_declared_root(mod, 1)
+    assert not declared.anchored_in_declared_root(tmp_path.parent / "elsewhere.py")
+
+
 # -- a namespace package holding a regular subpackage ------------------------
 #
 # `analytics/` (no `__init__.py`) around `analytics/io/__init__.py` is the

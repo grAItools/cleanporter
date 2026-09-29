@@ -334,7 +334,10 @@ parent (`from .. import sub` in `pkg/sub/mod.py`). That one does lean on the
 root giving the package a parent, but a wrong root makes it fail loudly with
 `ImportError` at import time; it cannot bind a different module. Where the
 package is top-level there is no relative spelling, and that import is kept
-as a `CP003` — see [Known limitations](safety.md#known-limitations).
+as a `CP003` — see [Known limitations](safety.md#known-limitations) — unless
+the file's import root is one you declared (`--root` / `source_roots`): then
+`import pkg` names the package you said is on `sys.path`, and the import is
+an ordinary `CP001` that `--fix` rewrites to it.
 
 ## Import roots
 
