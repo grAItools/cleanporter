@@ -1016,6 +1016,45 @@ def test_a_third_party_star_import_leaves_the_name_undetermined(tmp_path: pathli
         assert "'os.path', which is not first-party" in _undetermined(mm, "amb", name)
 
 
+def test_a_definition_after_a_third_party_star_is_still_undetermined(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Statement order is not read: the definition wins only once the module has run.
+
+    ``from app import c`` in the middle is a circular import, and ``app.c``
+    reads ``app.m.path`` while ``m`` is half-initialised -- the star's
+    ``os.path``, not the function below it. An order rule that called
+    ``path`` an object had ``--fix`` turn ``path.join`` into an
+    AttributeError. Any future attempt at order must keep this `CP002`.
+    """
+    mm = _map(
+        tmp_path,
+        {
+            "app/__init__.py": "",
+            "app/m.py": 'from os import *\nfrom app import c\ndef path():\n    return "func"\n',
+            "app/c.py": 'from app.m import path\ndef f():\n    return path.join("a", "b")\n',
+        },
+    )
+    assert "'os', which is not first-party" in _undetermined(mm, "app.m", "path")
+
+
+def test_a_later_definition_does_not_override_a_module_binding(tmp_path: pathlib.Path) -> None:
+    """``import os.path as path`` then ``def path``: the bindings disagree, and stay `CP002`.
+
+    ``import app.c`` between them runs ``app.c`` while ``path`` is still the
+    module, so which one a reader sees depends on when it reads.
+    """
+    mm = _map(
+        tmp_path,
+        {
+            "app/__init__.py": "",
+            "app/m.py": 'import os.path as path\nimport app.c\ndef path():\n    return "func"\n',
+            "app/c.py": 'from app import m\ndef f():\n    return m.path.join("a", "b")\n',
+        },
+    )
+    assert "binds 'path' more than once" in _undetermined(mm, "app.m", "path")
+
+
 def test_a_star_import_cycle_terminates(tmp_path: pathlib.Path) -> None:
     mm = _map(
         tmp_path,

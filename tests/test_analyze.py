@@ -1106,3 +1106,27 @@ def test_a_declared_root_advises_the_absolute_package_import(tmp_path):
             "import the module ('import toppkg') and use 'toppkg.helper'"
         )
     ]
+
+
+# -- statement order after a star import is not read ---------------------------
+def test_a_circular_read_past_a_star_import_is_cp002_and_never_rewritten(tmp_path):
+    """A definition after ``from os import *`` is not what a circular importer sees.
+
+    ``app.c`` runs in the middle of ``app.m`` (``from app import c``), so its
+    ``path`` is the star's ``os.path``; rewriting it to ``m.path`` reads the
+    function instead, and ``path.join`` raises AttributeError.
+    """
+    files = {
+        "app/__init__.py": "",
+        "app/m.py": 'from os import *\nfrom app import c\ndef path():\n    return "func"\n',
+        "app/c.py": 'from app.m import path\ndef f():\n    return path.join("a", "b")\n',
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8", newline="\n")
+    cfg = config.Config(root=tmp_path)
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([tmp_path / "app"], cfg, mode)
+        found = {(f.path.name, f.code) for f in result.findings if f.name == "path"}
+        assert found == {("c.py", "CP002")}, mode
+    assert (tmp_path / "app" / "c.py").read_text(encoding="utf-8") == files["app/c.py"]
