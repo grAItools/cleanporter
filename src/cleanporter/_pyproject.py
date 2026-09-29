@@ -19,11 +19,11 @@ Precision is the caller's, as for strings in Python files: a candidate only
 counts when its first component is first-party and the module re-exports the
 name, so ``version = "0.4.0"`` or ``readme = "README.md"`` cost nothing.
 
-TOML keeps no positions, so the line is *found*, and found strictly: the
-line that assigns this key this value, as a plain one-line string, inside the
-table that holds it. Anything else -- a value in an array or an inline table,
-a dotted key, a multi-line or escaped string -- has no line, and the reason
-names the file alone rather than a line that might be the wrong one.
+TOML keeps no positions, so the line is *found*, and *proved* (`_line`): the
+line that assigns this key this value, as a plain one-line string, and that
+the parser agrees does. Anything else -- a value in an array or an inline
+table, a dotted key, a multi-line or escaped string -- has no line, and the
+reason names the file alone rather than a line that might be the wrong one.
 """
 
 from __future__ import annotations
@@ -38,14 +38,6 @@ from . import guards
 #: ``module : attribute [extras]`` -- whitespace allowed only around the
 #: colon and before the extras.
 _ENTRY_POINT = re.compile(r"(?P<module>[^\s:\[\]]+)\s*:\s*(?P<attr>[^\s:\[\]]+)(?:\s*\[[^\]]*\])?")
-
-#: A table or array-of-tables header, with any trailing comment.
-_HEADER = re.compile(r"\s*\[\[?(?P<keys>.*?)\]\]?\s*(?:#.*)?")
-
-#: One component of a dotted TOML key: bare, basic-quoted or literal-quoted.
-_KEY_PART = re.compile(
-    r"""\s*(?:"(?P<basic>[^"\\]*)"|'(?P<literal>[^']*)'|(?P<bare>[A-Za-z0-9_-]+))\s*"""
-)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,7 +58,6 @@ def references(text: str) -> list[Reference]:
     Raises `tomllib.TOMLDecodeError` for text that is not TOML.
     """
     data = tomllib.loads(text)
-    lines = text.splitlines()
     found: list[Reference] = []
     for table, key, value in _strings(data, ()):
         spec = _reference(value)
@@ -75,7 +66,7 @@ def references(text: str) -> list[Reference]:
         parts = guards.dotted_reference(spec)
         if parts is None:
             continue
-        line = _line(lines, table, key, value) if key is not None else None
+        line = _line(text, data, table, key, value) if key is not None else None
         found.append(Reference(spec, parts, line))
     return found
 
@@ -113,59 +104,67 @@ def _strings(
                 yield from _strings(item, table)
 
 
-def _header(line: str) -> tuple[str, ...] | None:
-    """The table path a header line opens, or ``None`` if it is not one."""
-    match = _HEADER.fullmatch(line)
-    if match is None:
-        return None
-    keys = _dotted_key(match["keys"])
-    return keys or None
+def _line(text: str, data: object, table: tuple[str, ...], key: str, value: str) -> int | None:
+    """The line that provably assigns *value* to *key* in *table*, or ``None``.
 
-
-def _dotted_key(spelled: str) -> tuple[str, ...]:
-    """``a."b.c".d`` as ``("a", "b.c", "d")``; empty if it is not a key."""
-    parts: list[str] = []
-    for chunk in _split_dots(spelled):
-        match = _KEY_PART.fullmatch(chunk)
-        if match is None:
-            return ()
-        parts.append(match["basic"] or match["literal"] or match["bare"] or "")
-    return tuple(parts)
-
-
-def _split_dots(spelled: str) -> list[str]:
-    """Split a dotted key on the dots that are not inside quotes."""
-    chunks: list[str] = []
-    current: list[str] = []
-    quote: str | None = None
-    for char in spelled:
-        if quote is None and char == ".":
-            chunks.append("".join(current))
-            current = []
-            continue
-        if quote is None and char in "\"'":
-            quote = char
-        elif char == quote:
-            quote = None
-        current.append(char)
-    chunks.append("".join(current))
-    return chunks
-
-
-def _line(lines: list[str], table: tuple[str, ...], key: str, value: str) -> int | None:
-    """The one line in *table* that says ``key = "value"``, or ``None``."""
+    A line that *looks* like ``key = "value"`` is only a candidate: it may
+    sit inside a multi-line string, or below something that looks like a
+    table header and is not one (a line of a multi-line string, an element
+    ``["x"]`` of a multi-line array). So each candidate is proved rather
+    than trusted: its value is swapped for a sentinel, the text is parsed
+    again, and the candidate is the line only if the sentinel -- and nothing
+    else -- has moved, to exactly *table* and *key*. The first candidate that
+    proves out is the answer; none is ``None``, never a guess.
+    """
     assignment = re.compile(
-        r"\s*(?:" + "|".join(re.escape(k) for k in _spellings(key)) + r")\s*=\s*"
-        r"(?P<quote>[\"'])" + re.escape(value) + r"(?P=quote)\s*(?:#.*)?"
+        r"(?P<head>\s*(?:" + "|".join(re.escape(k) for k in _spellings(key)) + r")\s*=\s*)"
+        r"(?P<quote>[\"'])" + re.escape(value) + r"(?P=quote)(?P<tail>\s*(?:#.*)?)"
     )
-    current: tuple[str, ...] = ()
-    for number, line in enumerate(lines, 1):
-        opened = _header(line)
-        if opened is not None:
-            current = opened
-        elif current == table and assignment.fullmatch(line):
-            return number
+    sentinel = _sentinel(text)
+    lines = text.split("\n")
+    for index, line in enumerate(lines):
+        match = assignment.fullmatch(line.rstrip("\r"))
+        if match is None:
+            continue
+        swapped = [*lines]
+        swapped[index] = f'{match["head"]}"{sentinel}"{match["tail"]}'
+        try:
+            proof = tomllib.loads("\n".join(swapped))
+        except tomllib.TOMLDecodeError:
+            continue
+        if _at(proof, (*table, key)) == sentinel and _without(proof, table, key) == _without(
+            data, table, key
+        ):
+            return index + 1
     return None
+
+
+def _sentinel(text: str) -> str:
+    """A string value that appears nowhere in *text*."""
+    candidate, n = "cleanporter-line-probe", 0
+    while candidate in text:
+        n += 1
+        candidate = f"cleanporter-line-probe-{n}"
+    return candidate
+
+
+def _at(data: object, path: tuple[str, ...]) -> object:
+    """What *data* holds at *path* of table keys, or ``None``."""
+    for name in path:
+        if not isinstance(data, dict) or name not in data:
+            return None
+        data = data[name]
+    return data
+
+
+def _without(data: object, table: tuple[str, ...], key: str) -> object:
+    """*data* with *table*'s *key* removed: what a proven swap must leave alone."""
+    if not isinstance(data, dict):
+        return data
+    if not table:
+        return {k: v for k, v in data.items() if k != key}
+    head, rest = table[0], table[1:]
+    return {k: (_without(v, rest, key) if k == head else v) for k, v in data.items()}
 
 
 def _spellings(key: str) -> list[str]:

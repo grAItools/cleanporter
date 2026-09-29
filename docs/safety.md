@@ -451,7 +451,9 @@ configuration would have forbidden. Prefer the bare last-component spelling
     entry point where it is one (whitespace around the colon and an
     `[extras]` suffix are dropped, nothing else is) and as a dotted path
     otherwise. The reason gives the line that assigns that key the value in
-    its own table, or the file alone when the value sits in an array, an
+    its own table — proved by re-parsing the file with that value swapped
+    out, so a look-alike inside a multi-line string or under a fake header is
+    never named — or the file alone when the value sits in an array, an
     inline table or a multi-line string. Every split of the path is a candidate —
     `"pkg.tool.dump.__name__"` names `dump` in `pkg.tool` as surely as
     `"pkg.tool.dump"` does — and a candidate counts only when its first

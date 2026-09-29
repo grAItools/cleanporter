@@ -173,6 +173,49 @@ def test_pyproject_lines(toml: str, line: int | None) -> None:
 
 
 @pytest.mark.parametrize(
+    ("toml", "lines"),
+    [
+        # A look-alike inside a multi-line string, either quote style.
+        ('[tool.x]\ndoc = """\nk = "pkg.mod:h"\n"""\nk = "pkg.mod:h"\n', [5]),
+        ("[tool.x]\ndoc = '''\nk = \"pkg.mod:h\"\n'''\nk = \"pkg.mod:h\"\n", [5]),
+        # A fake header inside one.
+        ('[tool.y]\ndoc = """\n[tool.x]\nk = "pkg.mod:h"\n"""\n[tool.x]\nk = "pkg.mod:h"\n', [7]),
+        # ... and no real line at all: the value is in an inline table.
+        ('[tool]\ndoc = """\n[tool.x]\nk = "pkg.mod:h"\n"""\nx = {k = "pkg.mod:h"}\n', [None]),
+        # An array element that looks like a header.
+        ('[y]\nm = [\n  ["x"]\n]\nk = "pkg.mod:h"\n[x]\nk = "pkg.mod:h"\n', [5, 7]),
+    ],
+    ids=["basic-multiline", "literal-multiline", "fake-header", "inline-only", "array-header"],
+)
+def test_a_pyproject_line_is_proved_not_guessed(toml: str, lines: list[int | None]) -> None:
+    """A line that only looks like the assignment is never named: the parser must agree."""
+    assert [r.line for r in _pyproject.references(toml)] == lines
+
+
+_CLI = "from pkg.core import main\n\n\ndef go():\n    return main()\n"
+
+
+def test_pyproject_is_named_absolutely_for_an_absolute_run(tmp_path: pathlib.Path) -> None:
+    root = _tree(tmp_path, {"pkg/cli.py": _CLI}, '[project.scripts]\nx = "pkg.cli:main"\n')
+    result = _run(root, paths=[root])
+    [(_, _, detail)] = _in(result, "cli.py")
+    assert f"at {(root / 'pyproject.toml').resolve()}:4;" in detail
+
+
+def test_pyproject_outside_the_cwd_is_named_absolutely(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    root = _tree(proj, {"pkg/cli.py": _CLI}, '[project.scripts]\nx = "pkg.cli:main"\n')
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    result = _run(root, paths=[pathlib.Path("..", "proj")])
+    [(_, _, detail)] = _in(result, "cli.py")
+    assert f"at {(root / 'pyproject.toml').resolve()}:4;" in detail
+
+
+@pytest.mark.parametrize(
     ("value", "text"),
     [
         ("pkg.cli:main", "pkg.cli:main"),

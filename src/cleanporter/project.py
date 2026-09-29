@@ -42,7 +42,6 @@ verdicts still can depend on the order pairs are asked in, which is why
 from __future__ import annotations
 
 import dataclasses
-import os
 import pathlib
 import tomllib
 from collections.abc import Callable, Mapping
@@ -215,8 +214,8 @@ def _named(
     fixer actually touches.
 
     A reference names its file the way the run's findings do: a Python file
-    by the path it was discovered under, the ``pyproject.toml`` relative to
-    the working directory.
+    by the path it was discovered under, the ``pyproject.toml`` as `_spelled`
+    says.
     """
     first_party: dict[str, bool] = {}
     named: dict[tuple[str, str], list[resolver_lib.StringReference]] = {}
@@ -240,10 +239,11 @@ def _named(
                 origin = rec.path.resolve()
             add(parts, resolver_lib.StringReference(text, rec.path, origin, _line_of(rec, node)))
     pyproject = config.root / "pyproject.toml"
+    shown = _spelled(pyproject, absolute=any(r.path.is_absolute() for r in records))
     for found in _pyproject_references(pyproject, warnings):
         if wanted(found.parts):
             ref = resolver_lib.StringReference(
-                found.text, _relative(pyproject), pyproject.resolve(), _constant(found.line)
+                found.text, shown, pyproject.resolve(), _constant(found.line)
             )
             add(found.parts, ref)
     return {pair: tuple(refs) for pair, refs in named.items()}
@@ -273,9 +273,15 @@ def _pyproject_references(
         return []
 
 
-def _relative(path: pathlib.Path) -> pathlib.Path:
-    """*path* relative to the working directory, or as it is when it cannot be."""
-    try:
-        return pathlib.Path(os.path.relpath(path, pathlib.Path.cwd()))
-    except ValueError:  # pragma: no cover - different drive on Windows
-        return path
+def _spelled(path: pathlib.Path, *, absolute: bool) -> pathlib.Path:
+    """*path* as the run's findings would spell it.
+
+    Absolute when the run was given absolute paths, or when *path* is not
+    under the working directory -- a ``../../pyproject.toml`` is harder to
+    read than the path itself; otherwise relative to the working directory.
+    """
+    resolved = path.resolve()
+    cwd = pathlib.Path.cwd().resolve()
+    if absolute or not resolved.is_relative_to(cwd):
+        return resolved
+    return resolved.relative_to(cwd)
