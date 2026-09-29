@@ -45,8 +45,9 @@ alone — `C` might be a C-extension submodule, a lazily created module, a
 namespace package, or a re-exported class. A wrong guess is a nuisance for a
 checker but **emits broken code** for a fixer. So cleanporter resolves in
 layers — from the filesystem, then by asking a Python interpreter directly
-(out of process when `--python` names a different one) — and **never
-guesses**: anything it cannot prove is reported and left alone.
+(your project's own, found from its `.venv` or `$VIRTUAL_ENV`, out of process
+when it is not the one running cleanporter; `--python` names another) — and
+**never guesses**: anything it cannot prove is reported and left alone.
 
 ## Installation
 
@@ -79,6 +80,11 @@ w = Widget()                            w = helpers.Widget()
 Because stdout carries only the patch, `cleanporter --diff src/ | git apply`
 works as-is.
 
+For CI, `--format json`, `--format sarif` (GitHub code scanning) and
+`--format github` (pull-request annotations) put a machine-readable report on
+stdout instead; see
+[Machine-readable output](https://graitools.github.io/cleanporter/usage/#machine-readable-output).
+
 Some code is off-limits for reasons no analysis can discover — a body a
 framework re-parses with its own frontend, a `conftest.py` whose namespace
 *is* pytest's fixture registry. Declare those with
@@ -89,6 +95,21 @@ framework re-parses with its own frontend, a `conftest.py` whose namespace
 decorator = 'field_operator|scan_operator|program'
 reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
 ```
+
+## pre-commit
+
+```yaml
+repos:
+  - repo: https://github.com/grAItools/cleanporter
+    rev: vX.Y.Z  # a release tag
+    hooks:
+      - id: cleanporter        # or cleanporter-fix, to rewrite
+```
+
+The hooks run with `--whole-project`: a changed file is judged on the evidence
+of a full run over its `pyproject.toml` root, and only the changed files are
+reported. See
+[pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
 
 ## Exit codes
 
@@ -104,7 +125,7 @@ reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
 | --- | --- | --- |
 | `CP001` | `VIOLATION` | object imported by name — blocks CI |
 | `CP002` | `UNRESOLVED` | could not determine whether the symbol is a module; never rewritten. Also marks a file that was not processed (could not be read, decoded, parsed or written), which always exits `2`, with or without `--strict` |
-| `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely; like `CP001`, it fails the run. A wildcard import, an explicit or load-bearing re-export, an unprovable replacement and a top-level `from . import X` are reported in every mode; the rest are the fixer explaining a decision, so they appear under `--fix`/`--diff` |
+| `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely; like `CP001`, it fails the run. A wildcard import, an explicit or load-bearing re-export, a re-export another file names by its dotted path (`monkeypatch.setattr("pkg.mod.name", ...)`, an entry point), an unprovable replacement and a top-level `from . import X` (unless its import root is declared) are reported in every mode; the rest are the fixer explaining a decision, so they appear under `--fix`/`--diff` |
 | `CP004` | `SKIPPED_BY_CONFIG` | matched a [`skip` rule](https://graitools.github.io/cleanporter/configuration/#skip-rules) — never analysed, never rewritten, counted in the summary, printed only under `--show-skipped`, and never part of the exit code |
 
 ## Dogfooding
@@ -117,10 +138,12 @@ and exits 1.
 
 That is not an oversight, and it is not silenced with an `exclude`. The
 findings are true — the package really does import objects by name there —
-and the fixer declines to rewrite the file on its own terms: the names appear
-in `__all__` as string literals, so rewriting the imports would leave those
-strings naming attributes the module no longer binds. It is a fair
-demonstration of both the rule and the guard that keeps the fixer honest.
+and the fixer declines to rewrite them on its own terms: nothing in
+`__init__.py` reads those names, so rewriting the imports would only delete
+the public surface (and, behind that, the names appear in `__all__` as string
+literals, which a rewrite would leave naming attributes the module no longer
+binds). It is a fair demonstration of both the rule and the guards that keep
+the fixer honest.
 
 ## Documentation
 
@@ -128,6 +151,8 @@ Full documentation lives at **<https://graitools.github.io/cleanporter/>**:
 
 - [Usage](https://graitools.github.io/cleanporter/usage/) — every flag, the
   finding and exit codes, and CI/`git apply`/sweep workflows.
+- [pre-commit](https://graitools.github.io/cleanporter/pre-commit/) — the
+  `cleanporter` and `cleanporter-fix` hooks, and why they read the whole tree.
 - [Library API](https://graitools.github.io/cleanporter/library/) — a whole
   run from Python: `cleanporter.run`, `RunResult` and `Project`.
 - [Configuration](https://graitools.github.io/cleanporter/configuration/) — the

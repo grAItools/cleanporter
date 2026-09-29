@@ -342,6 +342,46 @@ configuration would have forbidden. Prefer the bare last-component spelling
     and kept exactly as written, in every mode; the rest of the file is still
     fixed.
 
+    Unless the root is *declared*, and soundly so. When the file sits under
+    a root you named with `--root` or `source_roots` — and that root is the
+    one the file is qualified against — the package's name is no longer a
+    reading of the directory tree but what you said is on `sys.path`, so
+    `import pkg` binds exactly the package the dots reached. There the
+    import is an ordinary `CP001`, in `check` and `--fix` alike, and `--fix`
+    writes `import pkg` plus `pkg.C`. A declaration is taken at its word
+    only when it is not self-evidently wrong, so the `CP003` stays when:
+
+    - the declared directory, or any directory above it up to the project
+      root, is a package (holds an `__init__.py`): `source_roots =
+      ["src/pkg"]`, or `["lib/vendor"]` under a `lib/__init__.py`, puts a
+      package's inside on `sys.path`, where `import utils` can reach some
+      other top-level `utils`. This is read from the disk, whatever paths the
+      run is given;
+    - it nests inside, or contains, another import root, declared or
+      inferred — the layout cleanporter already warns about ("import roots
+      nest"), where one file has two dotted names; a `tests/__init__.py`
+      beside `src/` is enough;
+    - another root holds a top-level `pkg` as well, so which one `import pkg`
+      finds depends on `sys.path` order;
+    - the file is `pkg/__init__.py` itself, where `import pkg` would only bind
+      the package to a name inside itself (this one has its own reason, since
+      no declaration changes it);
+    - `pkg` is named like a standard-library module: this interpreter's
+      `sys.stdlib_module_names`, plus the top-level modules removed in 3.12 and
+      3.13 (`imp`, `distutils`, `asyncore`, `cgi`, `telnetlib`, …) and added
+      in 3.14 (`annotationlib`, `compression`), since the target interpreter
+      may be any supported version. `import io` is the standard library's
+      whatever your root holds.
+
+    Under an inferred root that would pass those checks, the `CP003` message
+    names it — "if `<root>` is where Python imports it from, declaring it
+    with `--root` or `source_roots` lets `--fix` write `import pkg`". Declare
+    it only if that is true: the declaration is the whole of the evidence.
+    Some trust in it is irreducible — a PEP 420 namespace parent above the
+    root leaves nothing on disk to show that the package is really imported
+    under a longer name, so no check here can catch that declaration being
+    wrong.
+
     A relative and an absolute import of the same module in one file are
     given separate module bindings (one of them aliased, `mod_2`): they are
     the same module only if the inferred root is right. Two relative imports
@@ -424,6 +464,52 @@ configuration would have forbidden. Prefer the bare last-component spelling
     evidence either, for the same reason those strings are opaque to the
     string guard. Both make the re-export *look* unused, and it is then
     fixed — the same string-opacity family as the accepted limitations below.
+    A string that spells the *whole* dotted path is different, and has a
+    guard of its own: the next item.
+- **A re-export named by a string in another file is never rewritten.**
+  `monkeypatch.setattr("pkg.tool.dump", ...)` in a test, `mock.patch` of the
+  same, `importlib.import_module("pkg.tool")` beside a `"pkg.tool:dump"`
+  plugin address, or `dump = "pkg.tool:dump"` under `[project.scripts]`: each
+  keeps working only while `pkg/tool.py` binds `dump`. Rewriting its import
+  leaves every one of them importing, parsing and type-checking — and then
+  failing at runtime, or, for a patch, silently patching a name nothing reads
+  any more. This is the load-bearing guard above with strings as the evidence,
+  and it declines the same way: that one import is kept and reported `CP003`,
+  in every mode, naming the string and where it is (`'pkg.tool.dump' is named
+  by the string 'pkg.tool.dump' at tests/test_tool.py:12`); the rest of the
+  file is fixed.
+
+    The evidence is every string literal in the run whose *whole* text is a
+    dotted path of two or more identifiers (`a.b.c`) or an entry-point spec
+    (`a.b:c`, `a.b:c.d`). A literal is a plain string, an f-string with no
+    placeholders, or an implicit concatenation of those
+    (`"pkg.tool." "dump"`), read whole; bytes, escapes and placeholders are
+    not paths. To that is added every string value of the `pyproject.toml` in
+    use, in any table and at any depth — `[project.scripts]` and
+    `[project.entry-points.*]`, but also `[tool.poetry.scripts]`,
+    `[tool.poetry.plugins.*]` or a tool's own plugin setting — read as an
+    entry point where it is one (whitespace around the colon and an
+    `[extras]` suffix are dropped, nothing else is) and as a dotted path
+    otherwise. The reason gives the line that assigns that key the value in
+    its own table — proved by re-parsing the file with that value swapped
+    out, so a look-alike inside a multi-line string or under a fake header is
+    never named — or the file alone when the value sits in an array, an
+    inline table or a multi-line string. Every split of the path is a candidate —
+    `"pkg.tool.dump.__name__"` names `dump` in `pkg.tool` as surely as
+    `"pkg.tool.dump"` does — and a candidate counts only when its first
+    component is first-party and the module *re-exports* the name, exactly as
+    for the load-bearing guard. So a string naming another attribute of the
+    module, one it defines itself, or something outside the project blocks
+    nothing, and neither does prose (`"see pkg.tool.dump"`) or code
+    (`"pkg.tool.dump()"`): the cross-file reading is of paths only. It is
+    collected from the same single walk of each file as everything else. In a
+    [`--whole-project`](usage.md#flags) run it covers the whole tree, so a
+    test file that was not listed still protects what it patches.
+
+    A string in the file being rewritten is not this guard's business. Under
+    `--fix` the string guard above sees it mention the name the rewrite would
+    qualify and declines the whole file with a `CP003`; a plain check
+    reports the import as `CP001`. Both are as they were before this guard.
 - **A module-level name in `pkg/__init__.py` is the attribute
   `pkg.<name>`,** and that makes two things unsafe there that are fine
   anywhere else.
@@ -492,7 +578,8 @@ configuration would have forbidden. Prefer the bare last-component spelling
     import naming one is `CP002` and nothing is written for it. The cost is a
     fix that would have been correct; the finding says which evidence was
     missing ("neither on disk under this run's import roots nor bound in …"),
-    and pointing cleanporter at the whole tree, or declaring `source_roots`,
+    and pointing cleanporter at the whole tree (for a few files, with
+    [`--whole-project`](usage.md#flags)), or declaring `source_roots`,
     resolves it.
 
     Written inside `pkg/__init__.py` this is the same check: there the
@@ -508,8 +595,10 @@ configuration would have forbidden. Prefer the bare last-component spelling
   *inside* an import statement is a separate matter, and does block.)
 - **Some `CP003` findings can never be cleared by `--fix`.** A wildcard
   import, an explicit `S as S` re-export, a load-bearing re-export, a
+  re-export another file names by its dotted path, a
   replacement that cannot be shown to bind the module it names, and
-  `from . import C` where the package is top-level are all reported in every
+  `from . import C` where the package is top-level under an inferred root
+  (a sound declared root lifts it; see above) are all reported in every
   mode and are never rewritten, and the exit code counts `CP003` toward
   failure. A project that legitimately uses those idioms therefore cannot
   reach exit `0` on the strength of `--fix` alone; the finding is a true
@@ -528,14 +617,23 @@ configuration would have forbidden. Prefer the bare last-component spelling
   through `.format()`), and source for a *different* Python version. The
   annotation-slot and `__all__` cases are not in this list: those strings are
   known to be code by context and keep blocking however they are spelled.
-- **Guards are per file.** A string in *another* file that names the rewritten
-  binding by its dotted path — `monkeypatch.setattr("pkg.cli.helper", ...)`,
-  an entry point, an `importlib` lookup — cannot be seen, so `--fix` can make
-  such a reference stale even though the rewritten file itself is correct.
-  This was found by running cleanporter over its own source: one test patched
-  `cleanporter.cli.fix_record`, a name the compliant rewrite no longer binds
-  there. Re-run your test suite after a `--fix` sweep; `--fix` prints a note
-  to stderr saying so whenever it writes a file.
+- **Some references from elsewhere are still invisible.** A string in
+  *another* file that spells a rewritten binding's dotted path out whole —
+  `monkeypatch.setattr("pkg.cli.helper", ...)`, `mock.patch`, an entry point
+  in `pyproject.toml` — is guarded (see above). What is not: a *dynamic*
+  string (`f"{pkg}.cli.helper"`, `"pkg.cli." + name`), a lookup of the
+  name *through a module object* — `getattr(module, "helper")`,
+  `monkeypatch.setattr(module, "helper", ...)`,
+  `mock.patch.object(module, "helper")`, `sys.modules[...]` — since the
+  string there is the bare name, not a path, a reference in a file outside the
+  run (another project, or — without `--whole-project` — a file that was not
+  listed), and an entry point or dotted path in a config file other than
+  `pyproject.toml` (`setup.cfg`, `tox.ini`, `pytest.ini`, YAML). Any of those
+  can go stale even though the rewritten file itself is correct. The
+  unguarded case was found by running cleanporter over its own source: one
+  test patched `cleanporter.cli.fix_record`, a name the compliant rewrite no
+  longer bound there. Re-run your test suite after a `--fix` sweep; `--fix`
+  prints a note to stderr saying so whenever it writes a file.
 - **One-liner suites and semicolon-joined imports get no `CP003`.** They are
   reported as `CP001` and not rewritten, but no note explains that the fixer
   declined them. The fixer never plans such a line at all, and turning that

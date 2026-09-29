@@ -119,7 +119,8 @@ run's import roots, and 'pkg' binds '_version' by importing its own submodule
 of that name`, or `'pkg.helpers' is neither on disk under this run's import
 roots nor bound in 'pkg'`. A first-party name that ends up here is *not* handed to the
 interpreter probe: that would import first-party code, which is what this
-layer exists to avoid. Pointing cleanporter at the whole tree, or declaring
+layer exists to avoid. Pointing cleanporter at the whole tree (or, when checking a few files, passing
+[`--whole-project`](usage.md#flags)), or declaring
 `source_roots`, is what settles a sibling portion it cannot see.
 
 At an import root, the scan that builds this map skips the directories file
@@ -161,8 +162,14 @@ from, so the pair stays ambiguous.
 
 ### 2. Stdlib and third-party, by interpreter probe
 
-Everything else is settled by asking a Python interpreter — the one selected
-by `--python`, defaulting to the interpreter running cleanporter.
+Everything else is settled by asking a Python interpreter — the one named by
+`--python` (or the `python` key), or else the project's own, detected from
+`$UV_PROJECT_ENVIRONMENT` or the `.venv` at the project root (the uv
+workspace root, for a workspace member), or else from `$VIRTUAL_ENV`, or else the interpreter running cleanporter (see
+[The probe interpreter](configuration.md#the-probe-interpreter)). Detection
+only picks *which* environment answers; a pick that lacks a package, or cannot
+run, leaves the import `CP002`, so it can never make a verdict more optimistic
+than the environment asked can prove.
 
 The question is put to a small, **stdlib-only** classifier module. It imports
 only `PARENT`, then asks `importlib.util.find_spec("PARENT.NAME")`: a spec
@@ -198,13 +205,14 @@ Three properties of this layer matter:
   the run is collected up front and classified in a single batch, with parent
   imports cached across the batch.
 - **It can run out of process.** When `--python` points at a *different*
-  interpreter, the classifier is executed there as a subprocess, exchanging
+  interpreter, or detection finds one, the classifier is executed there as a subprocess, exchanging
   JSON over stdin/stdout. That keeps cleanporter's own dependency (libCST) out
   of the target project's virtualenv, and contains a native-library crash in a
-  subprocess rather than taking the whole run down. When there is no
-  `--python` (or `python` key) — the default case — or it names the very
-  executable cleanporter is running as, the same stdlib-only code runs in
-  process, since there is nothing to isolate.
+  subprocess rather than taking the whole run down. When the interpreter is
+  cleanporter's own — `--python self`, detection finding nothing, or a named
+  or detected interpreter that is the very executable cleanporter is running
+  as — the same stdlib-only code runs in process, since there is nothing to
+  isolate.
 
   "The very executable" means the same path, made absolute but with no symlink
   resolved: equal to cleanporter's own `sys.executable`, and containing no `..`
@@ -229,10 +237,13 @@ of its stderr, so a batch of `CP002` findings comes with its actual cause.
 
 Importing a parent runs its code, and some packages print on import (a
 "Welcome to ..." banner). None of that can reach a patch or corrupt the
-probe's reply:
+probe's reply, with one in-process exception below:
 
-- **In process**, `sys.stdout` points at stderr while the probe runs, so a
-  banner is printed on stderr and `--diff`'s stdout stays a clean patch.
+- **In process**, stdout points at stderr while the probe runs — both
+  `sys.stdout` and file descriptor 1, so an `os.write(1, ...)`, unbuffered C
+  output or a subprocess's output is caught too — so a banner is printed on
+  stderr and `--diff`'s stdout stays a clean patch, and `--format`'s a clean
+  document.
 - **Out of process**, the probe also points its `sys.stdout` at stderr, and
   its reply is *framed* by markers that are extracted wherever they sit in
   the output. The framing is what copes with output written below Python —
@@ -240,11 +251,20 @@ probe's reply:
   pipe's C-level buffer can flush it after the reply — without the probe
   needing anything beyond the handful of stdlib modules it is allowed.
 
-The in-process swap is of `sys.stdout` only: output an extension module
-writes directly to file descriptor 1 during an in-process probe still lands
-on cleanporter's stdout; it is a known limit rather than something the
-in-process path can close without rewiring the process's own descriptors
-under the code it is importing.
+The in-process swap rewires the process's own descriptor 1 for the
+duration, and restores it afterwards; it is process-wide, and so not
+thread-safe for a library caller (see
+[Side effects](library.md#side-effects)).
+
+It cannot reach C stdio's own buffer. An extension module that `printf`s on
+import, when stdout is a pipe or a file, has its output held in the C
+library's buffer rather than written to descriptor 1; that buffer is flushed
+at process exit, long after the descriptor is restored, so the banner still
+lands on cleanporter's stdout — after the patch or the `--format` document.
+That is a known limit of the in-process path. If a dependency prints from C
+on import, name an interpreter other than cleanporter's own with `--python`
+(or `python =`): the probe then runs in a subprocess, whose output is framed
+as described above.
 
 ### 3. Undetermined
 
@@ -260,11 +280,26 @@ it is.
 `treat_unresolved_as_error = true`) when you want unresolvable imports to fail
 the run.
 
-Results are cached per `(PARENT, NAME)` pair for the duration of a run. Each
-file is parsed once by libcst, and a check walks its syntax tree once: that
-single pass collects every import, every `module.attribute` read and every
-star import, and everything else the analysis needs is read off what it
-collected. Where each import starts is taken from a parse with Python's own
+Results are cached per `(PARENT, NAME)` pair for the duration of a run. The
+cache is in memory only: a very large third-party surface re-pays the
+(batched) probe cost on every invocation.
+
+Each file is parsed once by libcst, and a check walks its syntax tree once: that
+single pass collects every import, every `module.attribute` read, every
+star import and every string literal that is a whole dotted path (`a.b.c`) or
+entry-point spec (`a.b:c`), and everything else the analysis needs is read off
+what it collected.
+
+Those four are the run's cross-file evidence. Before any file is judged, the
+whole run's uses of `module.name` are gathered, together with the strings that
+name one by path and the dotted string values (entry points, plugin
+addresses) of the `pyproject.toml` in use. A
+first-party module that only *re-exports* a name something else uses or names
+keeps that import as written and reports it `CP003`, in every mode: rewriting
+it would delete the attribute the other file depends on (see
+[the load-bearing and string-named re-export guards](safety.md#known-limitations)).
+A string is looked up only when it would decline a rewrite, so its line costs
+position metadata for that one file, once. Where each import starts is taken from a parse with Python's own
 `ast` rather than from libcst's position metadata, which would cost a second
 full pass over the tree. That parse is used only where it provably gives
 libcst's answer.
@@ -273,9 +308,9 @@ endings, one whose grammar the running Python does not accept, or one libcst
 does not reproduce exactly. libcst drops a form feed (`\f`) or a backslash
 continuation from a statement's leading whitespace, which moves the columns
 and lines it reports. Either way, the lines and columns printed are libcst's.
-`--fix` adds the scope analysis the guards need on top. The cache is in memory
-only: a very large third-party surface re-pays the (batched) probe cost on
-every invocation.
+`--fix` and `--diff` add the scope analysis the guards need on top, but only
+for a file with at least one `CP001`: a file with none has nothing the fixer
+could rewrite or explain, so it costs about what a check does.
 
 ## Relative imports
 
@@ -299,7 +334,12 @@ parent (`from .. import sub` in `pkg/sub/mod.py`). That one does lean on the
 root giving the package a parent, but a wrong root makes it fail loudly with
 `ImportError` at import time; it cannot bind a different module. Where the
 package is top-level there is no relative spelling, and that import is kept
-as a `CP003` — see [Known limitations](safety.md#known-limitations).
+as a `CP003` — see [Known limitations](safety.md#known-limitations) — unless
+the file's import root is one you declared (`--root` / `source_roots`) and
+the declaration is structurally sound — neither it nor a directory above it
+up to the project root a package directory, not nested with another root, the only root holding `pkg`, and `pkg` not a
+standard-library name: then `import pkg` names the package you said is on
+`sys.path`, and the import is an ordinary `CP001` that `--fix` rewrites to it.
 
 ## Import roots
 

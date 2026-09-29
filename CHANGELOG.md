@@ -14,6 +14,161 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Breaking under the pre-1.0 policy above:
+
+- With no `--python` and no `python` key, the probe now runs under the
+  project's own interpreter when one is detected, not cleanporter's; for the
+  library, `Config.python = None` (the default) now means "detect" rather than
+  "the calling interpreter". `python = "self"` / `--python self` /
+  `Config(python="self")` restores the old behaviour. `RunResult` and
+  `Project` gain a trailing `notes` field, and `engine.Listener` a `note`
+  method.
+
+### Added
+
+- **A cross-file string guard.** A string literal in another analysed file
+  that spells a first-party binding's dotted path out whole —
+  `monkeypatch.setattr("pkg.mod.helper", ...)`, `mock.patch("pkg.mod.helper")`,
+  `"pkg.mod:helper"`, including an implicit concatenation or a
+  placeholder-free f-string — or a string value anywhere in the
+  `pyproject.toml` in use (`[project.scripts]`, `[project.entry-points.*]`,
+  `[tool.poetry.scripts]`, ...) now keeps the import that binds it, when that import is a re-export
+  the rewrite would remove. The import is reported `CP003` in every mode, with
+  the string and where it is (`... at tests/test_x.py:12`); the rest of the
+  file is still fixed. Before, such a reference could silently go stale
+  after `--fix`. The `--fix` note on stderr now names what is still unguarded:
+  dynamic strings, lookups through a module object (`getattr(module, "name")`,
+  `monkeypatch.setattr(module, "name", ...)`, `mock.patch.object`), files
+  outside the run, and config other than `pyproject.toml`. `resolver.Evidence` gains a `named` field and
+  `resolver.Resolver` a `named_by` method.
+- **pre-commit hooks, and `--whole-project` to make them safe.** The
+  repository now publishes a `.pre-commit-hooks.yaml` with two hooks,
+  `cleanporter` (check) and `cleanporter-fix` (`--fix`), for pre-commit and
+  prek. pre-commit passes a hook only the changed files, and a run over those
+  alone judges them on a partial tree: a re-export that only an unlisted file
+  imports looks unused, so `--fix` would delete it, and a first-party package
+  no listed file lives in is not first-party at all, so the probe answers for
+  it from whatever is installed under that name. The new `--whole-project`
+  flag (`run(..., whole_project=True)` in the library) reads the whole
+  project — the directory of the `pyproject.toml` — for evidence and fixes,
+  reports and counts only the listed files; both hooks use it. Listed files
+  from two `pyproject.toml` projects (a nested `examples/` project, say) are
+  refused with exit `2` rather than judged on one project's evidence; split
+  the hook with `files:`/`exclude:` per project. So is a listed file outside
+  the project's directory, as written or through a symlink — a script under
+  no `pyproject.toml`, a symlink into another project — and then the whole
+  run is: nothing is analysed or written. The library call enforces that
+  second rule too; the one-project rule is the command's. Documented
+  under [pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
+- **Machine-readable output: `--format json|sarif|github`.** The default,
+  `text`, is unchanged. `json` is one document with the tool version, exit
+  code, counts, findings (code, level, path, line, column, parent, name,
+  message and `detail`), unprocessable files, warnings, notes and — under
+  `--diff`/`--fix` — the patches. `sarif`
+  is a SARIF 2.1.0 log, one rule per finding code, ready for
+  `github/codeql-action/upload-sarif`; a file outside the working directory
+  gets an absolute `file:` URI as `pathlib` spells it (`file:///C:/...`, or
+  `file://server/share/...` for a UNC path). `github` prints workflow
+  commands that annotate pull requests. In each, stdout carries only the document, the exit
+  code is the text report's, `CP004` is listed only under `--show-skipped`,
+  and severity follows the exit code (`CP002` is a warning, an error under
+  `--strict`). `--diff` with `sarif` or `github`, which have no place for a
+  patch, is a usage error, even alongside `--fix`. CLI-only: there is no
+  configuration key. For library callers, `model.Finding` gains `message`.
+  So that stdout really holds only the document, the in-process probe now
+  also points file descriptor 1 at stderr while it imports (it redirected
+  only `sys.stdout` before), so a package that writes to the descriptor on
+  import (`os.write`, unbuffered C output, a subprocess) cannot corrupt a
+  report or a `--diff` patch either. C stdio output an extension buffers is
+  still flushed at exit, after the document: use `--python` for such a
+  dependency. See
+  [Machine-readable output](https://graitools.github.io/cleanporter/usage/#machine-readable-output).
+- **cleanporter finds the project's interpreter by itself.** Installed with
+  `pipx` or `uv tool`, cleanporter runs in an environment without the target
+  project's dependencies, so every third-party import used to come back
+  `CP002` unless you knew about `--python`. Now, when no interpreter is named,
+  the probe uses the first executable interpreter found, in uv's order:
+  `$UV_PROJECT_ENVIRONMENT`, then `.venv`, at the project root (the directory
+  of the `pyproject.toml` in use, or the first path's directory when there is
+  none) — or, when the project is a uv workspace member, at the workspace root
+  instead — then `$VIRTUAL_ENV`. A candidate that is missing or not executable
+  is passed over silently, and nothing else — no `uv` subprocess, no `PATH`
+  search, no conda — is consulted. The pick is probed out of process, as if
+  passed with `--python`, unless it is cleanporter's own environment (its
+  `sys.executable`, or its `sys.prefix` venv), and a one-line
+  `cleanporter: note:` on stderr names it and says why, including an active
+  `$VIRTUAL_ENV` it passed over, even when the pick stays in process (for
+  library callers: `RunResult.notes` and `Listener.note`). Detection only
+  chooses which environment answers: one lacking a package, or unable to run,
+  leaves the import `CP002`, never an optimistic verdict. `python`/`--python` accept
+  `auto` (detect; the default) and `self` (cleanporter's own, in process)
+  besides a path or command, so `--python auto` restores detection over a
+  configured interpreter. Documented under
+  [The probe interpreter](https://graitools.github.io/cleanporter/configuration/#the-probe-interpreter).
+- **A declared root lets `--fix` rewrite a top-level package's own import.**
+  `from . import C` in `pkg/cli.py` (or `from .. import C` in
+  `pkg/sub/mod.py`), where `pkg` is top-level and `C` an object, has no
+  relative replacement, so it was a `CP003` in every mode. When the file is
+  anchored in a root you declared with `--root` or `source_roots`, the
+  absolute `import pkg` names the package you said is on `sys.path`, and the
+  import is now a `CP001` that `--fix` rewrites to `import pkg` plus `pkg.C`.
+  Only a structurally sound declaration counts: the `CP003` stays when the
+  declared directory, or one above it up to the project root, is a package
+  (holds an `__init__.py`), when it nests in or around another
+  import root, when another root also holds `pkg`, in `pkg/__init__.py`
+  itself (with a reason of its own), and when `pkg` is named like a standard-library module of any
+  supported Python (`import io` is the standard library's). An inferred root
+  keeps the `CP003`; when declaring it would pass those checks, the message
+  now names it: "if `<root>` is where Python imports it from, declaring it
+  with --root or source_roots lets --fix write 'import pkg'".
+  Documented under
+  [Known limitations](https://graitools.github.io/cleanporter/safety/#known-limitations).
+- **Releases are published from version tags.** Pushing `vX.Y.Z` runs
+  `.github/workflows/release.yml`, which checks that the tagged commit is on
+  `main`, that the tag matches `project.version` and that `CHANGELOG.md` has a
+  section for it, runs the test suite, builds the sdist and wheel once, and
+  then makes the GitHub release and -- when enabled -- the PyPI upload. See
+  `CONTRIBUTING.md`.
+- **The test suite runs on Windows in CI** (Python 3.12 and 3.14), beside the
+  Linux matrix.
+
+### Changed
+
+- **`--diff` and `--fix` skip the fixer's scope analysis for files with nothing
+  to fix.** libcst's scope metadata, which the fixer's guards need, used to be
+  built for every file in the run; it is now built only for a file in which
+  `check` would report a `CP001`, decided by the same per-import decision the
+  report uses. For a file without one the fixer can produce no rewrite, add no
+  `CP003` of its own and find no never-read name, so the output is
+  byte-identical; the `CP003`s `check` itself reports are reported as before.
+  One failure mode goes with it: an exception inside libcst's scope analysis on
+  a file with no `CP001` can no longer abort the run. The saving scales with the
+  share of files that are already clean: over libcst's source after one `--fix`
+  (34 of 297 files still with a `CP001`), `--diff` went from 200 s to 112 s,
+  against 33 s for a check; over libcst as released, where 261 of the 297 files
+  have one, it is unchanged at about 232 s.
+- **A relative import's `CP001` advises a relative replacement.** The message
+  used to say only "import the module and use 'readers.read'", leaving the
+  reader to derive the import from the absolute module it names — which, for a
+  relative import, is only as good as the inferred import root and can even
+  look like the standard library (`io.readers` for a PEP 420 namespace
+  directory). It now quotes the replacement spelled by the fixer's own
+  function: `import the module ('from . import readers') and use
+  'readers.read'`. It is advice, not the exact statement: `--fix` may reuse an
+  existing binding or allocate an alias. Absolute imports' messages are
+  unchanged. `model.Finding` gains a trailing `module_import` field (empty
+  unless the finding is such a `CP001`), which the message quotes.
+
+### Fixed
+
+- **An out-of-process probe no longer crashes on output it cannot decode.**
+  The probe's pipes were decoded in the locale's encoding, so a probed package
+  that printed bytes that encoding rejects -- anything cp1252 leaves undefined
+  on Windows, or invalid UTF-8 elsewhere -- raised `UnicodeDecodeError` out of
+  the run. They are now read as bytes and decoded as UTF-8 with replacement,
+  the probe is told to write UTF-8 (`PYTHONIOENCODING`), and its reply is
+  ASCII JSON inside its frame whatever the child's encoding.
+
 ## [0.4.0] - 2026-09-28
 
 Breaking under the pre-1.0 policy above:

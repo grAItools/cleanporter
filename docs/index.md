@@ -150,17 +150,19 @@ cleanporter --fix src/mypkg/consumer.py pkg/other.py
 
 !!! warning "Re-run your tests after a `--fix` sweep"
 
-    cleanporter's safety guards are **per file**. A string in *another* file
-    that names a rewritten binding by its dotted path — a
-    `monkeypatch.setattr("pkg.cli.helper", ...)`, an entry point, an
-    `importlib` lookup — cannot be seen from the file being rewritten, so a
-    fix can leave such a reference stale. `--fix` prints a note to stderr
-    saying so whenever it writes a file.
+    A string in another analysed file that spells a binding's dotted path out
+    whole — `monkeypatch.setattr("pkg.cli.helper", ...)`, an entry point in
+    `pyproject.toml` — keeps that import as it is. What the run cannot see
+    can still go stale: a dynamic string, a `getattr(module, "helper")`, a
+    reference in a file outside the run, or one in `setup.cfg`, `tox.ini` or
+    YAML. `--fix` prints a note to stderr saying so whenever it writes a file.
 
 ## Where to go next
 
 - **[Usage](usage.md)** — every flag, the finding codes, exit codes, and the
   CI / `git apply` / sweep workflows.
+- **[pre-commit](pre-commit.md)** — the `cleanporter` and `cleanporter-fix`
+  hooks, and why they read the whole project.
 - **[Library API](library.md)** — a whole run from Python: `cleanporter.run`,
   `RunResult` and `Project`.
 - **[Configuration](configuration.md)** — the `[tool.cleanporter]` table, how

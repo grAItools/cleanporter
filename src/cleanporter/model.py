@@ -53,6 +53,13 @@ class Finding:
     name: str
     status: Status
     detail: str = ""
+    #: For a `CP001` from a *relative* import, the module import that would
+    #: replace it, spelled as the fixer spells its statement
+    #: (``from . import readers``); empty otherwise. `message` quotes it as
+    #: advice, because ``parent`` is the absolute name the import root
+    #: implies -- ``io.readers`` for a namespace directory -- which is how
+    #: the resolver classifies the import, not how anyone should write it.
+    module_import: str = ""
 
     @property
     def code(self) -> str:
@@ -63,27 +70,33 @@ class Finding:
             Status.SKIPPED_BY_CONFIG: "CP004",
         }[self.status]
 
-    def format(self) -> str:
-        loc = f"{self.path}:{self.line}:{self.column}"
+    @property
+    def message(self) -> str:
+        """What `format` says after ``PATH:LINE:COLUMN: CODE``."""
         if self.status is Status.VIOLATION:
+            # The conventional spelling, as advice -- not necessarily what
+            # `--fix` writes, which can reuse an existing binding of the
+            # module or pick a free alias.
             token = self.parent.rsplit(".", 1)[-1]
-            msg = (
+            module = f" ('{self.module_import}')" if self.module_import else ""
+            return (
                 f"imports object '{self.name}' from module '{self.parent}'; "
-                f"import the module and use '{token}.{self.name}'"
+                f"import the module{module} and use '{token}.{self.name}'"
             )
-        elif self.status is Status.UNRESOLVED and self.name == "?":
+        if self.status is Status.UNRESOLVED and self.name == "?":
             # A whole file that could not be read, decoded, parsed or written.
-            msg = f"file not processed: {self.detail}"
-        elif self.status is Status.UNRESOLVED:
-            msg = (
+            return f"file not processed: {self.detail}"
+        if self.status is Status.UNRESOLVED:
+            return (
                 f"could not determine whether '{self.parent}.{self.name}' "
                 f"is a module: {self.detail}"
             )
-        elif self.status is Status.SKIPPED_BY_CONFIG:
-            msg = f"{self._subject()} skipped by configuration: {self.detail}"
-        else:
-            msg = f"{self._subject()} not rewritten: {self.detail}"
-        return f"{loc}: {self.code} {msg}"
+        if self.status is Status.SKIPPED_BY_CONFIG:
+            return f"{self._subject()} skipped by configuration: {self.detail}"
+        return f"{self._subject()} not rewritten: {self.detail}"
+
+    def format(self) -> str:
+        return f"{self.path}:{self.line}:{self.column}: {self.code} {self.message}"
 
     def _subject(self) -> str:
         return "file" if self.name == "?" else f"'{self.name}' from '{self.parent}'"

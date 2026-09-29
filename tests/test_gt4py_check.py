@@ -35,7 +35,7 @@ harness = _load_harness()
 def _junit(tmp_path: pathlib.Path, body: str) -> pathlib.Path:
     report = tmp_path / "report.xml"
     report.write_text(
-        f'<?xml version="1.0"?><testsuites><testsuite>{body}</testsuite></testsuites>'
+        f'<?xml version="1.0"?><testsuites><testsuite>{body}</testsuite></testsuites>', newline="\n"
     )
     return report
 
@@ -66,6 +66,7 @@ def _stub_interpreter(tmp_path: pathlib.Path, imported: str) -> pathlib.Path:
         f"case \"$*\" in *import*) printf '%s\\n' '{imported}'; exit 0;; esac\n"
         "printf '{}'\n",
         encoding="utf-8",
+        newline="\n",
     )
     script.chmod(0o755)
     return script
@@ -75,10 +76,14 @@ def _checkout(tmp_path: pathlib.Path, user: str) -> pathlib.Path:
     """A miniature first-party tree, so no probe answer is needed to fix it."""
     checkout = tmp_path / "checkout"
     (checkout / "src" / "gt4py").mkdir(parents=True)
-    (checkout / "pyproject.toml").write_text("[project]\nname = 'gt4py'\n", encoding="utf-8")
-    (checkout / "src" / "gt4py" / "__init__.py").write_text("", encoding="utf-8")
-    (checkout / "src" / "gt4py" / "sub.py").write_text("THING = 1\n", encoding="utf-8")
-    (checkout / "src" / "gt4py" / "user.py").write_text(user, encoding="utf-8")
+    (checkout / "pyproject.toml").write_text(
+        "[project]\nname = 'gt4py'\n", encoding="utf-8", newline="\n"
+    )
+    (checkout / "src" / "gt4py" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (checkout / "src" / "gt4py" / "sub.py").write_text(
+        "THING = 1\n", encoding="utf-8", newline="\n"
+    )
+    (checkout / "src" / "gt4py" / "user.py").write_text(user, encoding="utf-8", newline="\n")
     return checkout
 
 
@@ -143,7 +148,9 @@ def test_the_written_config_is_one_this_repository_still_accepts(tmp_path, capsy
     here changes under it, the weekly run fails against a moving upstream and
     looks like gt4py's fault.
     """
-    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'gt4py'\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'gt4py'\n", encoding="utf-8", newline="\n"
+    )
     harness._configure(tmp_path)
     assert "wrote the expected" in capsys.readouterr().out
 
@@ -177,6 +184,7 @@ def test_the_written_rules_still_match_the_code_they_are_meant_to_cover(tmp_path
         "def op():\n"
         "    return THING\n",
         encoding="utf-8",
+        newline="\n",
     )
     python = _stub_interpreter(tmp_path, str(checkout / "src" / "gt4py" / "__init__.py"))
     assert harness.main([str(checkout), "--python", str(python), "--tests", "src"]) == 0
@@ -194,7 +202,7 @@ def test_the_written_rules_still_match_the_code_they_are_meant_to_cover(tmp_path
 def test_a_checkout_that_configures_cleanporter_itself_is_left_alone(tmp_path, capsys):
     """If gt4py ever adopts the tool, its rules are the ones worth testing."""
     original = "[project]\nname = 'gt4py'\n\n[tool.cleanporter]\nexempt_names = ['x']\n"
-    (tmp_path / "pyproject.toml").write_text(original, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(original, encoding="utf-8", newline="\n")
     harness._configure(tmp_path)
     assert (tmp_path / "pyproject.toml").read_text(encoding="utf-8") == original
     assert "already configures cleanporter" in capsys.readouterr().out
@@ -280,7 +288,7 @@ def test_a_dotted_skip_table_counts_as_already_configured(tmp_path, capsys):
     pass.
     """
     original = "[project]\nname = 'gt4py'\n\n[tool.cleanporter.skip]\n"
-    (tmp_path / "pyproject.toml").write_text(original, encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(original, encoding="utf-8", newline="\n")
     harness._configure(tmp_path)
     assert (tmp_path / "pyproject.toml").read_text(encoding="utf-8") == original
     assert "already configures cleanporter" in capsys.readouterr().out
@@ -297,7 +305,7 @@ def test_a_rewrite_that_misses_the_code_under_test_is_an_error_too(tmp_path, cap
     checkout = _checkout(tmp_path, "x = 1\n")  # nothing under src/ to fix
     (checkout / "scripts").mkdir()
     (checkout / "scripts" / "tool.py").write_text(
-        "from gt4py.sub import THING\n\nx = THING\n", encoding="utf-8"
+        "from gt4py.sub import THING\n\nx = THING\n", encoding="utf-8", newline="\n"
     )
     python = _stub_interpreter(tmp_path, str(checkout / "src" / "gt4py" / "__init__.py"))
 

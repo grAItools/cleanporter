@@ -18,14 +18,20 @@ Order of resolution for a ``from PARENT import NAME``:
    the parent package is imported (cached); never the leaf, never objects.
 3. **Undetermined** -> ``None``. ``check`` reports it, ``fix`` skips it.
 
-The interpreter probe runs in-process when ``python`` is provably the current
-interpreter *environment* (see `_is_this_interpreter`), otherwise in a
-subprocess so tool deps stay out of the target env and native-library crashes
-are contained.
+The interpreter probe runs in-process when ``python`` is ``None`` or provably
+the current interpreter *environment* (see `_interpreter.is_this_interpreter`),
+otherwise in a subprocess so tool deps stay out of the target env and
+native-library crashes are contained. Which interpreter that is -- named,
+cleanporter's own, or the project's, detected -- is decided before the
+resolver is built (`_interpreter.choose`, from `project.build`); the resolver
+takes an interpreter, not the ``python`` setting's ``"auto"``/``"self"``.
 
 Probing imports third-party packages, and some print on import. In-process,
-``sys.stdout`` is pointed at ``sys.stderr`` for the duration, so a banner
-cannot land in a ``--diff`` patch on stdout (the stream contract in `cli`);
+stdout is pointed at stderr for the duration (`_stdout_to_stderr`) -- both
+``sys.stdout`` and file descriptor 1, since an ``os.write(1, ...)`` or
+unbuffered C output bypasses the Python object -- so a banner cannot land in
+a ``--diff`` patch or a ``--format`` document on stdout (the stream contract
+in `cli`), short of C stdio output an extension buffers until exit;
 out of process, the reply is framed so a banner cannot corrupt it (`_probe`).
 When an out-of-process batch fails anyway -- a crash, a timeout, no reply --
 the batch is still undetermined, and *why* is kept in `take_warnings` for the
@@ -55,14 +61,21 @@ import os
 import pathlib
 import subprocess
 import sys
+from collections.abc import Callable, Generator, Mapping
+from typing import TextIO
 
 from cleanporter import firstparty, model
 
-from . import _probe
+from . import _interpreter, _probe
 
 #: Wall-clock budget for one out-of-process probe batch. A probe that
 #: outlives it is killed and its whole batch reported undetermined.
 _PROBE_TIMEOUT = 120
+
+#: The child probe's ``PYTHONIOENCODING``: its streams in UTF-8, the codec the
+#: parent decodes them with, so the stderr a failed batch's warning quotes is
+#: the text a package printed rather than its locale's escapes of it.
+_PROBE_IO_ENCODING = "utf-8:backslashreplace"
 
 _AMBIGUOUS = "'{name}' is both a submodule of '{parent}' and bound in its __init__"
 _NOT_IMPORTABLE = "'{parent}' is not importable in the target interpreter"
@@ -83,39 +96,6 @@ def _stderr_tail(stderr: str | bytes | None) -> str:
     return f"; stderr: {tail}" if tail else ""
 
 
-def _is_this_interpreter(python: str) -> bool:
-    """Whether running *python* would give this very environment, provably.
-
-    What an interpreter can import is decided by its *environment*, and a
-    virtual environment is found from where its executable is invoked -- the
-    ``pyvenv.cfg`` beside it or one level up -- not from the binary it links
-    to. Every venv built from one base Python is a symlink to the same file,
-    so comparing symlink-*resolved* paths, as this used to, called any other
-    venv of the same Python "this interpreter" and probed it in process,
-    against cleanporter's own ``sys.path``: a package only the target had was
-    "not importable", and one only cleanporter's environment had was
-    classified as if the target had it.
-
-    So the comparison is of the path as invoked, made absolute without
-    touching a symlink, against ``sys.executable``. Equal strings name the
-    same location and so the same environment. The one lexical step that
-    could break that is collapsing ``..`` -- ``venv/link/../bin/python``
-    reads as ``venv/bin/python`` but, through a symlinked ``link``, runs
-    something else -- so a path with a ``..`` component is never called equal.
-
-    A bare command name (no path separator) is never equal either: the
-    subprocess looks it up on ``PATH``, whereas making it absolute joins it to
-    the cwd, so ``python3`` run from inside a venv's ``bin`` would be answered
-    in process while ``PATH`` names some other interpreter entirely.
-    Every miss costs a subprocess, never a wrong answer.
-    """
-    if not any(sep in python for sep in (os.sep, os.altsep) if sep):
-        return False
-    if not sys.executable or ".." in pathlib.PurePath(python).parts:
-        return False
-    return str(pathlib.Path(python).absolute()) == sys.executable
-
-
 @dataclasses.dataclass(frozen=True)
 class Evidence:
     """What the files of a run *use*, which constrains what their imports may become.
@@ -130,6 +110,40 @@ class Evidence:
     uses: frozenset[tuple[str, str]] = frozenset()
     #: Modules some analysed file star-imports, which could need any name.
     star_imported: frozenset[str] = frozenset()
+    #: ``(module, name)`` -> every string that names ``module.name`` by its
+    #: dotted path (``"pkg.mod.name"``, ``"pkg.mod:name"``, or a longer path
+    #: through it), in the run's files or the entry points of the
+    #: ``pyproject.toml`` in use, in the order they were found.
+    named: Mapping[tuple[str, str], tuple[StringReference, ...]] = dataclasses.field(
+        default_factory=dict
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class StringReference:
+    """A string literal that addresses a module attribute by its dotted path.
+
+    ``monkeypatch.setattr("pkg.mod.helper", ...)``, ``mock.patch(...)``, an
+    entry point: each keeps working only while ``pkg.mod`` binds ``helper``.
+    See `Resolver.named_by`.
+    """
+
+    #: The string as written (an entry point's value, stripped of extras).
+    text: str
+    #: The file it is in, spelled as the run's findings spell their paths.
+    path: pathlib.Path
+    #: The same file, resolved, to tell whether it is the one asking.
+    origin: pathlib.Path
+    #: Its line in that file, or ``None`` when it cannot be pinned down (a
+    #: ``pyproject.toml`` value in an array, say). A call, because finding it
+    #: can take position metadata for the whole file, and it is wanted only
+    #: for a reference that actually declines a rewrite: rarely, and then once.
+    locate: Callable[[], int | None] = dataclasses.field(compare=False, repr=False)
+
+    def where(self) -> str:
+        """``path:line``, or the path alone when there is no line, for a message."""
+        line = self.locate()
+        return f"{self.path}" if line is None else f"{self.path}:{line}"
 
 
 #: No evidence at all, for a resolver built outside a run -- passed explicitly.
@@ -159,7 +173,7 @@ class Resolver:
     ) -> None:
         self._map = module_map
         self._python = python or sys.executable
-        self._in_process = python is None or _is_this_interpreter(python)
+        self._in_process = python is None or _interpreter.is_this_interpreter(python)
         self._cache: dict[tuple[str, str], bool | None] = {}
         self._evidence = evidence
         self._notes: dict[tuple[str, str], str] = {}
@@ -359,6 +373,38 @@ class Resolver:
         used = (module, name) in evidence.uses or module in evidence.star_imported
         return used and self._map.is_reexport(module, name)
 
+    def named_by(
+        self, module: str, name: str, *, outside: pathlib.Path | None = None
+    ) -> StringReference | None:
+        """A string elsewhere in the run that names ``module.name``, if one would go stale.
+
+        The string-literal half of `is_load_bearing`, and the same two
+        questions: does ``module`` only *re-export* ``name``
+        (`firstparty.ModuleMap.is_reexport`), so rewriting its import removes
+        the attribute, and does some string name it by its dotted path --
+        ``monkeypatch.setattr("pkg.mod.name", ...)``, ``mock.patch``, an
+        ``importlib`` address, an entry point in the ``pyproject.toml`` in
+        use? Such a reference imports, parses and type-checks after the
+        rewrite, and then fails -- or, for a patch, silently patches a name
+        nothing reads any more.
+
+        *outside* is the file doing the asking: a string in the rewritten file
+        itself is not this question's. Under ``--fix`` the string guard
+        (`guards.find_string_mentions`) sees that string mention the name the
+        rewrite would qualify, and declines the whole file with a `CP003`; a
+        plain check reports the import as the `CP001` it is, exactly as it
+        did before this guard existed.
+
+        Returns the first such string in run order, or ``None``. As with
+        `is_load_bearing`, the evidence stops at the run's files -- a dynamic
+        string, or one in a file outside the run, is not seen.
+        """
+        asking = outside.resolve() if outside is not None else None
+        refs = [r for r in self._evidence.named.get((module, name), ()) if r.origin != asking]
+        if refs and self._map.is_reexport(module, name):
+            return refs[0]
+        return None
+
     def reason(self, parent: str, name: str) -> str:
         """Human explanation for an unresolved (``None``) verdict."""
         key = (parent, name)
@@ -420,7 +466,7 @@ class Resolver:
         if self._in_process:
             # Importing a parent runs its code; a package that prints on
             # import must not write into a patch on cleanporter's stdout.
-            with contextlib.redirect_stdout(sys.stderr):
+            with _stdout_to_stderr():
                 flat: dict[str, object] = dict(_probe.classify_many(pairs))
         else:
             reply = self._probe_out_of_process(pairs)
@@ -452,13 +498,22 @@ class Resolver:
         undetermined. "Never guess" applies to the transport exactly as it
         does to the classification: reporting nothing is recoverable,
         guessing wrong in --fix mode is not.
+
+        The pipes carry *bytes*, decoded here as UTF-8 with replacement, never
+        in the locale's encoding: what a probed package writes on either
+        stream is arbitrary, and a strict locale decode (cp1252 on Windows,
+        or UTF-8 meeting a stray 0xFF byte) raised `UnicodeDecodeError` out of
+        the run instead of reading the frame around it. The child is told the
+        same encoding (`_PROBE_IO_ENCODING`), so what it writes arrives in the
+        codec it is read with; the request and the framed reply are ASCII JSON
+        either way, so the frame is found whatever the child's encoding.
         """
         try:
             proc = subprocess.run(
                 [self._python, self._probe_path],
-                input=json.dumps(pairs),
+                input=json.dumps(pairs).encode("ascii"),
                 capture_output=True,
-                text=True,
+                env={**os.environ, "PYTHONIOENCODING": _PROBE_IO_ENCODING},
                 timeout=_PROBE_TIMEOUT,
                 check=False,
             )
@@ -467,7 +522,7 @@ class Resolver:
         except (subprocess.SubprocessError, OSError) as exc:
             why = f"could not be run: {exc}"
         else:
-            reply = _probe.read_reply(proc.stdout or "")
+            reply = _probe.read_reply(proc.stdout.decode("utf-8", "replace"))
             if proc.returncode == 0 and reply is not None:
                 return reply
             status = (
@@ -478,3 +533,67 @@ class Resolver:
             why = status + _stderr_tail(proc.stderr)
         self._failures[why] = self._failures.get(why, 0) + len(pairs)
         return None
+
+
+@contextlib.contextmanager
+def _stdout_to_stderr() -> Generator[None]:
+    """Send what is written to stdout to stderr meanwhile, down to the descriptor.
+
+    ``contextlib.redirect_stdout`` catches ``print`` and ``sys.stdout.write``;
+    an ``os.write(1, ...)``, unbuffered C output or a child process goes
+    straight to file descriptor 1, so that is pointed at descriptor 2 as well
+    (`os.dup2`) and put back afterwards. Both are process-wide: another
+    thread's stdout output is diverted too while this is in effect.
+    Python-level buffers are flushed on the way in and out, so what was
+    written before lands on stdout and what was written during on stderr.
+
+    What this cannot reach is C stdio's own buffer inside an extension: a
+    ``printf`` to a pipe is buffered in the C library, and flushed at process
+    exit, after the descriptor is restored. Only an out-of-process probe
+    (``--python``) contains that.
+
+    It never makes a run fail that the plain redirection would not have: with
+    no ``sys.stdout`` or ``sys.stderr`` (closed with ``>&-``, ``pythonw``), or
+    a descriptor that cannot be duplicated, it falls back to the Python-level
+    redirection alone, and descriptor 1 is restored however the block exits.
+    """
+    original = sys.stdout
+    _flush(original)
+    saved = _divert_descriptor_1()
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        try:
+            # Anything written through a reference to the original
+            # `sys.stdout` object is still buffered: out with it while
+            # descriptor 1 is still stderr.
+            _flush(original)
+            _flush(sys.stderr)
+        finally:
+            if saved is not None:
+                try:
+                    os.dup2(saved, 1)
+                finally:
+                    os.close(saved)
+
+
+def _divert_descriptor_1() -> int | None:
+    """Point descriptor 1 at descriptor 2; a duplicate of the old 1, or ``None`` if not done."""
+    try:
+        saved = os.dup(1)
+    except OSError:  # descriptor 1 closed, or not a real descriptor
+        return None
+    try:
+        os.dup2(2, 1)
+    except OSError:  # descriptor 2 closed (`2>&-`): leave 1 alone
+        os.close(saved)
+        return None
+    return saved
+
+
+def _flush(stream: TextIO | None) -> None:
+    """Flush *stream* if there is one; a closed or broken one is not this run's failure."""
+    if stream is not None:
+        with contextlib.suppress(OSError, ValueError):
+            stream.flush()

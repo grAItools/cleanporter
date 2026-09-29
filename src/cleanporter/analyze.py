@@ -38,7 +38,7 @@ from cleanporter import config, firstparty, model
 from cleanporter import resolver as resolver_lib
 from cleanporter import skip as skip_lib
 
-from . import _imports
+from . import _imports, guards
 
 
 @dataclasses.dataclass
@@ -72,6 +72,14 @@ class FileRecord:
     #: Diffs are computed against these, and the fixer declines a file whose
     #: decoded text would not encode back to them.
     raw: bytes | None = dataclasses.field(default=None, repr=False, compare=False)
+    #: Whether the file is anchored in an import root the user *declared*
+    #: and that passes `firstparty.ModuleMap.root_for_absolute_spelling`,
+    #: which is what lets a top-level package's ``from . import C`` be
+    #: spelled ``import pkg`` (`_imports.module_import_spelling`).
+    declared_root: bool = False
+    #: The *inferred* root the file is anchored in, when declaring it would
+    #: do the same; named in that import's `CP003` (`_imports.unspellable_reason`).
+    root_hint: str = ""
     #: The tree's `FileFacts`, when the caller already walked it for them
     #: (`project.build` must, before it can know ``base_pkg``); otherwise
     #: collected on first use.
@@ -274,6 +282,12 @@ class FileFacts:
     #: "b")``). Reads through a call or a subscript are not dotted names and
     #: are not recorded.
     attribute_reads: frozenset[tuple[str, str]]
+    #: Every string literal whose whole text is a dotted or entry-point path
+    #: (`guards.dotted_reference`), with that text and its components, in
+    #: source order: a plain string, an f-string with no placeholders, or an
+    #: implicit concatenation of those (`_literal_text`). The raw material
+    #: for the cross-file string evidence (`project._named`).
+    path_strings: tuple[tuple[cst.BaseExpression, str, tuple[str, ...]], ...] = ()
 
     @property
     def import_froms(self) -> tuple[cst.ImportFrom, ...]:
@@ -351,6 +365,29 @@ class FileFacts:
         return found
 
 
+def _literal_text(node: cst.SimpleString | cst.FormattedString) -> str | None:
+    """The runtime text of *node* when it is written out literally, else ``None``.
+
+    A path has no escapes, so text holding a backslash is not one, and
+    without one the raw text *is* the value -- no evaluation needed. An
+    f-string counts only with no placeholders (``f"pkg.mod.helper"``); a
+    brace means a placeholder or an escaped brace, neither of which a path
+    has. Bytes are not paths anything imports by.
+    """
+    if "b" in node.prefix.lower():
+        return None
+    if isinstance(node, cst.SimpleString):
+        text = node.raw_value
+    else:
+        pieces: list[str] = []
+        for part in node.parts:
+            if not isinstance(part, cst.FormattedStringText):
+                return None
+            pieces.append(part.value)
+        text = "".join(pieces)
+    return None if "\\" in text or "{" in text or "}" in text else text
+
+
 class _FactCollector(cst.CSTVisitor):
     """The one walk `collect_facts` makes. Every hook returns ``None``: descend."""
 
@@ -358,6 +395,46 @@ class _FactCollector(cst.CSTVisitor):
         super().__init__()
         self.imports: list[cst.Import | cst.ImportFrom] = []
         self.attribute_reads: set[tuple[str, str]] = set()
+        self.path_strings: list[tuple[cst.BaseExpression, str, tuple[str, ...]]] = []
+        #: Ids of strings that are parts of a concatenation, read with it.
+        self._string_parts: set[int] = set()
+
+    def visit_SimpleString(self, node: cst.SimpleString) -> None:
+        if id(node) not in self._string_parts:
+            self._path_string(node, _literal_text(node))
+
+    def visit_FormattedString(self, node: cst.FormattedString) -> None:
+        if id(node) not in self._string_parts:
+            self._path_string(node, _literal_text(node))
+
+    def visit_ConcatenatedString(self, node: cst.ConcatenatedString) -> None:
+        # ``"pkg.mod." "helper"`` is one string at runtime, so it is read
+        # whole, once: its parts -- nested concatenations included -- are
+        # marked so their own visits do not read a fragment as a path.
+        # Descent is not cut short: an f-string's expressions still hold
+        # attribute reads.
+        if id(node) in self._string_parts:
+            return
+        texts: list[str | None] = []
+        pending: list[cst.BaseExpression] = [node.left, node.right]
+        while pending:
+            part = pending.pop(0)
+            self._string_parts.add(id(part))
+            if isinstance(part, cst.ConcatenatedString):
+                pending[:0] = [part.left, part.right]
+            elif isinstance(part, (cst.SimpleString, cst.FormattedString)):
+                texts.append(_literal_text(part))
+            else:  # pragma: no cover - libcst admits nothing else here
+                texts.append(None)
+        if all(t is not None for t in texts):
+            self._path_string(node, "".join(t for t in texts if t is not None))
+
+    def _path_string(self, node: cst.BaseExpression, text: str | None) -> None:
+        if text is None:
+            return
+        parts = guards.dotted_reference(text)
+        if parts is not None:
+            self.path_strings.append((node, text, parts))
 
     def visit_Import(self, node: cst.Import) -> None:
         self.imports.append(node)
@@ -379,7 +456,11 @@ def collect_facts(tree: cst.Module) -> FileFacts:
     """Walk *tree* once and return every `FileFacts` the analysis needs."""
     collector = _FactCollector()
     tree.visit(collector)
-    return FileFacts(tuple(collector.imports), frozenset(collector.attribute_reads))
+    return FileFacts(
+        tuple(collector.imports),
+        frozenset(collector.attribute_reads),
+        tuple(collector.path_strings),
+    )
 
 
 def iter_units(tree: cst.Module, base_pkg: str) -> Iterator[ImportUnit]:
@@ -601,6 +682,10 @@ class Decider:
             return Decision(model.Status.UNRESOLVED, self._resolver.reason(parent, unit.name))
         return self._declined(unit, parent, never_read) or VIOLATION
 
+    def own_init(self, parent: str) -> bool:
+        """Whether the record's file is *parent*'s own ``__init__.py``."""
+        return self._rec.path.name == "__init__.py" and self._rec.qualname == parent
+
     def _declined(
         self, unit: ImportUnit, parent: str, never_read: frozenset[str]
     ) -> Decision | None:
@@ -612,9 +697,16 @@ class Decider:
         root (`_imports.module_import_spelling`), or the one there is cannot
         be shown to bind the module.
         """
-        spelling = _imports.module_import_spelling(unit.node, parent)
+        spelling = _imports.module_import_spelling(
+            unit.node, parent, declared_root=self._rec.declared_root
+        )
         if spelling is None:
-            return Decision(model.Status.SKIPPED, _imports.unspellable_reason(unit.node, parent))
+            return Decision(
+                model.Status.SKIPPED,
+                _imports.unspellable_reason(
+                    unit.node, parent, root_hint=self._rec.root_hint, own_init=self.own_init(parent)
+                ),
+            )
         unreachable = self._resolver.replacement_unreachable(
             parent, _imports.render_import(spelling)
         )
@@ -629,6 +721,15 @@ class Decider:
                 model.Status.SKIPPED,
                 f"another file imports '{bound}' from '{qualname}'; "
                 "rewriting this import would remove that attribute",
+            )
+        named = (
+            self._resolver.named_by(qualname, bound, outside=self._rec.path) if qualname else None
+        )
+        if named is not None:
+            return Decision(
+                model.Status.SKIPPED,
+                f"'{qualname}.{bound}' is named by the string '{named.text}' at "
+                f"{named.where()}; rewriting this import would remove that attribute",
             )
         if bound in never_read:
             return Decision(model.Status.SKIPPED, _UNREAD, unread=True)
@@ -670,6 +771,26 @@ def analyze_record(
                 unit.name,
                 decision.status,
                 decision.detail,
+                _module_import(rec, unit) if decision.rewrite else "",
             )
         )
     return findings
+
+
+def _module_import(rec: FileRecord, unit: ImportUnit) -> str:
+    """The replacement a `CP001`'s message advises, when it is not the plain absolute one.
+
+    Spelled by the function the fixer spells its new statement with
+    (`_imports.module_import_spelling`, then `_imports.render_import`), so
+    the advice for ``from .readers import read`` is ``from . import
+    readers`` -- the statement ``--fix`` would write, give or take the alias
+    it may allocate -- and never the absolute name the inferred root
+    implies. An absolute import's advice is its own parent, already in the
+    message, so it gets none and its text is unchanged.
+    """
+    if unit.parent is None or _imports.relative_level(unit.node) == 0:
+        return ""
+    spelling = _imports.module_import_spelling(
+        unit.node, unit.parent, declared_root=rec.declared_root
+    )
+    return _imports.render_import(spelling) if spelling is not None else ""

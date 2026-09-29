@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+import shutil
+import subprocess
+import sys
 
 import libcst as cst
 
-from cleanporter import analyze, config, firstparty, model, project, rewrite
+from cleanporter import analyze, config, engine, firstparty, model, project, rewrite
 from cleanporter import resolver as resolver_lib
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -170,11 +173,12 @@ def test_scope_first_party_never_classifies_other_imports(tmp_path: pathlib.Path
     """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "mod.py").write_text("THING = 1\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "mod.py").write_text("THING = 1\n", newline="\n")
     (pkg / "a.py").write_text(
         "import os\nfrom functools import partial\nfrom os import path\n"
-        "from pkg.mod import THING\n\nx = partial(THING, path, os)\n"
+        "from pkg.mod import THING\n\nx = partial(THING, path, os)\n",
+        newline="\n",
     )
     asked: list[tuple[str, str]] = []
     real = resolver_lib.Resolver._probe
@@ -204,8 +208,8 @@ def test_scope_first_party_still_classifies_a_reexported_third_party_name(
     """``from pkg import path`` is first-party, but only ``os.path`` can say what it is."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("from os import path\n")
-    (pkg / "a.py").write_text("from pkg import path\n\nx = path.sep\n")
+    (pkg / "__init__.py").write_text("from os import path\n", newline="\n")
+    (pkg / "a.py").write_text("from pkg import path\n\nx = path.sep\n", newline="\n")
     asked: list[tuple[str, str]] = []
     real = resolver_lib.Resolver._probe
 
@@ -249,10 +253,12 @@ def _reexport_tree(tmp_path: pathlib.Path) -> pathlib.Path:
     """`pkg.tool` re-exports `dump`; `pkg.user` imports it from there."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "display.py").write_text("def dump():\n    return 1\n")
-    (pkg / "tool.py").write_text("from pkg.display import dump\n\ndef go():\n    return dump()\n")
-    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n", newline="\n")
+    (pkg / "tool.py").write_text(
+        "from pkg.display import dump\n\ndef go():\n    return dump()\n", newline="\n"
+    )
+    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n", newline="\n")
     return pkg
 
 
@@ -291,9 +297,11 @@ def test_a_reexport_nobody_imports_is_still_fixable(tmp_path: pathlib.Path) -> N
     """No consumer, no hazard: deleting an attribute nothing reads is free."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "display.py").write_text("def dump():\n    return 1\n")
-    (pkg / "tool.py").write_text("from pkg.display import dump\n\ndef go():\n    return dump()\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n", newline="\n")
+    (pkg / "tool.py").write_text(
+        "from pkg.display import dump\n\ndef go():\n    return dump()\n", newline="\n"
+    )
     by_file = _findings_by_file(pkg)
     assert [f.code for f in by_file["tool.py"]] == ["CP001"]
 
@@ -302,13 +310,14 @@ def test_a_name_both_imported_and_defined_is_not_protected(tmp_path: pathlib.Pat
     """A try/except import with a fallback definition survives a rewrite."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "display.py").write_text("def dump():\n    return 1\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n", newline="\n")
     (pkg / "tool.py").write_text(
         "try:\n    from pkg.display import dump\nexcept ImportError:\n"
-        "    def dump():\n        return 0\n"
+        "    def dump():\n        return 0\n",
+        newline="\n",
     )
-    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
+    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n", newline="\n")
     built = project.build([pkg], config.Config(root=pkg.parent))
     resolver = built.resolver
     assert resolver.is_load_bearing("pkg.tool", "dump") is False
@@ -321,12 +330,12 @@ def _shadowed_package_tree(tmp_path: pathlib.Path) -> pathlib.Path:
     place next to a newer packaged one -- the corpus has exactly this in
     ``click_plugins.py`` (2.0dev) beside ``click_plugins/`` (1.1.1.2).
     """
-    (tmp_path / "pkg.py").write_text('def helper():\n    return "flat"\n')
+    (tmp_path / "pkg.py").write_text('def helper():\n    return "flat"\n', newline="\n")
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("from pkg.core import helper\n")
-    (pkg / "core.py").write_text('def helper():\n    return "from package"\n')
-    (tmp_path / "consumer.py").write_text("from pkg import helper\nx = helper()\n")
+    (pkg / "__init__.py").write_text("from pkg.core import helper\n", newline="\n")
+    (pkg / "core.py").write_text('def helper():\n    return "from package"\n', newline="\n")
+    (tmp_path / "consumer.py").write_text("from pkg import helper\nx = helper()\n", newline="\n")
     return tmp_path
 
 
@@ -359,8 +368,8 @@ def test_the_consumer_of_a_shadowed_reexport_is_still_a_violation(
 def _self_shadowing_tree(tmp_path: pathlib.Path, init: str) -> pathlib.Path:
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "serialization.py").write_text('MARK = "pkg"\n')
-    (pkg / "__init__.py").write_text(init)
+    (pkg / "serialization.py").write_text('MARK = "pkg"\n', newline="\n")
+    (pkg / "__init__.py").write_text(init, newline="\n")
     return pkg
 
 
@@ -395,10 +404,10 @@ def _lazy_reexport_tree(tmp_path: pathlib.Path, init: str) -> pathlib.Path:
     """``pkg.sub`` is a package whose ``__init__`` decides what ``mod`` means."""
     pkg = tmp_path / "pkg"
     (pkg / "sub").mkdir(parents=True)
-    (pkg / "__init__.py").write_text("")
-    (pkg / "sub" / "__init__.py").write_text(init)
-    (pkg / "sub" / "mod.py").write_text("def mod():\n    return 1\n\n\nOTHER = 2\n")
-    (pkg / "consumer.py").write_text("from pkg.sub.mod import OTHER\nx = OTHER\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "sub" / "__init__.py").write_text(init, newline="\n")
+    (pkg / "sub" / "mod.py").write_text("def mod():\n    return 1\n\n\nOTHER = 2\n", newline="\n")
+    (pkg / "consumer.py").write_text("from pkg.sub.mod import OTHER\nx = OTHER\n", newline="\n")
     return pkg
 
 
@@ -442,8 +451,8 @@ def test_an_import_from_a_module_this_run_cannot_see_is_unresolved(
     """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "consumer.py").write_text("from pkg.missing.mod import OTHER\nx = OTHER\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "consumer.py").write_text("from pkg.missing.mod import OTHER\nx = OTHER\n", newline="\n")
     findings = _findings_by_file(pkg)["consumer.py"]
     assert [f.code for f in findings] == ["CP002"]
     assert "'pkg.missing.mod' is not a module or package on disk" in (findings[0].detail)
@@ -522,13 +531,13 @@ def test_a_skipped_file_still_contributes_reexport_evidence(tmp_path: pathlib.Pa
     """
     root = tmp_path / "src"
     (root / "demo").mkdir(parents=True)
-    (root / "demo" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "demo" / "origin.py").write_text("THING = 1\n", encoding="utf-8")
+    (root / "demo" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (root / "demo" / "origin.py").write_text("THING = 1\n", encoding="utf-8", newline="\n")
     (root / "demo" / "helpers.py").write_text(
-        "from demo.origin import THING\nx = THING\n", encoding="utf-8"
+        "from demo.origin import THING\nx = THING\n", encoding="utf-8", newline="\n"
     )
     (root / "demo" / "conftest.py").write_text(
-        "from demo.helpers import THING\ny = THING\n", encoding="utf-8"
+        "from demo.helpers import THING\ny = THING\n", encoding="utf-8", newline="\n"
     )
     from cleanporter import config as config_lib
 
@@ -628,6 +637,7 @@ class _RecordingFixer(rewrite._Fixer):
 #: One package reaching every finding the decision can produce -- stdlib and
 #: first-party objects, modules, exemptions, a wildcard, an unresolvable and
 #: an unanchorable parent, relative, aliased, re-exported, load-bearing,
+#: named-by-a-string,
 #: never-read, unreachable-replacement, no-relative-spelling, function-local, TYPE_CHECKING-gated,
 #: skip-pinned, skip-covered and guard-blocked imports.
 _AGREEMENT_TREE = {
@@ -646,6 +656,9 @@ _AGREEMENT_TREE = {
     "near.py": "from . import THING\n\nx = THING\n",
     "relay.py": "from app.helpers import go\n\ndef run():\n    return go()\n",
     "consumer.py": "from app.relay import go\n\nvalue = go()\n",
+    # Nothing imports `go` from `app.named`, but a string names it by path.
+    "named.py": "from app.helpers import go\n\ndef run():\n    return go()\n",
+    "patcher.py": 'TARGET = "app.named.go"\n',
     "skipped.py": (
         "from app.helpers import Widget\n"
         "\n"
@@ -654,6 +667,19 @@ _AGREEMENT_TREE = {
         "    return Widget(), go()\n"
     ),
     "blocked.py": 'from app.helpers import go\n\n__all__ = ["go"]\nx = go()\n',
+    # Files whose only `CP001` is not a module-level import, or is one the
+    # fixer turns into a `CP003`: `rewrite._has_candidates` must still see it.
+    "nested.py": "def later():\n    from app.helpers import go\n\n    return go()\n",
+    "gated.py": (
+        "from typing import TYPE_CHECKING\n"
+        "\n"
+        "if TYPE_CHECKING:\n"
+        "    from app.helpers import Widget\n"
+        "\n"
+        "def make(w: 'Widget') -> None:\n"
+        "    pass\n"
+    ),
+    "unread.py": "from app.helpers import go\n",
     "user.py": (
         "from __future__ import annotations\n"
         "from typing import TYPE_CHECKING, Any\n"
@@ -687,6 +713,9 @@ _AGREEMENT_CONFIGS: dict[str, dict[str, object]] = {
     "skip": {"skip": [{"function": "kept"}]},
     "skip-file": {"skip": [{"file": r".*user\.py"}]},
     "first-party+skip": {"scope": "first-party", "skip": [{"function": "kept"}]},
+    # `app`'s parent declared as a root: `near.py`'s `from . import THING`
+    # may then be spelled `import app`, and is a `CP001` in both modes.
+    "declared-root": {"source_roots": ["."]},
 }
 
 _Key = tuple[int, str, str]
@@ -714,7 +743,7 @@ def _agreement(tmp_path: pathlib.Path, table: dict[str, object]) -> dict[str, _A
     root = tmp_path / "app"
     for rel, text in _AGREEMENT_TREE.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        (root / rel).write_text(text, encoding="utf-8")
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
     cfg = config._parse_table(table, tmp_path)
     built = project.build([root], cfg)
     records, resolver, errors = built.records, built.resolver, built.errors
@@ -765,6 +794,8 @@ def _rung(finding: model.Finding) -> str:
         return "CP003 no relative spelling"
     if finding.detail.startswith("another file imports"):
         return "CP003 load-bearing"
+    if "is named by the string" in finding.detail:
+        return "CP003 named by a string"
     if finding.detail.startswith("the replacement"):
         return "CP003 unreachable"
     return "CP003 other"
@@ -788,6 +819,7 @@ def test_the_agreement_tree_reaches_every_outcome(tmp_path):
         "CP003 re-export",
         "CP003 never read",
         "CP003 load-bearing",
+        "CP003 named by a string",
         "CP003 unreachable",
         "CP003 no relative spelling",
         "CP004",
@@ -810,9 +842,432 @@ def test_the_agreement_tree_reaches_every_outcome(tmp_path):
     assert ("os.path", "join") not in names("first-party")
 
 
+def test_a_declared_root_turns_the_unspellable_import_into_a_cp001(tmp_path):
+    """The one config that changes `near.py`'s answer, in both modes at once."""
+    inferred = _agreement(tmp_path / "inferred", {})["near.py"]
+    assert [_rung(f) for f in inferred.check] == ["CP003 no relative spelling"]
+    assert "is where Python imports it from, declaring it with --root" in inferred.check[0].detail
+    assert inferred.rewritten == set()
+    declared = _agreement(tmp_path / "declared", {"source_roots": ["."]})["near.py"]
+    assert [f.code for f in declared.check] == ["CP001"]
+    assert [f.code for f in declared.fix_mode] == ["CP001"]
+    assert declared.rewritten == {(1, "app", "THING")}
+
+
 def test_the_agreement_check_is_not_vacuous(tmp_path):
     user = _agreement(tmp_path / "all", {})["user.py"]
     assert {(3, "os.path", "join"), (5, "app.helpers", "go")} <= user.rewritten
     user = _agreement(tmp_path / "fp", {"scope": "first-party"})["user.py"]
     assert not {k for k in user.rewritten | _violations(user.check) if k[1] == "os.path"}
     assert (5, "app.helpers", "go") in user.rewritten
+
+
+# -- the fixer runs only where there is something to fix -----------------------
+def _write_agreement_tree(root: pathlib.Path) -> None:
+    for rel, text in _AGREEMENT_TREE.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
+
+
+def _snapshot(root: pathlib.Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes() for p in sorted(root.rglob("*.py"))}
+
+
+def test_skipping_files_without_a_cp001_changes_no_output(tmp_path, monkeypatch):
+    """The short-circuit in `rewrite.fix_record` is an optimisation, never a decision.
+
+    Every config shape the agreement tests use, in both modes that run the
+    fixer, over the tree that reaches every outcome: run once as shipped, and
+    once with `rewrite._has_candidates` forced true -- scope analysis on every
+    file, as before it existed. The results (findings, patches, warnings) and
+    what is left on disk are identical. And it did fire, on some files and
+    not on others, or this would prove nothing.
+    """
+    real = rewrite._has_candidates
+    answers: list[bool] = []
+
+    def recording(
+        rec: analyze.FileRecord, resolver: resolver_lib.Resolver, cfg: config.Config
+    ) -> bool:
+        answer = real(rec, resolver, cfg)
+        answers.append(answer)
+        return answer
+
+    def always(
+        _rec: analyze.FileRecord, _resolver: resolver_lib.Resolver, _cfg: config.Config
+    ) -> bool:
+        return True
+
+    monkeypatch.chdir(tmp_path)  # the patches' headers are relative to it
+    for label, table in _AGREEMENT_CONFIGS.items():
+        for mode in (engine.Mode.DIFF, engine.Mode.FIX):
+            runs: list[tuple[engine.RunResult, dict[str, bytes]]] = []
+            for index, gate in enumerate((recording, always)):
+                # The same path both times, so the results compare as they are.
+                work = tmp_path / label / mode.value
+                if index:
+                    shutil.rmtree(work)
+                _write_agreement_tree(work / "app")
+                monkeypatch.setattr(rewrite, "_has_candidates", gate)
+                result = engine.run([work / "app"], config._parse_table(table, work), mode)
+                runs.append((result, _snapshot(work / "app")))
+            assert runs[0] == runs[1], (label, mode)
+    assert set(answers) == {True, False}
+
+
+def test_a_file_without_a_cp001_gets_no_scope_analysis(tmp_path, monkeypatch):
+    """The metadata the fixer needs is built for exactly the files with a `CP001`.
+
+    Those are the files ``check`` reports one in, wherever the import sits --
+    ``nested.py``'s only one is function-local and ``gated.py``'s is under
+    ``if TYPE_CHECKING:`` -- and including ``unread.py``, whose only `CP001`
+    becomes a `CP003` under ``--fix``: only the fixer's scope analysis can
+    find a name nothing reads.
+    """
+    root = tmp_path / "app"
+    _write_agreement_tree(root)
+    cfg = config.Config(root=tmp_path)
+    checked = engine.run([root], cfg)
+    with_cp001 = {f.path for f in checked.findings if f.code == "CP001"}
+    assert {root / "nested.py", root / "gated.py", root / "unread.py"} <= with_cp001
+
+    # `cst.MetadataWrapper` is handed only a tree, so the file it belongs to
+    # is noted on the way into `fix_record`.
+    real_fix, real_wrapper = rewrite.fix_record, cst.MetadataWrapper
+    fixing: list[pathlib.Path] = []
+    wrapped: list[pathlib.Path] = []
+
+    def noting(
+        rec: analyze.FileRecord, resolver: resolver_lib.Resolver, cfg: config.Config
+    ) -> rewrite.FixOutcome:
+        fixing.append(rec.path)
+        return real_fix(rec, resolver, cfg)
+
+    def spy(module: cst.Module, *, unsafe_skip_copy: bool = False) -> cst.MetadataWrapper:
+        wrapped.append(fixing[-1])
+        return real_wrapper(module, unsafe_skip_copy=unsafe_skip_copy)
+
+    monkeypatch.setattr(rewrite, "fix_record", noting)
+    monkeypatch.setattr(cst, "MetadataWrapper", spy)
+    engine.run([root], cfg, engine.Mode.DIFF)
+    assert len(fixing) == len(_AGREEMENT_TREE), "the fixer is still asked about every file"
+    assert len(wrapped) == len(set(wrapped)), "one metadata build per file"
+    assert set(wrapped) == with_cp001
+    assert 0 < len(with_cp001) < len(_AGREEMENT_TREE)
+
+
+# -- a declared root spells a top-level package's own import absolutely --------
+def _top_level_tree(root: pathlib.Path, package: str = "toppkg") -> pathlib.Path:
+    files = {
+        "__init__.py": "VERSION = '1.0'\n\ndef helper():\n    return 'h'\n",
+        "cli.py": "from . import VERSION, helper\n\ndef main():\n    return VERSION, helper()\n",
+        "sub/__init__.py": "",
+        "sub/deep.py": "from .. import helper\n\ndef run():\n    return helper()\n",
+    }
+    for rel, text in files.items():
+        path = root / package / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+    return root / package
+
+
+def test_a_declared_root_lets_fix_rewrite_a_top_level_package_import(tmp_path):
+    pkg = _top_level_tree(tmp_path)
+    cfg = config._parse_table({"source_roots": ["."]}, tmp_path)
+    checked = engine.run([pkg], cfg)
+    assert {(f.path.name, f.name, f.code) for f in checked.findings} == {
+        ("cli.py", "VERSION", "CP001"),
+        ("cli.py", "helper", "CP001"),
+        ("deep.py", "helper", "CP001"),
+    }
+    fixed = engine.run([pkg], cfg, engine.Mode.FIX)
+    assert fixed.exit_code() == 0, fixed.findings
+    assert (pkg / "cli.py").read_text(encoding="utf-8") == (
+        "import toppkg\n\ndef main():\n    return toppkg.VERSION, toppkg.helper()\n"
+    )
+    assert (pkg / "sub" / "deep.py").read_text(encoding="utf-8") == (
+        "import toppkg\n\ndef run():\n    return toppkg.helper()\n"
+    )
+    # And the rewritten package still runs.
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import toppkg.cli, toppkg.sub.deep; print(toppkg.cli.main(), toppkg.sub.deep.run())",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert proc.stdout.strip() == "('1.0', 'h') h"
+
+
+def test_an_inferred_root_keeps_the_top_level_package_import(tmp_path):
+    pkg = _top_level_tree(tmp_path)
+    cfg = config.Config(root=tmp_path)
+    before = {p: p.read_bytes() for p in pkg.rglob("*.py")}
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([pkg], cfg, mode)
+        assert {f.code for f in result.findings} == {"CP003"}, mode
+    assert {p: p.read_bytes() for p in pkg.rglob("*.py")} == before
+
+
+def test_a_declared_root_never_spells_a_stdlib_name(tmp_path):
+    """`import io` is the standard library's, whatever the declared root holds."""
+    pkg = _top_level_tree(tmp_path, package="io")
+    cfg = config._parse_table({"source_roots": ["."]}, tmp_path)
+    before = {p: p.read_bytes() for p in pkg.rglob("*.py")}
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([pkg], cfg, mode)
+        found = [f for f in result.findings if f.path.name == "cli.py"]
+        assert {f.code for f in found} == {"CP003"}, mode
+        assert all("standard library's 'io'" in f.detail for f in found)
+    assert {p: p.read_bytes() for p in pkg.rglob("*.py")} == before
+
+
+# -- a CP001's advice spells the import as the fixer would ---------------------
+def _messages(root: pathlib.Path, files: dict[str, str], **table: object) -> dict[str, str]:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
+    result = engine.run([root], config._parse_table(dict(table), root))
+    return {
+        f"{f.path.relative_to(root).as_posix()}:{f.name}": f.message
+        for f in result.findings
+        if f.code == "CP001"
+    }
+
+
+def test_a_relative_cp001_advises_the_relative_replacement(tmp_path):
+    messages = _messages(
+        tmp_path,
+        {
+            "app/__init__.py": "",
+            "app/helpers.py": "THING = 1\n",
+            "app/user.py": "from .helpers import THING\n\nx = THING\n",
+            "app/sub/__init__.py": "VALUE = 2\n",
+            "app/sub/tool.py": "def dump():\n    return 3\n",
+            "app/sub/deep.py": (
+                "from . import VALUE\nfrom ..sub.tool import dump\n\nx = VALUE, dump()\n"
+            ),
+            "app/plain.py": "from app.helpers import THING\n\nx = THING\n",
+        },
+    )
+    assert messages == {
+        "app/user.py:THING": (
+            "imports object 'THING' from module 'app.helpers'; "
+            "import the module ('from . import helpers') and use 'helpers.THING'"
+        ),
+        "app/sub/deep.py:VALUE": (
+            "imports object 'VALUE' from module 'app.sub'; "
+            "import the module ('from .. import sub') and use 'sub.VALUE'"
+        ),
+        "app/sub/deep.py:dump": (
+            "imports object 'dump' from module 'app.sub.tool'; "
+            "import the module ('from ..sub import tool') and use 'tool.dump'"
+        ),
+        # An absolute import's text is what it always was.
+        "app/plain.py:THING": (
+            "imports object 'THING' from module 'app.helpers'; "
+            "import the module and use 'helpers.THING'"
+        ),
+    }
+
+
+def test_the_advice_never_names_the_module_the_inferred_root_implies(tmp_path):
+    """`analytics/` is a namespace directory inferred as a root.
+
+    The absolute name is then `io.readers`, and `from io import readers` is
+    the standard library: the advice stays relative, as the fixer's would.
+    """
+    messages = _messages(
+        tmp_path,
+        {
+            "analytics/io/__init__.py": "from .readers import read\n\nx = read\n",
+            "analytics/io/readers.py": "def read():\n    return 1\n",
+        },
+    )
+    assert messages == {
+        "analytics/io/__init__.py:read": (
+            "imports object 'read' from module 'io.readers'; "
+            "import the module ('from . import readers') and use 'readers.read'"
+        )
+    }
+
+
+def test_a_declared_root_advises_the_absolute_package_import(tmp_path):
+    pkg = _top_level_tree(tmp_path)
+    result = engine.run([pkg], config._parse_table({"source_roots": ["."]}, tmp_path))
+    deep = [f.message for f in result.findings if f.path.name == "deep.py"]
+    assert deep == [
+        (
+            "imports object 'helper' from module 'toppkg'; "
+            "import the module ('import toppkg') and use 'toppkg.helper'"
+        )
+    ]
+
+
+# -- statement order after a star import is not read ---------------------------
+def test_a_circular_read_past_a_star_import_is_cp002_and_never_rewritten(tmp_path):
+    """A definition after ``from os import *`` is not what a circular importer sees.
+
+    ``app.c`` runs in the middle of ``app.m`` (``from app import c``), so its
+    ``path`` is the star's ``os.path``; rewriting it to ``m.path`` reads the
+    function instead, and ``path.join`` raises AttributeError.
+    """
+    files = {
+        "app/__init__.py": "",
+        "app/m.py": 'from os import *\nfrom app import c\ndef path():\n    return "func"\n',
+        "app/c.py": 'from app.m import path\ndef f():\n    return path.join("a", "b")\n',
+    }
+    for rel, text in files.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text, encoding="utf-8", newline="\n")
+    cfg = config.Config(root=tmp_path)
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([tmp_path / "app"], cfg, mode)
+        found = {(f.path.name, f.code) for f in result.findings if f.name == "path"}
+        assert found == {("c.py", "CP002")}, mode
+    assert (tmp_path / "app" / "c.py").read_text(encoding="utf-8") == files["app/c.py"]
+
+
+# -- a declared root is taken at its word only when it is structurally sound ----
+def _write_tree(root: pathlib.Path, files: dict[str, str]) -> dict[pathlib.Path, bytes]:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
+    return {root / rel: (root / rel).read_bytes() for rel in files}
+
+
+def _stays_cp003(root: pathlib.Path, table: dict[str, object], file: str) -> list[str]:
+    """Check and fix both keep *file*'s unspellable import; every file byte-identical."""
+    before = {p: p.read_bytes() for p in root.rglob("*.py")}
+    cfg = config._parse_table(table, root)
+    details: list[str] = []
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([root / "src" if (root / "src").is_dir() else root], cfg, mode)
+        found = [f for f in result.findings if f.path == root / file]
+        assert [f.code for f in found] == ["CP003"], (mode, found)
+        details.append(found[0].detail)
+    assert {p: p.read_bytes() for p in root.rglob("*.py")} == before
+    return details
+
+
+def test_a_root_declared_inside_the_package_keeps_the_cp003(tmp_path):
+    """``source_roots = ["src/toppkg"]``: `import utils` could be any top-level `utils`."""
+    _write_tree(
+        tmp_path,
+        {
+            "src/toppkg/__init__.py": "from .utils import cli\n",
+            "src/toppkg/utils/__init__.py": 'def helper():\n    return "mine"\n',
+            "src/toppkg/utils/cli.py": "from . import helper\ndef main():\n    return helper()\n",
+            "elsewhere/utils/__init__.py": 'def helper():\n    return "IMPOSTOR"\n',
+        },
+    )
+    (detail, _) = _stays_cp003(
+        tmp_path, {"source_roots": ["src/toppkg"]}, "src/toppkg/utils/cli.py"
+    )
+    assert "declaring it" not in detail
+
+
+def test_nested_roots_keep_the_cp003(tmp_path):
+    """``src`` declared, and a ``tests`` package makes the repository root a root too."""
+    _write_tree(
+        tmp_path,
+        {
+            "src/toppkg/__init__.py": "def helper():\n    return 1\n",
+            "src/toppkg/cli.py": "from . import helper\ndef main():\n    return helper()\n",
+            "tests/__init__.py": "",
+            "tests/test_cli.py": "def test_it():\n    pass\n",
+        },
+    )
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*.py")}
+    cfg = config._parse_table({"source_roots": ["src"]}, tmp_path)
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([tmp_path / "src", tmp_path / "tests"], cfg, mode)
+        found = [f.code for f in result.findings if f.path.name == "cli.py"]
+        assert found == ["CP003"], mode
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*.py")} == before
+
+
+def test_a_package_two_declared_roots_hold_keeps_the_cp003(tmp_path):
+    files = {
+        f"{side}/toppkg/{rel}": text
+        for side in ("a", "b")
+        for rel, text in {
+            "__init__.py": f'def helper():\n    return "{side}"\n',
+            "cli.py": "from . import helper\ndef main():\n    return helper()\n",
+        }.items()
+    }
+    _write_tree(tmp_path, files)
+    _stays_cp003(tmp_path, {"source_roots": ["a", "b"]}, "a/toppkg/cli.py")
+
+
+def test_the_package_own_init_keeps_the_cp003_under_a_declared_root(tmp_path):
+    _write_tree(
+        tmp_path,
+        {
+            "src/toppkg/__init__.py": (
+                "def helper():\n    return 1\n\nfrom . import helper as again\n\nx = again()\n"
+            ),
+        },
+    )
+    _stays_cp003(tmp_path, {"source_roots": ["src"]}, "src/toppkg/__init__.py")
+
+
+def test_the_hint_names_the_inferred_root_and_not_for_a_stdlib_name(tmp_path):
+    pkg = _top_level_tree(tmp_path / "plain")
+    result = engine.run([pkg], config.Config(root=tmp_path / "plain"))
+    detail = next(f.detail for f in result.findings if f.path.name == "deep.py")
+    assert f"(if '{(tmp_path / 'plain').resolve()}' is where Python imports it from" in detail
+    assert detail.endswith("lets --fix write 'import toppkg')")
+
+    pkg = _top_level_tree(tmp_path / "std", package="cgi")  # stdlib only before 3.13
+    result = engine.run([pkg], config.Config(root=tmp_path / "std"))
+    detail = next(f.detail for f in result.findings if f.path.name == "deep.py")
+    assert "standard library's 'cgi'" in detail
+    assert "declaring" not in detail
+
+
+_R10 = {
+    "lib/__init__.py": "from .vendor.toppkg import cli\n",
+    "lib/vendor/toppkg/__init__.py": 'def helper():\n    return "vendored"\n',
+    "lib/vendor/toppkg/cli.py": "from . import helper\ndef main():\n    return helper()\n",
+    "site/toppkg/__init__.py": 'def helper():\n    return "OTHER COPY"\n',
+}
+
+
+def test_a_declared_root_below_a_package_keeps_the_cp003_whatever_the_run_is_given(tmp_path):
+    """``source_roots = ["lib/vendor"]`` under a ``lib/__init__.py``.
+
+    ``toppkg`` is really ``lib.vendor.toppkg``; ``import toppkg`` would bind
+    whichever ``toppkg`` is on ``sys.path``. Refused in a run over the
+    subtree -- which never reads ``lib/__init__.py`` -- as in one over all.
+    """
+    for label, paths in (("subtree", ["lib/vendor"]), ("all", ["."])):
+        work = tmp_path / label
+        _write_tree(work, _R10)
+        before = {p: p.read_bytes() for p in work.rglob("*.py")}
+        cfg = config._parse_table({"source_roots": ["lib/vendor"]}, work)
+        for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+            result = engine.run([work / p for p in paths], cfg, mode)
+            found = [f.code for f in result.findings if f.path.name == "cli.py"]
+            assert found == ["CP003"], (label, mode, result.findings)
+        assert {p: p.read_bytes() for p in work.rglob("*.py")} == before, label
+
+
+def test_a_package_own_init_has_its_own_reason(tmp_path):
+    _write_tree(
+        tmp_path,
+        {
+            "src/toppkg/__init__.py": (
+                "def helper():\n    return 1\n\nfrom . import helper as again\n\nx = again()\n"
+            ),
+        },
+    )
+    tables: list[dict[str, object]] = [{}, {"source_roots": ["src"]}]
+    for table in tables:
+        detail = _stays_cp003(tmp_path, table, "src/toppkg/__init__.py")[0]
+        assert "'toppkg''s own __init__ names the package itself" in detail, table
+        assert "declaring" not in detail

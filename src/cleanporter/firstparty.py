@@ -92,6 +92,23 @@ def _root_for(path: pathlib.Path) -> pathlib.Path:
     return d.parent if (d / "__init__.py").is_file() else d
 
 
+def _inside_a_package(root: pathlib.Path, project_root: pathlib.Path) -> bool:
+    """Whether *root*, or a directory above it, holds an ``__init__.py``.
+
+    The walk stops at *project_root*, inclusive, when *root* lies under it,
+    and at the filesystem root otherwise -- a directory above the project is
+    not the project's to be a package, and one above an outside root is all
+    there is to go on.
+    """
+    stop = project_root if root.is_relative_to(project_root) else None
+    for directory in (root, *root.parents):
+        if (directory / "__init__.py").is_file():
+            return True
+        if directory == stop:
+            break
+    return False
+
+
 def _nesting_warnings(roots: list[pathlib.Path]) -> list[str]:
     """One warning per pair of inferred roots where one contains the other.
 
@@ -846,9 +863,74 @@ class ModuleMap:
         import; the best-ranked candidate is returned anyway so the import is
         reported as CP002 rather than vanishing.
         """
+        anchor = self._anchor(path, relative_level)
+        return None if anchor is None else anchor[1]
+
+    def root_for_absolute_spelling(
+        self, path: pathlib.Path, relative_level: int = 0, *, project_root: pathlib.Path
+    ) -> pathlib.Path | None:
+        """The root *path* is anchored in, when it could vouch for ``import pkg``.
+
+        ``from . import C`` in a top-level package ``pkg`` has no relative
+        replacement, and the absolute ``import pkg`` is only as good as the
+        claim that this root is on ``sys.path`` (`_imports.module_import_spelling`).
+        An inferred root is a reading of the directory tree, and never makes
+        that claim; a declared one is the user making it -- but only a root
+        that is not self-evidently wrong is taken at its word. So this is the
+        winning root of `qualname_for` when *all* of these hold, and ``None``
+        otherwise:
+
+        * the file really anchors there (rules 1 and 1b of `qualname_for`);
+        * neither the root nor any directory above it, up to and including
+          *project_root* (up to the filesystem root for a root outside it), is
+          a regular package (holds an ``__init__.py``): ``--root src/pkg``
+          puts a package's *inside* on ``sys.path``, and so does
+          ``--root lib/vendor`` under a ``lib/__init__.py`` that imports
+          ``.vendor.toppkg`` -- ``toppkg`` is then ``lib.vendor.toppkg``, and
+          ``import toppkg`` can name some other top-level ``toppkg``. This is
+          read from the disk, not from the run's roots, so it does not depend
+          on which paths the run was given;
+        * it neither nests inside nor contains another root, declared or
+          inferred -- the case `_nesting_warnings` already warns about, where
+          the same file has two dotted names;
+        * no other root holds a top-level ``pkg`` too, so ``import pkg`` has
+          one candidate, not a ``sys.path`` race;
+        * the file is not ``pkg``'s own ``__init__``, where ``import pkg``
+          would only bind the package to a name inside itself.
+
+        The caller decides what to do with an inferred root that passes:
+        `project` offers it in the `CP003` message as the root that, if
+        declared, would lift the finding, and uses a declared one to allow
+        the spelling.
+        """
+        anchor = self._anchor(path, relative_level)
+        if anchor is None or not anchor[2]:
+            return None
+        root, dotted, _usable = anchor
+        top = dotted.split(".", 1)[0]
+        if not top or (path.name == "__init__.py" and "." not in dotted):
+            return None
+        if _inside_a_package(root, project_root.resolve()):
+            return None
+        for other in self.roots:
+            if other == root or other in self._demoted:
+                continue
+            if other.is_relative_to(root) or root.is_relative_to(other):
+                return None
+            if (other / top).is_dir() or any(
+                _is_importable_file(child) and _module_stem(child) == top
+                for child in other.glob(f"{top}.*")
+            ):
+                return None
+        return root
+
+    def _anchor(
+        self, path: pathlib.Path, relative_level: int
+    ) -> tuple[pathlib.Path, str, bool] | None:
+        """``(root, dotted name, usable)`` for *path* by the rules in `qualname_for`."""
         path = path.resolve()
-        best: tuple[tuple[bool, int], str] | None = None
-        chosen: tuple[tuple[bool, int], str] | None = None
+        best: tuple[tuple[bool, int], pathlib.Path, str] | None = None
+        chosen: tuple[tuple[bool, int], pathlib.Path, str] | None = None
         for root in self.roots:
             try:
                 rel = path.relative_to(root)
@@ -861,10 +943,11 @@ class ModuleMap:
             if parts and parts[-1] == "__init__":
                 parts.pop()
             rank = (root in self.declared, len(root.parts))  # rules 2 then 3
-            candidate = (rank, ".".join(parts))
+            candidate = (rank, root, ".".join(parts))
             if best is None or rank > best[0]:
                 best = candidate
             if usable and (chosen is None or rank > chosen[0]):
                 chosen = candidate
-        winner = chosen or best
-        return None if winner is None else winner[1]
+        if chosen is not None:
+            return chosen[1], chosen[2], True
+        return None if best is None else (best[1], best[2], False)
