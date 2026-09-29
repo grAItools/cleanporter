@@ -82,6 +82,15 @@ class AliasConfigError(ValueError):
     """An alias rule, or a ruff alias table, that cannot be used as written."""
 
 
+def usable_name(name: str) -> bool:
+    """Whether *name* can be bound by an import: an identifier, not a keyword, not ``__debug__``.
+
+    ``import json as __debug__`` is a `SyntaxError` like ``import json as if``.
+    Soft keywords (``match``, ``type``, ``_``) are ordinary names here.
+    """
+    return name.isidentifier() and not keyword.iskeyword(name) and name != "__debug__"
+
+
 @functools.cache
 def compile_module_pattern(pattern: str) -> re.Pattern[str]:
     """*pattern*, a ``module`` pattern, as a regex; `AliasConfigError` if malformed."""
@@ -119,7 +128,9 @@ def check_template(template: str) -> None:
 
     The only field is ``{leaf}``, with no conversion or format spec; stray or
     escaped braces are refused. With a sample identifier for ``{leaf}`` the
-    result must be an identifier and not a keyword.
+    result must be a `usable_name`. A template can still render an unusable
+    name for some particular leaf (``i{leaf}`` for a module ``f``); that is
+    only known once a module is matched, and `Expectation.usable` says so.
     """
     try:
         pieces = list(string.Formatter().parse(template))
@@ -131,8 +142,8 @@ def check_template(template: str) -> None:
         if field is not None and (field != _LEAF or spec or conversion):
             raise AliasConfigError(f"{template!r} has a field other than {{leaf}}")
     sample = render(template, "sample")
-    if not sample.isidentifier() or keyword.iskeyword(sample):
-        raise AliasConfigError(f"{template!r} does not make an identifier")
+    if not usable_name(sample):
+        raise AliasConfigError(f"{template!r} does not make a name an import can bind")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -187,6 +198,17 @@ class Expectation:
     @property
     def own_name(self) -> bool:
         return self.name is None
+
+    @property
+    def usable(self) -> bool:
+        """Whether `binding` can be bound at all (`usable_name`).
+
+        False only when a ``{leaf}`` template renders a keyword or
+        ``__debug__`` for this module. No binding can then satisfy the rule:
+        the check reports every binding it judges, naming the rendered name,
+        and the fixer declines the file rather than write it.
+        """
+        return self.name is None or usable_name(self.name)
 
     @property
     def binding(self) -> str:
@@ -330,7 +352,7 @@ def _ruff_table(table: dict[str, object], where: str) -> tuple[Rule, ...]:
             name = str(module)
             if not all(part.isidentifier() for part in name.split(".")):
                 raise AliasConfigError(f"{origin}: {name!r} is not a dotted module name")
-            if not isinstance(alias, str) or not alias.isidentifier() or keyword.iskeyword(alias):
+            if not isinstance(alias, str) or not usable_name(alias):
                 raise AliasConfigError(f"{origin}.{name!r} must be an identifier, got {alias!r}")
             merged[name] = (alias, origin)
     return tuple(

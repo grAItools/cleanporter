@@ -234,9 +234,13 @@ When an [`alias` rule](configuration.md#alias-rules) applies to the module a
 rewrite would bind, the new binding must have the configured name (or, for
 `as = false`, the module's own leaf). If that name is already taken where the
 binding would go — the same set of names that makes an unconfigured rewrite
-fall back to `helpers_2` — no other name will do: a suffixed one breaks the
+fall back to `helpers_2`, which includes a builtin read there, so `from
+demo.list import go` with `list(go())` becomes `from demo import list as
+list_2` — no other name will do: a suffixed one breaks the
 convention, and `--fix` never introduces a `CP006`. The file is declined, with
-a `CP003` naming the alias, the module and the rule.
+a `CP003` naming the alias, the module and the rule. The same happens when a
+`{leaf}` template renders a name no import can bind (a keyword, or
+`__debug__`) for the module being bound.
 
 ### The file's encoding cannot hold the rewrite unchanged
 

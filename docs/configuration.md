@@ -622,7 +622,7 @@ Two things follow from a rule:
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `module` | yes | The module the rule is about: dotted components, where a component `*` matches exactly one component and `**` one or more. `numpy` matches `numpy` only; `gt4py.next.*` matches `gt4py.next.ffront` but neither `gt4py.next` nor `gt4py.next.ffront.decorator`; `gt4py.**` matches both of those. There is no other wildcard: `num*` is an error. |
-| `as` | yes | The name: an identifier (`"np"`); a template in which `{leaf}` stands for the last component of the matched module (`"gtx_{leaf}"`); or `false`, the module's **own name** — `import M` for a top-level module, `from P import L` for a submodule (a binding named after its leaf). Any other `{...}` field, a conversion or format spec, a stray brace, or a result that is not an identifier or is a keyword, is an error. |
+| `as` | yes | The name: an identifier (`"np"`); a template in which `{leaf}` stands for the last component of the matched module (`"gtx_{leaf}"`); or `false`, the module's **own name** — `import M` for a top-level module, `from P import L` for a submodule (a binding named after its leaf). Any other `{...}` field, a conversion or format spec, a stray brace, or a result that is not an identifier, is a keyword or is `__debug__`, is an error. A template can still render such a name for one particular module (`"i{leaf}"` for a module `f` gives `if`): every binding of that module is then reported `CP006`, with a message naming the rendered name, and `--fix` declines any file that would need it (`CP003`). |
 | `importer` | no | A regex, `re.fullmatch`ed against the importing file's dotted module name (`gt4py.next.ffront.decorator`). A file whose module name cannot be determined never matches it. |
 | `file` | no | A regex, `re.fullmatch`ed against the importing file's path relative to the project root, POSIX-spelled (`src/gt4py/next/ffront/decorator.py`) — the same candidate a `skip` rule's `file` is matched against. |
 | `reason` | no | Free text, echoed in every `CP006` and `CP003` the rule causes. |
@@ -650,6 +650,9 @@ a package's `__init__.py` (its [public surface](#a-packages-__init__py), as for
 `CP001`; an import inside a function there is judged); and, under
 `scope = "first-party"`, any module outside your analysis roots — the scope is
 applied as it is to every other finding, so nothing is classified for it.
+Under that scope, alias rules therefore apply only to your own modules: a
+convention for a third-party module, such as ruff's `numpy = "np"`, is
+enforced (and followed by `--fix`) only with `scope = "all"`.
 
 A `skip` rule covering the import's line, or pinning the bound name, turns a
 `CP006` into a `CP004`, as it does a `CP001`; so does an inline
@@ -662,8 +665,9 @@ module and bound name.
 Without a rule, a new binding whose name is taken in its scope gets a numeric
 suffix (`helpers_2`). With one, a suffixed name would be a `CP006` the fixer
 wrote itself, so when the configured name — or, for `as = false`, the leaf — is
-taken in the scope (by any name the scope or an enclosing one binds, or one a
-nested scope using the new binding would shadow), the **whole file** is left
+taken in the scope (by any name the scope or an enclosing one binds, one a
+nested scope using the new binding would shadow, or a builtin or undefined name
+read where the binding would be visible — `str` for `as = "str"`), the **whole file** is left
 unchanged and reported `CP003`: *configured alias 'np' for numpy is taken in
 this scope*. Rename the conflicting name, or change the rule. `--fix` never
 introduces a `CP006`.

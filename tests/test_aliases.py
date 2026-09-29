@@ -58,9 +58,10 @@ def test_as_false_is_the_own_name() -> None:
         ([{"module": 1, "as": "np"}], r"alias\[1\]\.module must be a string"),
         ([{"module": "numpy", "as": True}], "must be a string or false"),
         ([{"module": "numpy", "as": 3}], "must be a string or false"),
-        ([{"module": "numpy", "as": "n p"}], "does not make an identifier"),
-        ([{"module": "numpy", "as": "class"}], "does not make an identifier"),
-        ([{"module": "numpy", "as": ""}], "does not make an identifier"),
+        ([{"module": "numpy", "as": "n p"}], "does not make a name"),
+        ([{"module": "numpy", "as": "class"}], "does not make a name"),
+        ([{"module": "numpy", "as": ""}], "does not make a name"),
+        ([{"module": "numpy", "as": "__debug__"}], "does not make a name"),
         ([{"module": "numpy", "as": "{name}"}], "field other than"),
         ([{"module": "numpy", "as": "{leaf!r}"}], "field other than"),
         ([{"module": "numpy", "as": "{leaf:>3}"}], "field other than"),
@@ -234,6 +235,7 @@ def test_ruff_builtin_defaults_are_not_invented() -> None:
         ({"aliases": {"numpy": 1}}, r"tool\.ruff\.lint\.flake8-import-conventions\.aliases"),
         ({"aliases": {"numpy": "n p"}}, "must be an identifier"),
         ({"extend-aliases": {"numpy": "def"}}, r"extend-aliases\.'numpy' must be an identifier"),
+        ({"aliases": {"numpy": "__debug__"}}, "must be an identifier"),
         ({"aliases": {"num*py": "np"}}, "is not a dotted module name"),
         ({"aliases": ["numpy"]}, "must be a table of module = alias"),
     ],
@@ -642,12 +644,25 @@ def test_rules_for_other_modules_leave_the_output_unchanged(project: pathlib.Pat
     assert "json_2" in plain
 
 
-def test_a_suppression_carried_onto_a_new_plain_import_declines(project: pathlib.Path) -> None:
-    _configure(project, JSON_JS)
-    source = "from json import dumps  # cleanporter: ignore[CP002]\n\ndumps(1)\n"
-    text, codes = _fix(project, source)
-    assert text == source
-    assert "CP003" in codes
+@pytest.mark.parametrize(
+    ("rules", "expected"),
+    [
+        ("", "import json  # cleanporter: ignore[CP002]\n\njson.dumps(1)\n"),
+        (JSON_JS, "import json as js  # cleanporter: ignore[CP002]\n\njs.dumps(1)\n"),
+    ],
+    ids=["no_rules", "rule"],
+)
+def test_a_suppression_carried_onto_a_new_plain_import_goes_with_it(
+    project: pathlib.Path, rules: str, expected: str
+) -> None:
+    # As before alias rules existed: the rewrite goes ahead, and the comment,
+    # now covering an import with no CP002, is reported unused.
+    _configure(project, rules)
+    text, codes = _fix(
+        project, "from json import dumps  # cleanporter: ignore[CP002]\n\ndumps(1)\n"
+    )
+    assert text == expected
+    assert codes == ["CP005"]
 
 
 FIX_CASES = {
@@ -746,3 +761,35 @@ def test_with_a_rule_a_read_builtin_declines(project: pathlib.Path, source: str)
     text, codes = _fix(project, source)
     assert text == source
     assert "CP003" in codes
+
+
+# -- a template that renders an unusable name for one module ----------------------
+
+TEMPLATE_IF = '[[tool.cleanporter.alias]]\nmodule = "demo.*"\nas = "i{leaf}"\n'
+
+
+def _f_module(project: pathlib.Path) -> None:
+    (project / "src" / "demo" / "f.py").write_text(HELPERS, encoding="utf-8", newline="\n")
+
+
+def test_a_template_rendering_a_keyword_is_reported_by_check(project: pathlib.Path) -> None:
+    _configure(project, TEMPLATE_IF)
+    _f_module(project)
+    _write(project, "from demo import f\nfrom demo import helpers as ihelpers\n\nf, ihelpers\n")
+    (finding,) = _run(project).findings
+    assert (finding.code, finding.parent, finding.name) == ("CP006", "demo.f", "f")
+    assert "renders its template 'i{leaf}' as 'if'" in finding.message
+
+
+def test_a_template_rendering_a_keyword_declines_the_fix(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _configure(project, TEMPLATE_IF)
+    _f_module(project)
+    source = "from demo.f import go\n\ngo()\n"
+    target = _write(project, source)
+    assert cli.main(["--fix", "src"]) == 1
+    assert target.read_text(encoding="utf-8") == source
+    err = capsys.readouterr().err
+    assert "CP003" in err
+    assert "as 'if' for demo.f, which no import can bind" in err

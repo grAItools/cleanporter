@@ -1084,6 +1084,13 @@ def _alias_findings(
 
 def _alias_mismatch(binding: ModuleBinding, expectation: aliases.Expectation) -> str | None:
     """Why *binding* breaks *expectation*, or ``None`` when it keeps it."""
+    if not expectation.usable:
+        template = expectation.rule.alias
+        return (
+            f"{expectation.rule.describe()} renders its template {template!r} as "
+            f"'{expectation.binding}' for this module, which no import can bind; "
+            "no binding can satisfy it, so fix the rule"
+        )
     wanted = (
         f"its own name '{expectation.binding}'"
         if expectation.own_name

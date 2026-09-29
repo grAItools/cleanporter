@@ -917,7 +917,17 @@ class _Fixer(cst.CSTTransformer):
         if isinstance(scope, metadata.GlobalScope):
             taken = taken | self._submodule_slots(parent)
         expectation = self._expectation(parent)
-        if expectation is not None:
+        if expectation is not None and not expectation.usable:
+            # The token is only a placeholder that parses: the blocker
+            # discards the plan before anything is written.
+            bind = token
+            reason = (
+                f"{expectation.rule.describe()} renders its template "
+                f"{expectation.rule.alias!r} as '{expectation.binding}' for {parent}, "
+                "which no import can bind"
+            )
+            self.blockers.append((line, reason))
+        elif expectation is not None:
             bind = expectation.binding
             if bind in taken:
                 reason = (
@@ -1191,11 +1201,12 @@ def _coverage(
     onto the first ``mystery``. Relative parents resolve the same way on both
     sides, since the file's package does not change.
 
-    A plain ``import`` counts too, as ``(module, "", asname)``: a comment can
-    cover one (for its `CP006`), and the module import a rewrite writes can be
-    one -- ``import numpy as np`` under an alias convention -- so a trailing
-    comment carried onto it has moved just as surely as onto ``from P import
-    L``. The fixer never rewrites a plain import, so none is in *rewritten*.
+    Plain ``import`` statements are not counted, though a comment can cover
+    one for its `CP006`. The only plain import a rewrite writes is a module
+    import that follows every alias convention, so a comment carried onto it
+    has no `CP006` to start suppressing -- and counting it would decline a
+    rewrite (``from json import dumps  # ...`` to ``import json  # ...``)
+    that has always gone ahead, leaving a `CP005` behind.
     """
     covered: dict[suppress.Suppression, collections.Counter[tuple[str, str, str | None]]] = {
         s: collections.Counter() for s in rec.suppressions.comments
@@ -1205,12 +1216,6 @@ def _coverage(
             continue
         for s in rec.suppressions.covering(unit.node, unit.alias):
             covered[s][unit.parent or "?", unit.name, unit.asname] += 1
-    for node in rec.facts.plain_imports:
-        for alias in node.names:
-            as_node = alias.asname.name if alias.asname is not None else None
-            asname = as_node.value if isinstance(as_node, cst.Name) else None
-            for s in rec.suppressions.covering(node, alias):
-                covered[s][_imports.dotted(alias.name), "", asname] += 1
     return [covered[s] for s in rec.suppressions.comments]
 
 

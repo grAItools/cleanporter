@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pyproject.toml` are read as unconditional rules ranked after every
   cleanporter rule. Ruff's built-in default table is not assumed. The new
   `ruff_aliases = false` turns this off.
+- An `as` template that renders a keyword or `__debug__` for one particular
+  module (`"i{leaf}"` for `f`) makes every binding of that module a `CP006`
+  naming the rendered name, and `--fix` declines the file; `__debug__` is
+  refused as a literal alias at load, like a keyword.
 
 ### Fixed
 
