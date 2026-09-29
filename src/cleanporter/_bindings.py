@@ -339,3 +339,133 @@ def namespace(path: str) -> Namespace | None:
         all_names=all_names,
         all_dynamic=all_dynamic,
     )
+
+
+def _defines(stmt: ast.stmt, name: str) -> bool:
+    """Whether *stmt*, run at module level, unconditionally binds *name* to an object.
+
+    A ``def``, an ``async def``, a ``class``, or an assignment -- plain or
+    annotated with a value -- whose targets name it outright. A target that
+    only *reads* it (``name[0] = ...``, ``name.attr = ...``) does not count,
+    and neither does ``name += ...``, whose result depends on what was
+    there before.
+    """
+    if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return stmt.name == name
+    if isinstance(stmt, ast.Assign):
+        return any(
+            isinstance(n, ast.Name) and n.id == name and isinstance(n.ctx, ast.Store)
+            for target in stmt.targets
+            for n in ast.walk(target)
+        )
+    if isinstance(stmt, ast.AnnAssign):
+        return (
+            stmt.value is not None and isinstance(stmt.target, ast.Name) and stmt.target.id == name
+        )
+    return False
+
+
+def _module_scope_nodes(stmt: ast.stmt) -> Iterator[ast.AST]:
+    """Every node of *stmt* whose bindings land in the module's namespace.
+
+    That is all of it except the bodies of the functions, classes and
+    lambdas it defines, which have scopes of their own. What those bodies
+    could still do to a module-level name -- a ``global`` statement -- is
+    looked for separately, over the whole file. Their headers do run here:
+    a decorator, a default, a base class can hold a ``:=``. A comprehension
+    is not skipped: its own targets are its own, so reporting them only
+    over-approximates, and a ``:=`` inside one binds in the module.
+    """
+    pending: list[ast.AST] = [stmt]
+    while pending:
+        node = pending.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            pending.extend([*node.decorator_list, node.args])
+            if node.returns is not None:
+                pending.append(node.returns)
+        elif isinstance(node, ast.ClassDef):
+            pending.extend([*node.decorator_list, *node.bases, *node.keywords])
+        elif isinstance(node, ast.Lambda):
+            pending.append(node.args)
+        else:
+            pending.extend(ast.iter_child_nodes(node))
+
+
+def _binds(node: ast.AST, name: str) -> bool:
+    """Whether *node* alone binds, rebinds or unbinds *name* where it runs."""
+    if isinstance(node, ast.Name):
+        return node.id == name and not isinstance(node.ctx, ast.Load)
+    if isinstance(
+        node,
+        (
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+            ast.ExceptHandler,
+            ast.MatchAs,
+            ast.MatchStar,
+        ),
+    ):
+        return node.name == name
+    if isinstance(node, ast.MatchMapping):
+        return node.rest == name
+    if isinstance(node, ast.Import):
+        return any(name in (alias.asname, *alias.name.split(".")) for alias in node.names)
+    if isinstance(node, ast.ImportFrom):
+        return name in (node.module or "").split(".") or any(
+            alias.name in {"*", name} or alias.asname == name for alias in node.names
+        )
+    return False
+
+
+def _may_rebind(stmt: ast.stmt, name: str) -> bool:
+    """Whether running *stmt* at module level could bind, rebind or unbind *name*.
+
+    Over-approximates on purpose: any store or ``del`` of the name, any
+    ``def`` / ``class`` / ``except ... as`` / ``match`` capture of it, any
+    import that binds it -- or names it as a module path component, since
+    importing ``pkg.name`` sets the attribute ``name`` on ``pkg`` -- and
+    *every* star import, which could bind anything.
+    """
+    return any(_binds(node, name) for node in _module_scope_nodes(stmt))
+
+
+@functools.cache
+def settled_by_definition(path: str, name: str) -> bool:
+    """Whether *path*'s top-level statements, in order, leave *name* bound by a definition.
+
+    True exactly when the last top-level statement that could bind *name* is
+    an unconditional definition of it (`_defines`), no statement after it
+    could touch the name (`_may_rebind`), and nothing in the file declares
+    it ``global`` or ``nonlocal``. Module-level statements run in order, so
+    when the module finishes importing, the name holds what that definition
+    made, whatever came before it -- a star import from a module this run
+    cannot read, above all, which otherwise leaves every name of the module
+    undetermined.
+
+    A definition that comes *first* settles nothing: a later star import, a
+    ``del``, any later binding may replace it. Nor does one inside an ``if``
+    or ``try`` body, which may not run. Both are left to the order-free rule
+    (`namespace`), which reads every binding and needs them all to agree.
+
+    Only statements are read. A write through ``globals()`` or
+    ``sys.modules`` is not seen, the same limit every other answer read from
+    source has.
+
+    ``False`` when the file cannot be read or parsed (see `_parse`).
+    """
+    tree = _parse(path)
+    if tree is None:
+        return False
+    if any(
+        isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names
+        for node in ast.walk(tree)
+    ):
+        return False
+    for stmt in reversed(tree.body):
+        if _defines(stmt, name):
+            return True
+        if _may_rebind(stmt, name):
+            return False
+    return False

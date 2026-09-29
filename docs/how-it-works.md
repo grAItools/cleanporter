@@ -68,7 +68,22 @@ comes from:
 
 A name is an **object** — a `CP001` violation — only when every binding
 resolves to an object, and a **module** only when every binding resolves to a
-module. A try/except pair that binds an accelerated function or a pure-Python
+module.
+
+That rule ignores statement order, with one exception. When the parent's
+*last* top-level statement binding `NAME` is an unconditional `def`, `class`
+or assignment of it, and its only other bindings are star imports from
+outside the analysed tree (`from numpy import *`), the definition is what the
+parent holds once it has run, so `NAME` is an object. Everything about that
+is read from the parent's top-level statements in order, and anything that
+could undo it keeps the name undetermined: the definition coming *before* the
+star import, a later star import, `del NAME`, any later statement that could
+bind `NAME` (an assignment, a loop or `except` target, a `:=`, an import
+through a submodule of that name), a `global NAME` anywhere in the file, or a
+definition inside an `if` or `try` body. A first-party star import, or a
+`from M import NAME`, is followed as usual instead: following it is what finds
+a circular import, in which the other half reads the parent before the
+definition has run. A try/except pair that binds an accelerated function or a pure-Python
 fallback is an object when both halves are; one that binds a module or
 `None` is not decided. If more than one file claims `PARENT` (a stale
 `pkg.py` beside `pkg/`), they must all agree.
@@ -90,9 +105,8 @@ out:
 - the bindings disagree: a module under one, an object under another;
 - the parent star-imports from a module this run cannot read (third-party, or
   first-party without source), or from one whose `__all__` is built at run
-  time. This holds even when the parent *also* binds `NAME` directly: which
-  of the two runs last depends on statement order, which this layer
-  deliberately does not reason about;
+  time. This holds even when the parent *also* binds `NAME` directly, with
+  one exception, below;
 - nothing binds `NAME` but the parent defines a module-level `__getattr__`
   (PEP 562), which could supply it;
 - the parent is a namespace package (no `__init__.py`), an extension module,

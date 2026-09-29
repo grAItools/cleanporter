@@ -1010,10 +1010,156 @@ def test_a_name_all_lists_but_nothing_binds_is_not_absent(tmp_path: pathlib.Path
 
 
 def test_a_third_party_star_import_leaves_the_name_undetermined(tmp_path: pathlib.Path) -> None:
-    """Even beside a direct binding: which of the two runs last is not read here."""
     mm = _map(tmp_path, {"amb/__init__.py": "from os.path import *\ndef mine(): ...\n"})
-    for name in ("join", "mine"):
-        assert "'os.path', which is not first-party" in _undetermined(mm, "amb", name)
+    assert "'os.path', which is not first-party" in _undetermined(mm, "amb", "join")
+
+
+# -- statement order settles a star import's name, one way only ----------------
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "from os.path import *\ndef NAME(): ...\n",
+        "from os.path import *\nasync def NAME(): ...\n",
+        "from os.path import *\nclass NAME: ...\n",
+        "from os.path import *\nNAME = 1\n",
+        "from os.path import *\nNAME: int = 1\n",
+        "from os.path import *\nNAME = other = 1\n",
+        # Two stars, both before the definition.
+        "from os.path import *\nfrom os import *\ndef NAME(): ...\n",
+        # A module import rebinding it first, then the definition.
+        "from os.path import *\nimport json as NAME\nclass NAME: ...\n",
+        # Later statements that only read it, or bind it in a scope of their own.
+        (
+            "from os.path import *\n"
+            "def NAME(): ...\n"
+            "NAME.attr = 1\n"
+            "NAME.__doc__ = 'x'\n"
+            "print(NAME)\n"
+            "def other():\n"
+            "    NAME = 2\n"
+            "    return NAME\n"
+            "class Other:\n"
+            "    NAME = 3\n"
+            "handler = lambda NAME: NAME\n"
+            "import json\n"
+            "from json import dumps\n"
+        ),
+    ],
+)
+def test_a_definition_after_a_star_import_is_what_the_module_holds(
+    tmp_path: pathlib.Path, body: str
+) -> None:
+    """Module-level statements run in order: the last top-level definition wins."""
+    mm = _map(tmp_path, {"amb/__init__.py": body})
+    assert mm.classify("amb", "NAME") is model.Kind.OBJECT
+
+
+@pytest.mark.parametrize(
+    ("body", "why"),
+    [
+        ("def NAME(): ...\nfrom os.path import *\n", "the star import comes after"),
+        (
+            "from os.path import *\ndef NAME(): ...\nfrom os import *\n",
+            "a second star import after the definition",
+        ),
+        ("from os.path import *\ndef NAME(): ...\ndel NAME\n", "a del after the definition"),
+        (
+            "from os.path import *\nif FLAG:\n    def NAME(): ...\n",
+            "a conditional definition",
+        ),
+        (
+            "from os.path import *\ntry:\n    def NAME(): ...\nexcept ImportError:\n    pass\n",
+            "a definition inside try",
+        ),
+        (
+            "from os.path import *\ndef NAME(): ...\nif FLAG:\n    NAME = None\n",
+            "a conditional rebinding after it",
+        ),
+        (
+            "from os.path import *\ndef NAME(): ...\ndef reset():\n    global NAME\n",
+            "a global declaration anywhere",
+        ),
+        (
+            "from os.path import *\ndef NAME(): ...\nprint((NAME := 2))\n",
+            "a walrus after it",
+        ),
+        (
+            "from os.path import *\ndef NAME(): ...\n@deco(NAME := 1)\ndef f(): ...\n",
+            "a walrus in a later decorator",
+        ),
+        (
+            "from os.path import *\ndef NAME(): ...\nfrom .NAME import thing\n",
+            "a later import through a submodule of that name",
+        ),
+        (
+            "from os.path import *\ndef NAME(): ...\nfor NAME in range(3): pass\n",
+            "a loop target after it",
+        ),
+        (
+            (
+                "from os.path import *\ndef NAME(): ...\n"
+                "try:\n    pass\nexcept Exception as NAME:\n    pass\n"
+            ),
+            "an except target after it",
+        ),
+        (
+            "from os.path import *\nNAME = 1\nNAME += 1\n",
+            "an augmented assignment after it",
+        ),
+        ("from os.path import *\nNAME[0] = 1\n", "a subscript store is not a definition"),
+    ],
+)
+def test_order_settles_nothing_that_a_later_statement_could_undo(
+    tmp_path: pathlib.Path, body: str, why: str
+) -> None:
+    mm = _map(tmp_path, {"amb/__init__.py": body})
+    assert mm.classify("amb", "NAME") is model.Kind.UNDETERMINED, why
+
+
+def test_order_is_not_read_past_a_first_party_star_import(tmp_path: pathlib.Path) -> None:
+    """A star import this map can follow is followed, and every binding must agree.
+
+    The order rule is only for stars nothing here walks into: walking is
+    what finds a circular import, in which the definition does not win.
+    """
+    mm = _map(
+        tmp_path,
+        {
+            "amb/core/__init__.py": "",
+            "amb/core/NAME.py": "",
+            "amb/impl.py": "from .core import NAME\n",
+            "amb/__init__.py": "from os.path import *\nfrom .impl import *\ndef NAME(): ...\n",
+        },
+    )
+    assert mm.classify("amb", "NAME") is model.Kind.UNDETERMINED
+
+
+def test_a_from_import_of_the_name_is_still_followed(tmp_path: pathlib.Path) -> None:
+    mm = _map(
+        tmp_path,
+        {
+            "amb/m.py": "from amb import NAME\n",
+            "amb/__init__.py": "from os.path import *\nfrom .m import NAME\ndef NAME(): ...\n",
+        },
+    )
+    assert "circular import" in _undetermined(mm, "amb", "NAME")
+
+
+def test_a_settled_definition_is_an_object_to_an_importer_too(tmp_path: pathlib.Path) -> None:
+    """The order rule answers every question that reads the module, not just one."""
+    mm = _map(
+        tmp_path,
+        {
+            "amb/core.py": "from os.path import *\ndef helper(): ...\n",
+            "amb/__init__.py": "from .core import helper\n",
+        },
+    )
+    assert mm.classify("amb.core", "helper") is model.Kind.OBJECT
+    assert mm.classify("amb", "helper") is model.Kind.OBJECT
+    # The star's own names stay what they were.
+    assert "'os.path', which is not first-party" in _undetermined(mm, "amb.core", "join")
 
 
 def test_a_star_import_cycle_terminates(tmp_path: pathlib.Path) -> None:
