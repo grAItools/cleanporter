@@ -263,12 +263,14 @@ def _uri(posix: str) -> str:
 
 
 def _file_uri(path: pathlib.PurePath, *, directory: bool = False) -> str:
-    """The ``file:`` URI of the absolute *path*; with a trailing ``/`` for a *directory*.
+    r"""The ``file:`` URI of the absolute *path*; with a trailing ``/`` for a *directory*.
 
     Built by hand rather than by `pathlib.Path.as_uri`, which fails on a
     surrogate-escaped name. A Windows drive letter keeps its colon, as
     ``as_uri`` keeps it (``file:///C:/x``): percent-encoded, ``C%3A`` is a
-    spelling SARIF viewers do not map back to the file.
+    spelling SARIF viewers do not map back to the file. A UNC path names its
+    server as the URI's authority, again as ``as_uri`` does:
+    ``\\server\share\x`` is ``file://server/share/x``.
     """
     posix = path.as_posix()
     drive = ""
@@ -276,6 +278,8 @@ def _file_uri(path: pathlib.PurePath, *, directory: bool = False) -> str:
         drive, posix = f"/{path.drive}", posix[len(path.drive) :]
     if directory and not posix.endswith("/"):
         posix = f"{posix}/"
+    if path.drive.startswith("\\\\"):  # UNC, //server/share/x: the server is the authority
+        return f"file:{_uri(posix)}"
     return f"file://{drive}{_uri(posix)}"
 
 

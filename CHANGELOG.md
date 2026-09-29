@@ -110,7 +110,9 @@ Breaking under the pre-1.0 policy above:
 - **SARIF `file:` URIs on Windows keep the drive's colon.** A file outside the
   working directory, and `SRCROOT` itself, were written `file:///C%3A/...`;
   they are now `file:///C:/...`, as `pathlib` spells them and SARIF viewers
-  resolve them. The test suite now also runs on Windows in CI.
+  resolve them. A UNC path is `file://server/share/...`, with the server as
+  the URI's host, rather than `file:////server/share/...`. The test suite now
+  also runs on Windows in CI.
 
 ## [0.4.0] - 2026-09-28
 

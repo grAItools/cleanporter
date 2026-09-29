@@ -316,6 +316,13 @@ def test_a_windows_drive_keeps_its_colon_in_a_file_uri():
     path = pathlib.PureWindowsPath(r"C:\Users\me\odd name.py")
     assert _report._file_uri(path) == path.as_uri() == "file:///C:/Users/me/odd%20name.py"
     assert _report._file_uri(pathlib.PureWindowsPath("D:/"), directory=True) == "file:///D:/"
+    unc = pathlib.PureWindowsPath(r"\\server\share\x.py")
+    assert _report._file_uri(unc) == unc.as_uri() == "file://server/share/x.py"
+    share = pathlib.PureWindowsPath("//server/share/")
+    assert _report._file_uri(share, directory=True) == "file://server/share/"
+    # POSIX keeps a leading `//` as written; it is a path there, not a server.
+    doubled = pathlib.PurePosixPath("//srv/x.py")
+    assert _report._file_uri(doubled) == "file:////srv/x.py"
     # Only the drive's colon: one in a POSIX name is still encoded, as `as_uri` does.
     posix = pathlib.PurePosixPath("/srv/a:b.py")
     assert _report._file_uri(posix) == posix.as_uri() == "file:///srv/a%3Ab.py"
