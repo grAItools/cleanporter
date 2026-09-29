@@ -21,7 +21,7 @@ one with its own `pyproject.toml` — that path is still analysed, but under the
 first path's configuration. cleanporter says so with a warning naming the
 configuration in use and each path whose own configuration it is ignoring
 (alongside the other warnings: on stdout in check mode, on stderr under
-`--diff` or `--fix`). Which configuration wins does not change; to apply each
+`--diff`, `--fix` or a structured `--format`). Which configuration wins does not change; to apply each
 project's own, run cleanporter once per project.
 
 An unknown key inside `[tool.cleanporter]`, a value of the wrong type, or a
@@ -52,7 +52,7 @@ skip = [
 | --- | --- | --- |
 | `exclude` | `[]` | Glob patterns (list of strings). Each is matched against the project-relative POSIX path of a candidate file or directory, and also against its absolute POSIX path. A pattern containing no glob metacharacter (`*`, `?`, `[`) additionally matches a directory prefix, so `"tests/"` excludes `tests/` and everything under it. |
 | `scope` | `"all"` | `"all"` reports violations everywhere, including stdlib and third-party imports. `"first-party"` reports — and `--fix` rewrites — only imports whose top-level package is one of your own analysis roots. |
-| `source_roots` | `[]` | Explicit first-party import roots — directories that are on `sys.path` for the code being analysed — relative to the `pyproject.toml` directory. Combined with, not substituted for, whatever the analysed paths themselves imply. A declared root outranks an inferred one, and, when it is not itself a package directory and does not nest with another root, lets `--fix` rewrite `from . import C` in a top-level package to `import pkg` (see [Known limitations](safety.md#known-limitations)). |
+| `source_roots` | `[]` | Explicit first-party import roots — directories that are on `sys.path` for the code being analysed — relative to the `pyproject.toml` directory. Combined with, not substituted for, whatever the analysed paths themselves imply. A declared root outranks an inferred one, and, when neither it nor any directory above it up to the project root is a package directory and it does not nest with another root, lets `--fix` rewrite `from . import C` in a top-level package to `import pkg` (see [Known limitations](safety.md#known-limitations)). |
 | `treat_unresolved_as_error` | `false` | When `true`, `CP002` (unresolved) findings count toward the failure exit code, so a run that could not classify something exits `1`. |
 | `exempt_modules` | `["typing", "typing_extensions", "collections.abc", "__future__"]` | `from MODULE import X` is allowed when `MODULE` — or any ancestor of it — is in this set. Configured values are **added to** the built-in defaults; they never replace them. |
 | `exempt_names` | `[]` | Individual bound names that are always allowed, whatever module they came from. Checked before the module is even looked at. |
@@ -162,7 +162,7 @@ and never a rewrite. `python = "self"` (or `--python self`) turns detection off.
 
 ## How CLI flags layer on top of config
 
-Flags do not replace configured values; with two exceptions they extend or
+Flags do not replace configured values; with one exception they extend or
 strengthen them. This means a developer can tighten a run locally without
 having to restate what the project already declares.
 
@@ -261,7 +261,7 @@ exclude = [
 ]
 ```
 
-Two details worth knowing:
+Three details worth knowing:
 
 - A pattern with no glob metacharacter (`*`, `?`, `[`) matches a *directory
   prefix* as well as an exact path — that is what makes `"tests/"` exclude the

@@ -84,9 +84,12 @@ command uses exactly this: `2` when `errors` is non-empty, else `1` when
 `violations + skipped` (plus `unresolved` when `strict`, as under `--strict`
 or `treat_unresolved_as_error`) is non-zero, else `0`. `CP004` never counts.
 
-`--fix` cannot see a dotted reference to a rewritten name from *another* file
-(see [Known limitations](safety.md#known-limitations)); after a `Mode.FIX`
-run that `wrote`, re-run the target's tests, exactly as after the command.
+A literal dotted path in another analysed file or in `pyproject.toml` keeps
+the import it names, but `--fix` cannot see every reference from elsewhere — a
+dynamic string, a lookup through a module object, a file outside the run,
+config other than `pyproject.toml` (see
+[Known limitations](safety.md#known-limitations)); after a `Mode.FIX` run
+that `wrote`, re-run the target's tests, exactly as after the command.
 
 ### Streaming: `Listener`
 
@@ -127,8 +130,8 @@ counting.
 A `Resolver` built directly —
 `Resolver(module_map, evidence=resolver.NO_EVIDENCE)`, where the evidence
 argument is required so the choice is explicit — works, but knows nothing
-about what other files use: it never declines a rewrite for
-removing a re-export another file needs, because it has no evidence that one
+about what other files use or name by dotted path: it never declines a rewrite
+for removing a re-export another file needs, because it has no evidence that one
 does. `build` is how to get a resolver that has that evidence, since it
 collects it before constructing the resolver.
 
@@ -174,8 +177,8 @@ classified by an interpreter probe, which imports each *parent* package
 - **To isolate a run**, set `python` in the `Config` to a *different*
   interpreter (for example
   `dataclasses.replace(cfg, python="/path/to/venv/bin/python")`, the library
-  equivalent of `--python`), or let detection find the project's. The probe
-  then runs in a subprocess, imports nothing into the caller and redirects
+  equivalent of `--python`), or let detection find the project's, when that
+  is not the calling environment. The probe then runs in a subprocess, imports nothing into the caller and redirects
   nothing. Naming the interpreter that is already running keeps the probe
   in-process.
 

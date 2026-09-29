@@ -161,6 +161,8 @@ cleanporter --fix src/mypkg/consumer.py pkg/other.py
 
 - **[Usage](usage.md)** — every flag, the finding codes, exit codes, and the
   CI / `git apply` / sweep workflows.
+- **[pre-commit](pre-commit.md)** — the `cleanporter` and `cleanporter-fix`
+  hooks, and why they read the whole project.
 - **[Library API](library.md)** — a whole run from Python: `cleanporter.run`,
   `RunResult` and `Project`.
 - **[Configuration](configuration.md)** — the `[tool.cleanporter]` table, how

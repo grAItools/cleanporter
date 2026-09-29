@@ -77,7 +77,8 @@ because an import of it from your package depends on what it is.
     replacement; an explicit or load-bearing re-export, or one a string in
     another file names by its dotted path; a replacement that
     cannot be shown to bind the module it names; and `from . import C` where
-    the package is top-level, which has no relative replacement (see
+    the package is top-level, which has no relative replacement (unless its
+    import root is declared; see
     [Known limitations](safety.md#known-limitations)).
 
 !!! note "`CP004` findings never count"
@@ -167,7 +168,9 @@ name for the old file keeps the old contents.
 This matters if you intend to pipe anything.
 
 - **Plain check mode** (no `--fix`, no `--diff`): there is no patch, so
-  warnings, findings and the summary all go to **stdout**, as usual.
+  warnings, findings and the summary all go to **stdout**, as usual. Notes
+  (`cleanporter: note:`, such as the detected interpreter) go to **stderr**
+  in every mode.
 - **`--diff` or `--fix`**: **stdout carries only the patch.** Warnings, parse
   errors, findings, the `fixed: <path>` lines and the summary are all
   redirected to **stderr**. Diff headers are relative to the current working
@@ -378,9 +381,9 @@ add `--strict`:
 cleanporter --strict src/ tests/
 ```
 
-cleanporter finds the project's interpreter by itself — the `.venv` beside
-`pyproject.toml` (the uv workspace root's, for a member), or else an activated virtual
-environment — so a copy installed with `pipx` or `uv tool` still classifies
+cleanporter finds the project's interpreter by itself — `$UV_PROJECT_ENVIRONMENT`
+or the `.venv` beside `pyproject.toml` (the uv workspace root's, for a member),
+or else an activated virtual environment — so a copy installed with `pipx` or `uv tool` still classifies
 your third-party imports. The project root is the directory of the
 `pyproject.toml` found above the first path; with none, it is the first
 path's own directory, so `cleanporter src/` looks for `src/.venv`. If your

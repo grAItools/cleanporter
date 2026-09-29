@@ -57,8 +57,8 @@ Breaking under the pre-1.0 policy above:
   the hook with `files:`/`exclude:` per project. So is a listed file outside
   the project's directory, as written or through a symlink — a script under
   no `pyproject.toml`, a symlink into another project — and then the whole
-  run is: nothing is analysed or written. The library call enforces the
-  same. Documented
+  run is: nothing is analysed or written. The library call enforces that
+  second rule too; the one-project rule is the command's. Documented
   under [pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
 - **Machine-readable output: `--format json|sarif|github`.** The default,
   `text`, is unchanged. `json` is one document with the tool version, exit
@@ -66,7 +66,9 @@ Breaking under the pre-1.0 policy above:
   message and `detail`), unprocessable files, warnings, notes and — under
   `--diff`/`--fix` — the patches. `sarif`
   is a SARIF 2.1.0 log, one rule per finding code, ready for
-  `github/codeql-action/upload-sarif`. `github` prints workflow commands that
+  `github/codeql-action/upload-sarif`; a file outside the working directory
+  gets an absolute `file:` URI as `pathlib` spells it (`file:///C:/...`, or
+  `file://server/share/...` for a UNC path). `github` prints workflow commands that
   annotate pull requests. In each, stdout carries only the document, the exit
   code is the text report's, `CP004` is listed only under `--show-skipped`,
   and severity follows the exit code (`CP002` is a warning, an error under
@@ -121,6 +123,14 @@ Breaking under the pre-1.0 policy above:
   with --root or source_roots lets --fix write 'import pkg'".
   Documented under
   [Known limitations](https://graitools.github.io/cleanporter/safety/#known-limitations).
+- **Releases are published from version tags.** Pushing `vX.Y.Z` runs
+  `.github/workflows/release.yml`, which checks that the tagged commit is on
+  `main`, that the tag matches `project.version` and that `CHANGELOG.md` has a
+  section for it, runs the test suite, builds the sdist and wheel once, and
+  then makes the GitHub release and -- when enabled -- the PyPI upload. See
+  `CONTRIBUTING.md`.
+- **The test suite runs on Windows in CI** (Python 3.12 and 3.14), beside the
+  Linux matrix.
 
 ### Changed
 
@@ -151,13 +161,6 @@ Breaking under the pre-1.0 policy above:
 
 ### Fixed
 
-- **SARIF `file:` URIs on Windows keep the drive's colon.** A file outside the
-  working directory, and `SRCROOT` itself, were written `file:///C%3A/...`;
-  they are now `file:///C:/...`, as `pathlib` spells them and SARIF viewers
-  resolve them. A UNC path is `file://server/share/...`, with the server as
-  the URI's host, rather than `file:////server/share/...`, and an
-  extended-length `\\?\C:\...` path is `file:///C:/...`. The test suite now
-  also runs on Windows in CI.
 - **An out-of-process probe no longer crashes on output it cannot decode.**
   The probe's pipes were decoded in the locale's encoding, so a probed package
   that printed bytes that encoding rejects -- anything cp1252 leaves undefined

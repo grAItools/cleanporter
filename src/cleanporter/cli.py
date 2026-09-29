@@ -95,7 +95,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--diff",
         action="store_true",
         help="show the rewrite as a unified diff without writing "
-        "(ignored if --fix is also given: --fix wins and writes)",
+        "(ignored if --fix is also given: --fix wins and writes; "
+        "refused with --format sarif or github)",
     )
     parser.add_argument(
         "--python",

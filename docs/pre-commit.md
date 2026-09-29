@@ -152,9 +152,11 @@ everything the changed files needed and `1` when something remains
 (`CP001` it could not reach, `CP003` it declined). pre-commit fails a hook
 that modified files whatever it exits with, so a commit with fixable
 violations fails once, with the fixes in your working tree; review them,
-stage them and commit again. `--fix` cannot see a dotted reference from
-another file (a `monkeypatch.setattr("pkg.mod.name", ...)` string), so run
-your tests before that second commit.
+stage them and commit again. A literal dotted path in another file of the
+project (a `monkeypatch.setattr("pkg.mod.name", ...)` string) keeps the import
+it names, but a dynamic string, a `getattr(module, "name")` or a reference
+from outside the project is invisible, so run your tests before that second
+commit.
 
 ## Which interpreter the probe uses
 
