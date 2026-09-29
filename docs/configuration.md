@@ -63,7 +63,7 @@ skip = [
 | `skip` | `[]` | Regions of your code the tool must not analyse or rewrite, as a list of rule tables. See [`skip` rules](#skip-rules) below. |
 | `select` | absent (every code) | The finding codes reported and counted, as a list (`["CP001", "CP003"]`); must name at least one. Reporting only: `--fix` rewrites exactly what it would have without it, and the exit code follows only what is reported (a selected `CP002` still fails the run only under `treat_unresolved_as_error`). An unknown code is an error. Replaced by `--select`. |
 | `ignore` | `[]` | Finding codes neither reported nor counted, applied after `select`. Reporting only, like `select`. Replaced by `--ignore`. |
-| `baseline` | absent | A baseline file (written by `--write-baseline`) whose findings are left out of the report and the exit code, relative to the `pyproject.toml` directory. The file must exist. Replaced by `--baseline`. See [Adopting cleanporter on an existing codebase](usage.md#adopting-cleanporter-on-an-existing-codebase). |
+| `baseline` | absent | A baseline file (written by `--write-baseline`) whose findings are left out of the report and the exit code, relative to the `pyproject.toml` directory. The file must exist. Applied by check runs only: under `--fix` or `--diff` it is skipped, with a note. Replaced by `--baseline`. See [Adopting cleanporter on an existing codebase](usage.md#adopting-cleanporter-on-an-existing-codebase). |
 
 !!! tip "`exempt_modules` matches ancestors"
 

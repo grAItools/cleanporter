@@ -378,9 +378,11 @@ def test_an_unknown_code_is_a_config_error(tmp_path: pathlib.Path, key: str) -> 
         config.load_config(_project(tmp_path, f'[tool.cleanporter]\n{key} = ["CP001", "CP999"]\n'))
 
 
-def test_an_empty_select_is_a_config_error(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("value", ["[]", '[""]', '[" "]', '[","]', '[" , "]'])
+def test_an_empty_select_is_a_config_error(tmp_path: pathlib.Path, value: str) -> None:
+    """Blank entries name no code: an empty select would hide everything and exit 0."""
     with pytest.raises(config.ConfigError, match="at least one code"):
-        config.load_config(_project(tmp_path, "[tool.cleanporter]\nselect = []\n"))
+        config.load_config(_project(tmp_path, f"[tool.cleanporter]\nselect = {value}\n"))
 
 
 def test_an_empty_baseline_is_a_config_error(tmp_path: pathlib.Path) -> None:

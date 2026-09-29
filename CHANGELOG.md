@@ -32,16 +32,18 @@ Breaking under the pre-1.0 policy above:
   `--baseline FILE`, or `baseline = "..."` under `[tool.cleanporter]`
   (relative to the `pyproject.toml`), then leaves those findings out of the
   report and the exit code, so only new ones fail. A finding is keyed by its
-  project-relative POSIX path, code, parent, name and a hash of its `from`
-  statement's whitespace-collapsed text: it survives lines moving, and comes
-  back when the statement is edited. Identical findings count as a multiset.
-  Entries that no longer match are counted in a stderr note, never a
-  failure; `--format json` adds `baselined` and `stale_baseline` counts.
-  `--write-baseline` is check-mode only (a usage error with `--fix` or
-  `--diff`). For the library, the new `cleanporter.baseline` module
+  project-relative POSIX path, code, parent and name: it survives lines
+  moving and any reformatting of its statement, and comes back when the
+  import changes what it imports. `CP001` and `CP003` match each other, since
+  which one a run reports can depend on the files in it. Identical findings
+  count as a multiset. Entries that no longer match are counted in a stderr
+  note, never a failure; `--format json` adds `baselined` and
+  `stale_baseline` counts. Baselines are for check runs: `--baseline` or
+  `--write-baseline` with `--fix` or `--diff` is a usage error, a configured
+  `baseline` is skipped under them with a note, and both flags need a
+  `pyproject.toml`. For the library, the new `cleanporter.baseline` module
   (`load`, `write`, `entries`, `apply`); `RunResult` gains trailing
-  `checked`, `baselined` and `stale_baseline` fields, and `model.Finding` a
-  trailing `statement` field that no report shows.
+  `checked`, `baselined` and `stale_baseline` fields.
 - **`--select CODES` / `--ignore CODES`** (and the `select` / `ignore`
   configuration keys, which the flags replace) choose which finding codes are
   reported and counted. Reporting only: `--fix` rewrites exactly what it

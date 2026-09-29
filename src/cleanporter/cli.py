@@ -35,6 +35,7 @@ applies them after the fixer, so ``--fix`` rewrites exactly what it would
 have without them. ``--baseline`` (or ``baseline``) then takes the findings a
 baseline file accepts out of the result (`baseline.apply`), and
 ``--write-baseline`` records a check run's findings instead of reporting them.
+Both are for check runs only (see `_read_baseline`).
 """
 
 from __future__ import annotations
@@ -179,7 +180,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=_non_empty_path,
         metavar="FILE",
         help="leave out the findings recorded in this baseline file (replaces the configured "
-        "baseline); a recorded finding that is gone is a note, never a failure",
+        "baseline); a recorded finding that is gone is a note, never a failure. Check mode "
+        "only; needs a pyproject.toml",
     )
     parser.add_argument(
         "--write-baseline",
@@ -187,7 +189,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=_non_empty_path,
         metavar="FILE",
         help="record the current findings (as --select/--ignore report them) in FILE and "
-        "exit 0; check mode only",
+        "exit 0; check mode only, no --format; needs a pyproject.toml",
     )
     parser.add_argument(
         "--format",
@@ -356,17 +358,14 @@ def run(args: argparse.Namespace) -> int:
     except config_lib.ConfigError as exc:
         print(f"cleanporter: configuration error: {exc}", file=sys.stderr)
         return _EXIT_ERROR
-    # Read before the run, so a missing or broken baseline costs nothing. A
-    # run that writes one records every current finding, so it reads none.
-    accepted: list[baseline_lib.Entry] | None = None
-    if config.baseline is not None and args.write_baseline is None:
-        try:
-            accepted = baseline_lib.load(config.baseline)
-        except baseline_lib.BaselineError as exc:
-            print(f"cleanporter: error: {exc}", file=sys.stderr)
-            return _EXIT_ERROR
-
     mode = _mode(args)
+    # Read before the run, so a missing or broken baseline costs nothing.
+    try:
+        accepted = _read_baseline(args, config, anchor, mode)
+    except baseline_lib.BaselineError as exc:
+        print(f"cleanporter: error: {exc}", file=sys.stderr)
+        return _EXIT_ERROR
+
     structured = args.format != "text"
     # Everything that is not the patch (or the document) -- warnings, parse
     # errors, findings, the summary -- goes here; see the stream contract in
@@ -418,6 +417,47 @@ def run(args: argparse.Namespace) -> int:
     return result.exit_code(strict=strict)
 
 
+#: Printed when a configured baseline is not applied (see `_read_baseline`).
+_BASELINE_SKIPPED = (
+    "cleanporter: note: the configured baseline is not applied under --fix or --diff, which "
+    "report findings a check run's baseline does not describe; every finding is reported"
+)
+
+
+def _read_baseline(
+    args: argparse.Namespace,
+    config: config_lib.Config,
+    anchor: pathlib.Path,
+    mode: engine.Mode,
+) -> list[baseline_lib.Entry] | None:
+    """The baseline this run applies, if any; `baseline.BaselineError` if it cannot.
+
+    A baseline keys paths to the project root, so using one -- reading or
+    writing -- needs a ``pyproject.toml`` to say where that is: without one
+    the root would be the first path's directory, and the same file would
+    key differently from ``.`` and from ``src``. A run that writes a
+    baseline reads none, since it records every current finding. A
+    baseline describes check runs only (`cleanporter.baseline`): an explicit
+    ``--baseline`` with ``--fix`` or ``--diff`` is refused in `main`, and a
+    configured one -- the ``cleanporter-fix`` pre-commit hook meets it on
+    every run -- is skipped with a note.
+    """
+    if args.write_baseline is None and config.baseline is None:
+        return None
+    if config_lib.find_pyproject(anchor) is None:
+        msg = (
+            "--baseline and --write-baseline need a pyproject.toml to mark the project root, "
+            "which a baseline's paths are relative to; none is above the first path"
+        )
+        raise baseline_lib.BaselineError(msg)
+    if args.write_baseline is not None or config.baseline is None:
+        return None
+    if mode is not engine.Mode.CHECK:
+        print(_BASELINE_SKIPPED, file=sys.stderr)
+        return None
+    return baseline_lib.load(config.baseline)
+
+
 def _write_baseline(path: pathlib.Path, result: engine.RunResult, config: config_lib.Config) -> int:
     """``--write-baseline``: record *result*'s findings in *path*, unless a file failed.
 
@@ -435,6 +475,16 @@ def _write_baseline(path: pathlib.Path, result: engine.RunResult, config: config
     recorded = baseline_lib.entries(result, config.root)
     baseline_lib.write(path, recorded)
     print(f"cleanporter: wrote {len(recorded)} finding(s) to {path}", file=sys.stderr)
+    unresolved = sum(e.code == "CP002" for e in recorded)
+    if unresolved:
+        # CP002 is not matched by a CP001 entry: once the environment can
+        # classify the import, the finding is new.
+        print(
+            f"cleanporter: note: {unresolved} of them are CP002 (unresolved); once the "
+            "environment can classify one it becomes a CP001 the baseline does not match, "
+            "so rewrite the baseline after fixing the environment",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -474,6 +524,15 @@ def main(argv: list[str] | None = None) -> int:
         # findings are what is left *after* rewriting, and --diff's differ.
         parser.error(
             "--write-baseline records a check run; it cannot be combined with --fix or --diff"
+        )
+    if args.baseline is not None and (args.fix or args.diff):
+        parser.error(
+            "--baseline applies to check runs only; it cannot be combined with --fix or --diff, "
+            "whose findings a check run's baseline does not describe"
+        )
+    if args.write_baseline is not None and args.format != "text":
+        parser.error(
+            "--write-baseline writes a file, not a report; it cannot be combined with --format"
         )
     if args.format in _PATCHLESS_FORMATS and args.diff:
         # Exits 2, as every other usage error does.

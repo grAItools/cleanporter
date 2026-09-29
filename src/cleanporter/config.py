@@ -131,15 +131,17 @@ def _scope(table: dict[str, object]) -> str:
 
 
 def _codes(table: dict[str, object], key: str) -> frozenset[str]:
-    codes = _str_list(table, key)
+    try:
+        codes = parse_codes(_str_list(table, key))
+    except ConfigError as exc:
+        raise ConfigError(f"tool.cleanporter.{key}: {exc}") from exc
+    # Checked on the parsed codes: `[""]` or `[","]` names none, and an
+    # empty select would hide every finding and exit 0.
     if key == "select" and not codes:
         raise ConfigError(
             "tool.cleanporter.select must name at least one code; omit it to report every code"
         )
-    try:
-        return parse_codes(codes)
-    except ConfigError as exc:
-        raise ConfigError(f"tool.cleanporter.{key}: {exc}") from exc
+    return codes
 
 
 def _baseline(table: dict[str, object], root: pathlib.Path) -> pathlib.Path:

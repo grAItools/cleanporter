@@ -104,8 +104,10 @@ result = baseline.apply(cleanporter.run(paths, cfg), accepted, cfg)
 
 `apply(result, entries, config)` is pure: it returns a copy of the result
 without the findings the entries accept (each entry takes out at most one
-finding), with `baselined` and `stale_baseline` set and, when any entry is
-stale, a note saying so added to `notes`. `entries(result, root)` is what
+finding; `CP001` and `CP003` match each other), with `baselined` and
+`stale_baseline` set and, when any entry is stale, a note saying so added to
+`notes`. It takes a `Mode.CHECK` result only, as `entries` does, and raises
+`ValueError` for any other. `entries(result, root)` is what
 `--write-baseline` records — every finding but `CP004`, as sorted `Entry`
 values — and `write(path, entries)` writes the file; `load(path)` reads one
 back. The key and the file format are described under

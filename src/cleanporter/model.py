@@ -60,11 +60,6 @@ class Finding:
     #: implies -- ``io.readers`` for a namespace directory -- which is how
     #: the resolver classifies the import, not how anyone should write it.
     module_import: str = ""
-    #: The source of the ``from`` statement the finding is about, as written
-    #: (empty for a file-level finding). Not part of any report; it is what a
-    #: baseline keys the finding by, so it survives the lines moving but not
-    #: the statement being edited (`cleanporter.baseline`).
-    statement: str = dataclasses.field(default="", repr=False, compare=False)
 
     @property
     def code(self) -> str:

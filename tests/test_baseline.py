@@ -7,7 +7,7 @@ import pathlib
 
 import pytest
 
-from cleanporter import baseline, cli, config, engine, model
+from cleanporter import baseline, cli, config, engine
 
 _CONSUMER = "from demo.helpers import THING\ntotal = THING\n"
 #: A CP001 and a CP002 (a module no interpreter has).
@@ -130,8 +130,9 @@ def test_write_baseline_records_the_findings_and_exits_0(
     project: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert _write_baseline() == 0
-    assert "wrote 1 finding(s) to baseline.json" in capsys.readouterr().err
-    statement = baseline.statement_hash("from demo.helpers import THING")
+    err = capsys.readouterr().err
+    assert "wrote 1 finding(s) to baseline.json" in err
+    assert "CP002" not in err
     assert _baseline(project) == {
         "version": 1,
         "findings": [
@@ -140,7 +141,6 @@ def test_write_baseline_records_the_findings_and_exits_0(
                 "code": "CP001",
                 "parent": "demo.helpers",
                 "name": "THING",
-                "statement": statement,
             }
         ],
     }
@@ -179,13 +179,26 @@ def test_a_line_shift_keeps_the_finding_baselined(project: pathlib.Path) -> None
     assert cli.main(["--baseline", "baseline.json", "src"]) == 0
 
 
-def test_whitespace_inside_the_statement_does_not_matter(project: pathlib.Path) -> None:
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "from  demo.helpers   import THING",
+        "from demo.helpers import (THING)",
+        "from demo.helpers import (\n    THING,\n)",
+        "from demo.helpers \\\n    import THING",
+        "from .helpers import THING",
+    ],
+    ids=["whitespace", "parentheses", "exploded", "continuation", "relative"],
+)
+def test_reformatting_the_statement_keeps_the_finding_baselined(
+    project: pathlib.Path, spelling: str
+) -> None:
     assert _write_baseline() == 0
-    _write(_consumer(project), "from  demo.helpers   import THING\ntotal = THING\n")
+    _write(_consumer(project), f"{spelling}\ntotal = THING\n")
     assert cli.main(["--baseline", "baseline.json", "src"]) == 0
 
 
-def test_editing_the_statement_brings_its_findings_back(
+def test_adding_a_name_reports_only_the_new_name(
     project: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert _write_baseline() == 0
@@ -193,9 +206,21 @@ def test_editing_the_statement_brings_its_findings_back(
     capsys.readouterr()
     assert cli.main(["--baseline", "baseline.json", "src"]) == 1
     captured = capsys.readouterr()
-    assert "'THING'" in captured.out
     assert "'OTHER'" in captured.out
-    # The old statement's entry now matches nothing.
+    assert "'THING'" not in captured.out
+    assert "baseline entr" not in captured.err
+
+
+def test_importing_another_name_brings_the_finding_back(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _write_baseline() == 0
+    _write(_consumer(project), "from demo.helpers import OTHER\ntotal = OTHER\n")
+    capsys.readouterr()
+    assert cli.main(["--baseline", "baseline.json", "src"]) == 1
+    captured = capsys.readouterr()
+    assert "'OTHER'" in captured.out
+    # The THING entry now matches nothing.
     assert "1 baseline entry matches no finding" in captured.err
 
 
@@ -392,11 +417,106 @@ def test_cp004_is_never_recorded(project: pathlib.Path) -> None:
     assert _baseline(project)["findings"] == []
 
 
-def test_the_statement_is_kept_off_every_report(project: pathlib.Path) -> None:
-    result = engine.run([pathlib.Path("src")], config.Config(root=project))
-    [finding] = result.findings
-    assert finding.statement == "from demo.helpers import THING"
-    assert "statement" not in repr(finding)
-    assert finding == model.Finding(
-        finding.path, finding.line, finding.column, finding.parent, finding.name, finding.status
+# -- check runs only ------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", ["--fix", "--diff"])
+def test_an_explicit_baseline_is_refused_with_fix_or_diff(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    assert _write_baseline() == 0
+    before = _consumer(project).read_bytes()
+    with pytest.raises(SystemExit) as exc:
+        cli.main([mode, "--baseline", "baseline.json", "src"])
+    assert exc.value.code == 2
+    assert "--baseline applies to check runs only" in capsys.readouterr().err
+    assert _consumer(project).read_bytes() == before
+
+
+def test_a_configured_baseline_is_skipped_with_a_note_under_diff(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert _write_baseline() == 0
+    with (project / "pyproject.toml").open("a", encoding="utf-8", newline="\n") as f:
+        f.write('[tool.cleanporter]\nbaseline = "baseline.json"\n')
+    capsys.readouterr()
+    assert cli.main(["--diff", "src"]) == 1
+    err = capsys.readouterr().err
+    assert "configured baseline is not applied under --fix or --diff" in err
+    assert "CP001" in err
+    assert "in the baseline" not in err
+    # A check run still applies it.
+    assert cli.main(["src"]) == 0
+
+
+def test_the_library_refuses_a_baseline_for_other_modes(project: pathlib.Path) -> None:
+    cfg = config.Config(root=project)
+    result = engine.run([pathlib.Path("src")], cfg, engine.Mode.DIFF)
+    with pytest.raises(ValueError, match="not a diff run"):
+        baseline.apply(result, [], cfg)
+    with pytest.raises(ValueError, match="not a diff run"):
+        baseline.entries(result, project)
+
+
+# -- identity across runs --------------------------------------------------------
+
+
+def test_cp001_and_cp003_match_each_other(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A re-export is load-bearing only in a run that includes its importer."""
+    _write(tmp_path / "pyproject.toml", '[project]\nname = "demo"\n')
+    _write(tmp_path / "demo" / "core.py", "def helper():\n    return 1\n")
+    _write(
+        tmp_path / "demo" / "__init__.py",
+        "from demo.core import helper\n\n\ndef run():\n    return helper()\n",
     )
+    _write(tmp_path / "consumer.py", "import demo\n\ndemo.helper()\n")
+    monkeypatch.chdir(tmp_path)
+    cfg = config.Config(root=tmp_path)
+    whole = engine.run([pathlib.Path()], cfg)
+    part = engine.run([pathlib.Path("demo")], cfg)
+    codes = [f.code for f in whole.findings], [f.code for f in part.findings]
+    assert codes == (["CP003"], ["CP001"])
+    assert cli.main(["--write-baseline", "baseline.json", "."]) == 0
+    assert cli.main(["--baseline", "baseline.json", "demo"]) == 0
+    assert cli.main(["--baseline", "baseline.json", "."]) == 0
+
+
+def test_a_baseline_needs_a_pyproject(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(tmp_path / "pkg" / "helpers.py", "THING = 1\n")
+    _write(tmp_path / "pkg" / "mod.py", "from pkg.helpers import THING\n")
+    _write(tmp_path / "baseline.json", '{"version": 1, "findings": []}\n')
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["--write-baseline", "new.json", "pkg"]) == 2
+    assert cli.main(["--baseline", "baseline.json", "pkg"]) == 2
+    assert "need a pyproject.toml" in capsys.readouterr().err
+    assert not (tmp_path / "new.json").exists()
+
+
+def test_write_baseline_is_refused_with_a_structured_format(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        _write_baseline("--format", "json")
+    assert exc.value.code == 2
+    assert "--format" in capsys.readouterr().err
+    assert not (project / "baseline.json").exists()
+
+
+def test_write_baseline_notes_the_unresolved_it_records(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write(_consumer(project), _MIXED)
+    assert _write_baseline() == 0
+    err = capsys.readouterr().err
+    assert "wrote 2 finding(s)" in err
+    assert "1 of them are CP002" in err
+
+
+def test_write_baseline_replaces_an_existing_file(project: pathlib.Path) -> None:
+    _write(project / "baseline.json", "stale contents\n")
+    assert _write_baseline() == 0
+    assert _baseline(project)["version"] == 1
