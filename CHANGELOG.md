@@ -68,8 +68,8 @@ Breaking under the pre-1.0 policy above:
   is a SARIF 2.1.0 log, one rule per finding code, ready for
   `github/codeql-action/upload-sarif`; a file outside the working directory
   gets an absolute `file:` URI as `pathlib` spells it (`file:///C:/...`, or
-  `file://server/share/...` for a UNC path). `github` prints workflow commands that
-  annotate pull requests. In each, stdout carries only the document, the exit
+  `file://server/share/...` for a UNC path). `github` prints workflow
+  commands that annotate pull requests. In each, stdout carries only the document, the exit
   code is the text report's, `CP004` is listed only under `--show-skipped`,
   and severity follows the exit code (`CP002` is a warning, an error under
   `--strict`). `--diff` with `sarif` or `github`, which have no place for a

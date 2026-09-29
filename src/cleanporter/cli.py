@@ -298,10 +298,11 @@ def run(args: argparse.Namespace) -> int:
     strict = config.treat_unresolved_as_error
 
     if result.wrote:
-        # The one place the tool changes something it cannot fully check: a
-        # dotted reference living in *another* file (`monkeypatch.setattr(
-        # "pkg.mod.name", ...)`, an entry point, an importlib lookup) is
-        # invisible to a per-file guard. Documented in the README, but a user
+        # What the tool still cannot check: a literal dotted path in another
+        # analysed file or pyproject.toml is guarded (`Resolver.named_by`),
+        # but a dynamic string, a getattr-style lookup through a module
+        # object, or a reference outside the run or in other config is not.
+        # Documented under Known limitations in docs/safety.md, but a user
         # who only ever reads --help would never see it. stderr, so a piped
         # patch on stdout stays a patch.
         print(_CROSS_FILE_NOTE, file=sys.stderr)
