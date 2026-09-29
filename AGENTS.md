@@ -31,10 +31,12 @@ that weakens either is a regression no matter how well it tests:
 Findings: `CP001` violation, `CP002` unresolved, `CP003` skipped-on-purpose,
 `CP004` taken out by a `[tool.cleanporter.skip]` rule or an inline
 `# cleanporter: ignore[CODE]` comment (`suppress.py`), `CP005` an inline
-suppression that suppressed nothing. Exit codes: `0` clean, `1` violations,
-`2` operational error. `RunResult.exit_code` (which `cli.run` returns) folds
-`CP003` and `CP005` into the failure count -- a declined violation and a stale
-suppression, not notes -- while `CP002` counts only under
+suppression that suppressed nothing, `CP006` a module bound under a name its
+`[[tool.cleanporter.alias]]` convention (or ruff's import-conventions table)
+forbids (`aliases.py`). Exit codes: `0` clean, `1` violations, `2` operational
+error. `RunResult.exit_code` (which `cli.run` returns) folds `CP003`, `CP005`
+and `CP006` into the failure count -- a declined violation, a stale
+suppression and a broken convention, not notes -- while `CP002` counts only under
 `--strict`/`treat_unresolved_as_error` and `CP004` never counts at all: it is
 the author's own configuration reporting back, printed only under
 `--show-skipped`.
