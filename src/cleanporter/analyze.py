@@ -170,13 +170,13 @@ class FileRecord:
     def suppressions(self) -> suppress_lib.Suppressions:
         """This file's ``# cleanporter: ignore[...]`` comments. Computed once.
 
-        Free for a file that never spells `suppress.MARKER`: nothing is walked
+        Free for a file `suppress.may_hold` rules out: nothing is walked
         and `positions` is not forced.
         """
         if self._suppressions is None:
             self._suppressions = (
                 suppress_lib.collect(self.tree, self.positions)
-                if suppress_lib.MARKER in self.source
+                if suppress_lib.may_hold(self.source)
                 else suppress_lib.EMPTY
             )
         return self._suppressions
@@ -807,10 +807,14 @@ def analyze_record(
     decider = Decider(rec, resolver, config)
     findings: list[model.Finding] = []
     used: set[tuple[suppress_lib.Suppression, str]] = set()
+    #: Comments covering a name reported as never read, for `CP005`'s hint.
+    on_unread: set[suppress_lib.Suppression] = set()
     for unit in rec.units:
         line, column = starts[unit.node]
         decision = decider.decide(unit, line, unread)
         _mark_used(rec, unit, decision, used)
+        if decision.unread:
+            on_unread.update(rec.suppressions.covering(unit.node, unit.alias))
         if decision.status is None:
             continue
         findings.append(
@@ -825,7 +829,7 @@ def analyze_record(
                 _module_import(rec, unit) if decision.rewrite else "",
             )
         )
-    findings.extend(_unused_suppressions(rec, used))
+    findings.extend(_unused_suppressions(rec, used, on_unread))
     return findings
 
 
@@ -850,12 +854,19 @@ def _mark_used(
 
 
 def _unused_suppressions(
-    rec: FileRecord, used: set[tuple[suppress_lib.Suppression, str]]
+    rec: FileRecord,
+    used: set[tuple[suppress_lib.Suppression, str]],
+    on_unread: set[suppress_lib.Suppression],
 ) -> list[model.Finding]:
     """A `CP005` per suppression comment naming a code that matched nothing.
 
     A comment on a line a skip rule covers is not reported: the rule took
     whatever it could have matched.
+
+    A never-read name is suppressed by ``CP001`` only (`Decider.decide`), so
+    an ``ignore[CP003]`` written after seeing the fixer's never-read `CP003`
+    is unused -- in both modes, which is what keeps them agreeing. The
+    message says so where the fixer knows the name is never read (*on_unread*).
     """
     findings: list[model.Finding] = []
     for suppression in rec.suppressions.comments:
@@ -872,7 +883,14 @@ def _unused_suppressions(
                 "",
                 "",
                 model.Status.UNUSED_SUPPRESSION,
-                f"no {' or '.join(unused)} finding on the imports this comment covers; "
+                f"no {' or '.join(unused)} finding on the imports this comment covers"
+                + (
+                    " (a never-read import is suppressed by CP001, the code a plain check "
+                    "reports for it, even where --fix reports it as CP003)"
+                    if "CP003" in unused and suppression in on_unread
+                    else ""
+                )
+                + "; "
                 + (
                     "remove the comment"
                     if len(unused) == len(suppression.codes)

@@ -62,6 +62,7 @@ def _findings(out: str) -> list[tuple[int, str]]:
         ("# cleanporter: ignore[CP001, CP001]", ("CP001",)),
         ("# noqa: F401  # cleanporter: ignore[CP001]", ("CP001",)),
         ("# cleanporter: ignore[CP002]  -- the vendored copy is not importable", ("CP002",)),
+        ("#  cleanporter:  ignore[CP001]", ("CP001",)),
     ],
 )
 def test_a_well_formed_suppression_parses(comment: str, codes: tuple[str, ...]) -> None:
@@ -80,8 +81,14 @@ def test_a_comment_without_a_directive_is_not_one(comment: str) -> None:
     [
         ("# cleanporter: ignore", "bare"),
         ("# cleanporter: ignore  # because", "bare"),
-        ("# cleanporter: ignore[]", "not a finding code"),
-        ("# cleanporter: ignore[CP001,]", "not a finding code"),
+        ("# cleanporter: ignore[]", "has an empty code"),
+        ("# cleanporter: ignore[CP001,]", "has an empty code"),
+        ("# cleanporter: ignore[cp001]", "not a finding code"),
+        ("# Cleanporter: ignore[CP001]", "is not a suppression"),
+        ("# CLEANPORTER: ignore[CP001]", "is not a suppression"),
+        ("# cleanporter : ignore[CP001]", "is not a suppression"),
+        ("# cleanporter: IGNORE[CP001]", "is not a suppression"),
+        ("# cleanporter: ignore[CP001]: because", "is not a suppression"),
         ("# cleanporter: ignore[F401]", "not a finding code"),
         ("# cleanporter: ignore[CP009]", "not a finding code a suppression can name"),
         ("# cleanporter: ignore[CP004]", "already a skip"),
@@ -368,22 +375,95 @@ def test_check_and_fix_agree_on_a_never_read_import(
     assert target.read_bytes() == source.encode()
 
 
-def test_a_suppression_the_fix_made_stale_is_reported_after_it(
+_MOVED = "the rewrite would move this suppression comment onto imports it does not cover now"
+
+
+def test_fix_declines_moving_a_comment_onto_the_module_import_it_writes(
     project: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The comment moves with the kept statement; the report is on the file as written."""
-    target = _consumer(
-        project, "from demo.helpers import go  # cleanporter: ignore[CP002]\nx = go()\n"
-    )
+    """A stale comment would land on the new ``from demo import helpers`` line."""
+    source = "from demo.helpers import go  # cleanporter: ignore[CP002]\nx = go()\n"
+    target = _consumer(project, source)
     rc, _out, err = _run(capsys, "--fix", "src")
     assert rc == 1
-    assert target.read_text(encoding="utf-8").splitlines()[0] == (
-        "from demo import helpers  # cleanporter: ignore[CP002]"
+    assert target.read_bytes() == source.encode()
+    assert _MOVED in err
+    assert sorted(code for _line, code in _findings(err)) == ["CP001", "CP003", "CP005"]
+
+
+#: Counterexamples: a partial rewrite re-renders the kept names on one line
+#: with the statement's trailing comment, which would then cover them.
+_MOVING = {
+    # A: the comment covers only `Widget`, the name being rewritten.
+    "continuation": (
+        "from demo.helpers import mystery, \\\n"
+        "    Widget  # cleanporter: ignore[CP002]\n"
+        "\n"
+        "print(Widget, mystery)\n"
+    ),
+    # B: the comment on the closing parenthesis covers nothing at all.
+    "closing-paren": (
+        "from demo.helpers import (\n"
+        "    mystery,\n"
+        "    Widget,\n"
+        ")  # cleanporter: ignore[CP002]\n"
+        "\n"
+        "print(Widget, mystery)\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("source", list(_MOVING.values()), ids=list(_MOVING))
+def test_fix_never_moves_a_suppression_onto_kept_names(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str], source: str
+) -> None:
+    """``--fix --strict`` must not turn the failing run green by re-aiming a comment."""
+    target = _consumer(project, source)
+    rc_check, out, _ = _run(capsys, "--strict", "src")
+    check = sorted(code for _line, code in _findings(out))
+    assert rc_check == 1
+    assert check == ["CP001", "CP002", "CP005"]
+    rc_fix, _out, err = _run(capsys, "--fix", "--strict", "src")
+    assert rc_fix == 1
+    assert target.read_bytes() == source.encode()
+    assert _MOVED in err
+    # Check and fix agree on everything but the fixer's own explanation.
+    fix = sorted(code for _line, code in _findings(err))
+    assert fix == sorted([*check, "CP003"])
+
+
+def test_a_comment_that_keeps_covering_the_same_names_does_not_block(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The kept names, and only they, are still covered after the rewrite."""
+    source = (
+        "from demo.helpers import mystery, Widget  # cleanporter: ignore[CP002]\n"
+        "print(Widget, mystery)\n"
     )
-    assert [code for _line, code in _findings(err)] == ["CP005"]
+    target = _consumer(project, source)
+    rc, _out, _err = _run(capsys, "--fix", "--strict", "src")
+    assert rc == 0
+    assert target.read_text(encoding="utf-8") == (
+        "from demo import helpers\n"
+        "from demo.helpers import mystery  # cleanporter: ignore[CP002]\n"
+        "print(helpers.Widget, mystery)\n"
+    )
 
 
-def test_a_comment_in_a_skipped_region_is_never_unused(
+def test_ignore_cp003_on_a_never_read_import_points_to_cp001(
+    project: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Both modes report the same codes; ``--fix`` also says which code to use."""
+    source = "from demo.helpers import THING  # cleanporter: ignore[CP003]\n"
+    _consumer(project, source)
+    _rc, out, _ = _run(capsys, "src")
+    assert sorted(code for _line, code in _findings(out)) == ["CP001", "CP005"]
+    _rc, _out, err = _run(capsys, "--fix", "src")
+    assert sorted(code for _line, code in _findings(err)) == ["CP003", "CP005"]
+    assert "a never-read import is suppressed by CP001" in err
+
+
+def test_a_comment_in_a_file_a_skip_rule_takes_is_never_unused(
     project: pathlib.Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (project / "pyproject.toml").write_text(

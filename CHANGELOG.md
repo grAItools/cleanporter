@@ -34,7 +34,11 @@ Breaking under the pre-1.0 policy above:
   `--show-skipped`, and `--fix` keeps the import exactly as it keeps one a
   `skip` rule covers. A bare `# cleanporter: ignore`, an unknown code, or
   `CP004`/`CP005` in the brackets is a warning naming the file and line, and
-  suppresses nothing. See
+  suppresses nothing. So does any other comment piece starting with
+  `cleanporter` and a colon in any case or spacing: an existing
+  `# cleanporter: ...` or `# Cleanporter: ...` note in your code now prints a
+  warning (and suppresses nothing). `--fix` declines a file (`CP003`) rather
+  than move a suppression onto imports it did not cover. See
   [Inline suppressions](https://graitools.github.io/cleanporter/configuration/#inline-suppressions).
 - **`CP005`, unused suppression.** A suppression code that matched no finding on
   the names its comment covers is reported at the comment and, like `CP001`,

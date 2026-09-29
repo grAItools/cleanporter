@@ -7,12 +7,18 @@ decision can sit on the import itself::
 
     from gt4py.next import broadcast  # cleanporter: ignore[CP001]
 
-**The grammar is strict.** A comment is split at each ``#``; a piece that
-begins with ``cleanporter:`` is a directive, so ``# noqa: F401  #
-cleanporter: ignore[CP001]`` works. The only directive is ``ignore``, and it
-must name its codes in brackets, comma-separated: ``ignore[CP001, CP002]``.
-Only `CP001`, `CP002` and `CP003` can be named -- the findings a suppression
-can replace. A bare ``ignore`` is refused for the reason the repository
+**The grammar is strict.** A comment is split at each ``#``, so ``# noqa:
+F401  # cleanporter: ignore[CP001]`` works. A piece that begins, after
+optional whitespace, with ``cleanporter`` and a colon -- in any case, with
+any spacing before the colon -- is meant as a directive, and must then be
+exactly: ``cleanporter:`` (lowercase, no space before the colon), optional
+whitespace, ``ignore[``, one or more codes separated by commas (whitespace
+around each allowed), ``]``, and then either nothing or whitespace followed
+by any text. ``#cleanporter:ignore[CP001]`` and ``# cleanporter:
+ignore[CP001, CP002]  -- vendored`` are accepted; ``# Cleanporter:
+ignore[CP001]``, ``# cleanporter : ignore[CP001]``, ``ignore [CP001]`` and
+``ignore[cp001]`` are not. Only `CP001`, `CP002` and `CP003` can be named --
+the findings a suppression can replace. A bare ``ignore`` is refused for the reason the repository
 refuses a bare ``# noqa``: it would silence findings nobody has seen yet.
 `CP004` is already the author's own decision, and `CP005` is the report that
 a suppression did nothing, which silencing would defeat. A comment that breaks
@@ -59,10 +65,10 @@ CODES: Mapping[model.Status, str] = {
     model.Status.SKIPPED: "CP003",
 }
 
-#: Text a file must hold for any of its comments to be a directive. Checked
-#: against the whole source before anything is walked, so a file without one
-#: costs a substring search.
-MARKER = "cleanporter:"
+#: What a comment piece starts with when it is meant as a directive: loose on
+#: purpose, so that a near miss (``Cleanporter:``, ``cleanporter :``) is
+#: warned about rather than silently ignored.
+_ATTEMPT = re.compile(r"cleanporter\s*:", re.IGNORECASE)
 
 _IGNORE = re.compile(r"cleanporter:\s*ignore(?:\[(?P<codes>[^\]]*)\])?(?P<tail>.*)", re.DOTALL)
 _CODE = re.compile(r"CP\d{3}")
@@ -148,13 +154,18 @@ def collect(tree: cst.Module, positions: Mapping[cst.CSTNode, metadata.CodeRange
     """Every suppression comment in *tree*, and the lines they are looked up by.
 
     *positions* is the tree's resolved ``PositionProvider`` mapping. Callers
-    check `MARKER` against the source first; this walks the tree regardless.
+    check `may_hold` against the source first; this walks the tree regardless.
     """
     collector = _Collector(positions)
     tree.visit(collector)
     if not collector.comments:
         return Suppressions(problems=tuple(collector.problems))
     return Suppressions(tuple(collector.comments), tuple(collector.problems), collector.lines)
+
+
+def may_hold(source: str) -> bool:
+    """Whether *source* could hold a directive at all: a search, not a walk."""
+    return _ATTEMPT.search(source) is not None
 
 
 def parse(text: str) -> tuple[tuple[str, ...] | None, list[str]]:
@@ -168,7 +179,7 @@ def parse(text: str) -> tuple[tuple[str, ...] | None, list[str]]:
     found = False
     for piece in text.split("#")[1:]:
         segment = piece.strip()
-        if not segment.startswith(MARKER):
+        if not _ATTEMPT.match(segment):
             continue
         found = True
         problem = _parse_directive(segment, codes)
@@ -193,6 +204,8 @@ def _parse_directive(segment: str, codes: list[str]) -> str | None:
         )
     for raw in match["codes"].split(","):
         code = raw.strip()
+        if not code:
+            return f"`# {segment}` has an empty code: expected {_FORM}"
         if not _CODE.fullmatch(code):
             return f"`# {segment}` names {code!r}, which is not a finding code: expected {_FORM}"
         if code in _UNSUPPRESSIBLE:

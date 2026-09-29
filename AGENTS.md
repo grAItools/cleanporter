@@ -29,12 +29,15 @@ that weakens either is a regression no matter how well it tests:
    emits `CP003` with the reason. No partial-rewrite or "fix what we can" mode.
 
 Findings: `CP001` violation, `CP002` unresolved, `CP003` skipped-on-purpose,
-`CP004` taken out by a `[tool.cleanporter.skip]` rule. Exit codes: `0` clean,
-`1` violations, `2` operational error. `RunResult.exit_code` (which `cli.run`
-returns) folds `CP003` into the failure count -- a declined violation, not a
-note -- while `CP002` counts only under `--strict`/`treat_unresolved_as_error`
-and `CP004` never counts at all: it is the author's own configuration reporting
-back, printed only under `--show-skipped`.
+`CP004` taken out by a `[tool.cleanporter.skip]` rule or an inline
+`# cleanporter: ignore[CODE]` comment (`suppress.py`), `CP005` an inline
+suppression that suppressed nothing. Exit codes: `0` clean, `1` violations,
+`2` operational error. `RunResult.exit_code` (which `cli.run` returns) folds
+`CP003` and `CP005` into the failure count -- a declined violation and a stale
+suppression, not notes -- while `CP002` counts only under
+`--strict`/`treat_unresolved_as_error` and `CP004` never counts at all: it is
+the author's own configuration reporting back, printed only under
+`--show-skipped`.
 
 The code is `src/cleanporter/`; every module opens with a docstring giving its
 role and reasoning, at length in `guards.py`, `firstparty.py`, `resolver.py`,

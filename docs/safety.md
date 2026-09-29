@@ -217,6 +217,15 @@ trailing comment attached to it. Discarding an author's comment silently is
 worse than declining the fix, so the file is left alone. A *blank* line before
 the import is not a comment and does not block.
 
+### The rewrite would move a suppression comment
+
+An [inline suppression](configuration.md#inline-suppressions) covers the
+imports on its physical line. A partial rewrite writes the kept names on one
+line with the statement's trailing comment, so a comment that covered only a
+rewritten name, or none, could end up covering — and suppressing — the kept
+ones. The coverage of every suppression is recomputed on the output, and a
+comment that would cover any import it did not cover before declines the file.
+
 ### The file's encoding cannot hold the rewrite unchanged
 
 The rewrite is written back in the encoding the file was read in. If the file
