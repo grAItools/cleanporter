@@ -115,17 +115,6 @@ Breaking under the pre-1.0 policy above:
   under a declared root too, since `import io` is the standard library's.
   Documented under
   [Known limitations](https://graitools.github.io/cleanporter/safety/#known-limitations).
-- **A definition after a third-party star import is an object.** A
-  first-party module doing `from numpy import *` and then, later and at top
-  level, `def NAME` / `class NAME` / `NAME = ...` used to leave `from M import
-  NAME` a `CP002`, because the star import might bind it. Module-level
-  statements run in order, so when that definition is the last statement that
-  can bind the name, it is what the module holds: the import is now a
-  `CP001`. The reverse order, a later star import, `del NAME`, any later
-  rebinding, a `global NAME`, a definition inside `if`/`try`, and a
-  first-party star import or `from ... import NAME` beside it all keep the
-  `CP002`. Documented under
-  [How it works](https://graitools.github.io/cleanporter/how-it-works/#1-first-party-from-the-filesystem).
 
 ### Changed
 

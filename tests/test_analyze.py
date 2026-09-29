@@ -1106,28 +1106,3 @@ def test_a_declared_root_advises_the_absolute_package_import(tmp_path):
             "import the module ('import toppkg') and use 'toppkg.helper'"
         )
     ]
-
-
-# -- statement order after a third-party star import ---------------------------
-def test_a_definition_after_a_third_party_star_is_a_cp001_the_fixer_rewrites(tmp_path):
-    files = {
-        "app/__init__.py": "",
-        "app/after.py": "from os.path import *\n\ndef helper():\n    return 1\n",
-        "app/before.py": "def helper():\n    return 1\n\nfrom os.path import *\n",
-        "app/use.py": (
-            "from app.after import helper\nfrom app.before import helper as h2\n\n"
-            "x = helper(), h2()\n"
-        ),
-    }
-    for rel, text in files.items():
-        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / rel).write_text(text, encoding="utf-8", newline="\n")
-    cfg = config.Config(root=tmp_path)
-    found = {
-        (f.parent, f.code) for f in engine.run([tmp_path / "app"], cfg).findings if f.name != "*"
-    }
-    assert found == {("app.after", "CP001"), ("app.before", "CP002")}
-    engine.run([tmp_path / "app"], cfg, engine.Mode.FIX)
-    assert (tmp_path / "app" / "use.py").read_text(encoding="utf-8") == (
-        "from app import after\nfrom app.before import helper as h2\n\nx = after.helper(), h2()\n"
-    )

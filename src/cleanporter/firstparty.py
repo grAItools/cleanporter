@@ -635,15 +635,6 @@ class ModuleMap:
         * ``from M import *`` is followed into a first-party ``M`` (see
           `_via_star`).
 
-        All of that is order-free, and every binding must agree. The one
-        place statement order is read is the shortcut in front of it
-        (`_settled_by_order`): when the last top-level statement binding
-        *name* is an unconditional definition that nothing later can touch,
-        and the only other bindings are star imports from outside the tree,
-        that definition is what the module holds once it has run. That is
-        what lets ``from numpy import *`` followed by ``def NAME`` be an
-        object, where the star import alone would leave it undetermined.
-
         A PEP 562 ``__getattr__`` is consulted only when nothing binds the
         name, so it only matters then. Also returns whether any of this
         reached a lookup still in progress.
@@ -652,8 +643,6 @@ class ModuleMap:
         if ns is None:
             return _Evidence(unknown=f"'{source}' cannot be parsed"), False
         package = module if source.name == "__init__.py" else module.rpartition(".")[0]
-        if self._settled_by_order(source, ns, package, name):
-            return _OBJECT, False
         outer, self._low = self._low, _NO_BACK_EDGE
         found = _NOTHING
         if name in ns.defined:
@@ -673,32 +662,6 @@ class ModuleMap:
                 return _Evidence(unknown=_CIRCULAR, via=getattr_hook), touched
             return _Evidence(unknown=f"{getattr_hook} that may supply it"), touched
         return found, touched
-
-    def _settled_by_order(
-        self, source: pathlib.Path, ns: _bindings.Namespace, package: str, name: str
-    ) -> bool:
-        """Whether *name* in *source* is a definition that its star imports cannot reach.
-
-        The order rule (`_bindings.settled_by_definition`), applied only
-        where the order-free one has nothing to follow: every star import in
-        the file is from a module outside the analysed tree, and no ``from
-        ... import`` binds *name*. Those are the bindings this map would walk
-        into, and walking them is what finds a circular import -- the one
-        case where a definition does *not* win, because the other half of
-        the cycle reads the module while it is still running (``amb`` doing
-        ``from .m import *`` then ``ver = None``, with ``amb.m`` doing ``from
-        amb import ver``, hands ``amb.m`` whatever ``amb`` binds at that
-        moment). A star import this run cannot read is walked into by
-        nothing, so there is no such cycle for it to hide, and there the
-        definition that runs last is the answer.
-        """
-        if name not in ns.defined or ns.from_imports.get(name):
-            return False
-        for level, target in ns.stars:
-            anchored = _anchor(package, level, target)
-            if anchored is None or self.is_first_party(anchored):
-                return False
-        return _bindings.settled_by_definition(str(source), name)
 
     def _via_from(self, module: str, name: str, origin: str | None, original: str) -> _Evidence:
         """What ``from ORIGIN import ORIGINAL [as NAME]`` inside *module* binds.

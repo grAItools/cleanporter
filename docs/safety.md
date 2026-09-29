@@ -309,18 +309,13 @@ configuration would have forbidden. Prefer the bare last-component spelling
     - a `del NAME` at module level, or a `global NAME` rebinding inside a
       function: the name still counts as bound by the statements that bind
       it;
-    - statement order, with one exception. **A star import from a module
-      this run cannot read** (third-party, or with an `__all__` built at run
-      time) leaves every name the parent could get from it undetermined,
-      *even one the parent also defines itself* — unless the definition is
-      the last top-level statement that binds the name, unconditional, and
-      nothing after it (another star import, a `del`, a rebinding, a
-      `global` declaration anywhere) could undo it, and the parent's other
-      star imports are all from outside the analysed tree. Then the
-      definition provably wins, and the name is an object. A definition
-      before the star import, or inside an `if` or `try` body, is still a
-      known, accepted source of `CP002`: following order through conditional
-      bodies is a heuristic this layer deliberately does without.
+    - statement order. **A star import from a module this run cannot read**
+      (third-party, or with an `__all__` built at run time) leaves every name
+      the parent could get from it undetermined, *even one the parent also
+      defines itself* — the definition usually comes later and wins, but
+      "usually" is not proof, and following order through conditional and
+      `try` bodies is a heuristic this layer deliberately does without. This
+      is a known, accepted source of `CP002`.
 - **Relative imports stay relative, and one form is kept.**
   `from .sub.mod import C` is rewritten to `from .sub import mod` plus `mod.C`.
   The absolute name is what the resolver classifies, but it is only as good as
