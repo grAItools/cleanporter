@@ -190,6 +190,9 @@ class _Fixer(cst.CSTTransformer):
         #: nothing; see `_free_names_below`. Built on first use. ``None`` for
         #: a read whose names cannot be read off its node.
         self._free_reads: list[tuple[metadata.Scope, str | None]] | None = None
+        #: Whether the file has a wildcard import, which can rebind any
+        #: module-level name (`_spelling_or_blocker`, `_binding_for`).
+        self._has_star = False
         #: The module being fixed (`visit_Module`), the owner of its global scope.
         self._module_node = cst.Module(body=[])
         #: Every scope in the file (`_scopes`). Built on first use.
@@ -200,6 +203,7 @@ class _Fixer(cst.CSTTransformer):
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
         self._module_node = node
+        self._has_star = any(_imports.is_star(imp) for imp in _nodes.import_froms(node))
         self._tc_ids = _type_checking.import_ids(node)
         self._del_names = _nodes.deleted_names(node)
         # Names already bound at module scope, seen from *any* scope's
@@ -625,6 +629,14 @@ class _Fixer(cst.CSTTransformer):
                 "TYPE_CHECKING-gated import; rewriting it without "
                 "`from __future__ import annotations` risks NameError"
             )
+        if self._has_star and isinstance(
+            self.get_metadata(metadata.ScopeProvider, imp, None), metadata.GlobalScope
+        ):
+            # `from x import *` binds whatever `x` exports, which may be the
+            # very name a module-level binding here is given -- before it
+            # or after it, the reads would then see the wrong object. What a
+            # star exports is not proven here, so no module-level binding is.
+            return _STAR_REASON
         # `analyze.Decider` keeps every name on a line with no spelling, so a
         # line that reaches here always has one. Should the two ever disagree,
         # the file is declined rather than written with a guessed name.
@@ -829,8 +841,11 @@ class _Fixer(cst.CSTTransformer):
             return self._allocate_token(scope, parent, extra_avoid, site.line), True
 
         existing = self._existing.get(module)
-        if existing is not None and self._holds_before(
-            self._existing_at[module], self._module_node, site.reads
+        # A wildcard import can rebind a module-level name (`_STAR_REASON`).
+        if (
+            existing is not None
+            and not self._has_star
+            and self._holds_before(self._existing_at[module], self._module_node, site.reads)
         ):
             # A module-level import is visible from nested scopes unless
             # *this* scope or an enclosing function/class scope assigns
@@ -1147,6 +1162,13 @@ class _Fixer(cst.CSTTransformer):
         # All-or-nothing. libcst hands us the pristine original tree, so
         # returning it discards every edit made to the children.
         return original_node if self.blockers else updated_node
+
+
+#: Why a file with a wildcard import gets no module-level binding.
+_STAR_REASON = (
+    "the file has a wildcard import, which can rebind any module-level name, so a "
+    "module-level binding cannot be shown to hold the module it is rewritten through"
+)
 
 
 def _unlinked_reason(name: str) -> str:

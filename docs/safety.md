@@ -189,6 +189,15 @@ from json import dumps` — and the read left unqualified would raise
 the import (in its scope, or a nested one that does not bind the name itself)
 must be one libCST ties to it; any other declines the file.
 
+### A wildcard import in the file
+
+`from x import *` binds whatever `x` exports, which may be the very name the
+rewrite binds the module under — `from json import dumps` next to a star
+import of a module exporting `json` would have `json.dumps` read that `json`
+instead. What a wildcard import brings in is not proven, so in a file with one
+the fixer creates and reuses no module-level binding: a module-level rewrite
+declines the file, and a rewrite inside a function binds its own import there.
+
 ### `global` / `nonlocal` declarations naming it
 
 Such a declaration keeps the name writable from another scope. Qualifying the

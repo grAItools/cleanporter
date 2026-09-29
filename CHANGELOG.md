@@ -81,6 +81,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sits directly in the body of its module or function (or under `if not
   TYPE_CHECKING:`) and ends before every read it would serve; otherwise the
   line gets its own import, aliased if the name is taken.
+- `--fix` could bind a module under a name a wildcard import rebinds:
+  `from json import dumps` / `from demo.star import *` became `import json`
+  followed by the star import, and a `json` the star module exports then
+  replaced the module. What a wildcard import brings in is not proven, so a
+  file with one gets no module-level binding from the fix: a module-level
+  rewrite declines the file with a `CP003`, and a rewrite inside a function
+  binds its own import rather than reusing a module-level one.
 
 ## [0.5.0] - 2026-09-29
 

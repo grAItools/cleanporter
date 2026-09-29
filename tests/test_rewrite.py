@@ -2013,3 +2013,41 @@ def test_an_unconditional_earlier_binding_is_still_reused():
     result = outcome("import json\nfrom json import dumps\nx = dumps(1)\n")
     assert result.status == "fixed"
     assert result.source == "import json\nx = json.dumps(1)\n"
+
+
+# -- a wildcard import can rebind a module-level name --------------------------------
+
+
+def test_a_wildcard_import_declines_a_module_level_binding():
+    src = "from json import dumps\nfrom pkg import *\nprint(dumps(1))\n"
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert [f.detail for f in result.blockers] == [
+        (
+            "the file has a wildcard import, which can rebind any module-level name, so a "
+            "module-level binding cannot be shown to hold the module it is rewritten through"
+        )
+    ]
+
+
+def test_a_wildcard_import_leaves_a_function_local_rewrite_alone():
+    src = "from pkg import *\n\n\ndef f():\n    from json import dumps\n    return dumps(1)\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg import *\n\n\ndef f():\n    import json\n    return json.dumps(1)\n"
+    )
+
+
+def test_a_wildcard_import_stops_a_function_reusing_a_module_level_binding():
+    src = (
+        "import json\nfrom pkg import *\n\n\n"
+        "def f():\n    from json import dumps\n    return dumps(1), json\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "import json\nfrom pkg import *\n\n\n"
+        "def f():\n    import json as json_2\n    return json_2.dumps(1), json\n"
+    )
