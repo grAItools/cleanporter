@@ -26,6 +26,31 @@ Breaking under the pre-1.0 policy above:
 
 ### Added
 
+- **Baselines, for adopting cleanporter on an existing codebase.**
+  `--write-baseline FILE` records the current findings in a sorted,
+  versioned JSON file (`{"version": 1, "findings": [...]}`) and exits `0`;
+  `--baseline FILE`, or `baseline = "..."` under `[tool.cleanporter]`
+  (relative to the `pyproject.toml`), then leaves those findings out of the
+  report and the exit code, so only new ones fail. A finding is keyed by its
+  project-relative POSIX path, code, parent and name: it survives lines
+  moving and any reformatting of its statement, and comes back when the
+  import changes what it imports. `CP001` and `CP003` match each other, since
+  which one a run reports can depend on the files in it. Identical findings
+  count as a multiset. Entries that no longer match are counted in a stderr
+  note, never a failure; `--format json` adds `baselined` and
+  `stale_baseline` counts. Baselines are for check runs: `--baseline` or
+  `--write-baseline` with `--fix` or `--diff` is a usage error, a configured
+  `baseline` is skipped under them with a note, and both flags need a
+  `pyproject.toml`. For the library, the new `cleanporter.baseline` module
+  (`load`, `write`, `entries`, `apply`); `RunResult` gains trailing
+  `checked`, `baselined` and `stale_baseline` fields.
+- **`--select CODES` / `--ignore CODES`** (and the `select` / `ignore`
+  configuration keys, which the flags replace) choose which finding codes are
+  reported and counted. Reporting only: `--fix` rewrites exactly what it
+  would have. The exit code follows the reported codes, so `--select CP002`
+  fails on a `CP002` only under `--strict`. An unknown code exits `2`.
+  `engine.run` applies them, via the new `Config.select`, `Config.ignore`
+  and `Config.reports`.
 - **A cross-file string guard.** A string literal in another analysed file
   that spells a first-party binding's dotted path out whole —
   `monkeypatch.setattr("pkg.mod.helper", ...)`, `mock.patch("pkg.mod.helper")`,
