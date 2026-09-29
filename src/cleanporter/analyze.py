@@ -275,9 +275,11 @@ class FileFacts:
     #: are not recorded.
     attribute_reads: frozenset[tuple[str, str]]
     #: Every string literal whose whole text is a dotted or entry-point path
-    #: (`guards.dotted_reference`), with its components, in source order. The
-    #: raw material for the cross-file string evidence (`project._named`).
-    path_strings: tuple[tuple[cst.SimpleString, tuple[str, ...]], ...] = ()
+    #: (`guards.dotted_reference`), with that text and its components, in
+    #: source order: a plain string, an f-string with no placeholders, or an
+    #: implicit concatenation of those (`_literal_text`). The raw material
+    #: for the cross-file string evidence (`project._named`).
+    path_strings: tuple[tuple[cst.BaseExpression, str, tuple[str, ...]], ...] = ()
 
     @property
     def import_froms(self) -> tuple[cst.ImportFrom, ...]:
@@ -355,6 +357,29 @@ class FileFacts:
         return found
 
 
+def _literal_text(node: cst.SimpleString | cst.FormattedString) -> str | None:
+    """The runtime text of *node* when it is written out literally, else ``None``.
+
+    A path has no escapes, so text holding a backslash is not one, and
+    without one the raw text *is* the value -- no evaluation needed. An
+    f-string counts only with no placeholders (``f"pkg.mod.helper"``); a
+    brace means a placeholder or an escaped brace, neither of which a path
+    has. Bytes are not paths anything imports by.
+    """
+    if "b" in node.prefix.lower():
+        return None
+    if isinstance(node, cst.SimpleString):
+        text = node.raw_value
+    else:
+        pieces: list[str] = []
+        for part in node.parts:
+            if not isinstance(part, cst.FormattedStringText):
+                return None
+            pieces.append(part.value)
+        text = "".join(pieces)
+    return None if "\\" in text or "{" in text or "}" in text else text
+
+
 class _FactCollector(cst.CSTVisitor):
     """The one walk `collect_facts` makes. Every hook returns ``None``: descend."""
 
@@ -362,18 +387,46 @@ class _FactCollector(cst.CSTVisitor):
         super().__init__()
         self.imports: list[cst.Import | cst.ImportFrom] = []
         self.attribute_reads: set[tuple[str, str]] = set()
-        self.path_strings: list[tuple[cst.SimpleString, tuple[str, ...]]] = []
+        self.path_strings: list[tuple[cst.BaseExpression, str, tuple[str, ...]]] = []
+        #: Ids of strings that are parts of a concatenation, read with it.
+        self._string_parts: set[int] = set()
 
     def visit_SimpleString(self, node: cst.SimpleString) -> None:
-        # A path has no escapes, so a string with a backslash is not one, and
-        # without one the raw text *is* the value: no evaluation needed.
-        # Bytes are not paths anything imports by.
-        raw = node.raw_value
-        if "\\" in raw or "b" in node.prefix.lower():
+        if id(node) not in self._string_parts:
+            self._path_string(node, _literal_text(node))
+
+    def visit_FormattedString(self, node: cst.FormattedString) -> None:
+        if id(node) not in self._string_parts:
+            self._path_string(node, _literal_text(node))
+
+    def visit_ConcatenatedString(self, node: cst.ConcatenatedString) -> None:
+        # ``"pkg.mod." "helper"`` is one string at runtime, so it is read
+        # whole, once: its parts -- nested concatenations included -- are
+        # marked so their own visits do not read a fragment as a path.
+        # Descent is not cut short: an f-string's expressions still hold
+        # attribute reads.
+        if id(node) in self._string_parts:
             return
-        parts = guards.dotted_reference(raw)
+        texts: list[str | None] = []
+        pending: list[cst.BaseExpression] = [node.left, node.right]
+        while pending:
+            part = pending.pop(0)
+            self._string_parts.add(id(part))
+            if isinstance(part, cst.ConcatenatedString):
+                pending[:0] = [part.left, part.right]
+            elif isinstance(part, (cst.SimpleString, cst.FormattedString)):
+                texts.append(_literal_text(part))
+            else:  # pragma: no cover - libcst admits nothing else here
+                texts.append(None)
+        if all(t is not None for t in texts):
+            self._path_string(node, "".join(t for t in texts if t is not None))
+
+    def _path_string(self, node: cst.BaseExpression, text: str | None) -> None:
+        if text is None:
+            return
+        parts = guards.dotted_reference(text)
         if parts is not None:
-            self.path_strings.append((node, parts))
+            self.path_strings.append((node, text, parts))
 
     def visit_Import(self, node: cst.Import) -> None:
         self.imports.append(node)

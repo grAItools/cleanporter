@@ -142,8 +142,9 @@ pass" while unformatted this way.
 
 - **Re-run the target's test suite after any `cleanporter --fix`.** A literal
   dotted path in another analysed file or a `pyproject.toml` entry point is
-  guarded (`Resolver.named_by`), but a dynamic string, `getattr(module,
-  "name")`, a reference from a file outside the run, or one in `setup.cfg`,
+  guarded (`Resolver.named_by`), but a dynamic string, a lookup through a
+  module object (`getattr(module, "name")`, `monkeypatch.setattr(module,
+  "name", ...)`), a reference from a file outside the run, or one in `setup.cfg`,
   `tox.ini` or YAML is invisible and can go stale. It bit this repo's own suite
   once; `--fix` prints a note to stderr saying so.
 - **Never lower a guard, widen an exemption, or make the resolver optimistic to

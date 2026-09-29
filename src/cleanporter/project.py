@@ -42,6 +42,7 @@ verdicts still can depend on the order pairs are asked in, which is why
 from __future__ import annotations
 
 import dataclasses
+import os
 import pathlib
 import tomllib
 from collections.abc import Callable, Mapping
@@ -52,7 +53,7 @@ from cleanporter import analyze, discover, firstparty, guards, model
 from cleanporter import config as config_lib
 from cleanporter import resolver as resolver_lib
 
-from . import _interpreter, _source
+from . import _interpreter, _pyproject, _source
 
 
 @dataclasses.dataclass(frozen=True)
@@ -205,12 +206,17 @@ def _named(
 
     The strings are the ones `analyze.FileFacts` already kept off each tree's
     single walk -- a literal whose whole text is ``a.b.c`` or ``a.b:c`` --
-    plus the entry points of the ``pyproject.toml`` in use
-    (`_entry_points`). Each yields every split `guards.cross_file_pairs`
-    offers, kept when its first component is first-party: nothing else can
-    be something this run rewrites. Whether the pair is a *re-export* the
-    rewrite would remove is `resolver.Resolver.named_by`'s question, asked
-    only of the modules the fixer actually touches.
+    plus every such string value of the ``pyproject.toml`` in use
+    (`_pyproject.references`). Each yields every split
+    `guards.cross_file_pairs` offers, kept when its first component is
+    first-party: nothing else can be something this run rewrites. Whether
+    the pair is a *re-export* the rewrite would remove is
+    `resolver.Resolver.named_by`'s question, asked only of the modules the
+    fixer actually touches.
+
+    A reference names its file the way the run's findings do: a Python file
+    by the path it was discovered under, the ``pyproject.toml`` relative to
+    the working directory.
     """
     first_party: dict[str, bool] = {}
     named: dict[tuple[str, str], list[resolver_lib.StringReference]] = {}
@@ -226,90 +232,50 @@ def _named(
             named.setdefault(pair, []).append(ref)
 
     for rec in records:
-        shown: pathlib.Path | None = None
-        for node, parts in rec.facts.path_strings:
+        origin: pathlib.Path | None = None
+        for node, text, parts in rec.facts.path_strings:
             if not wanted(parts):
                 continue  # ``"os.path.join"``, ``"setup.py"``: not this run's to rewrite
-            if shown is None:
-                shown = _shown(rec.path, config.root)
+            if origin is None:
+                origin = rec.path.resolve()
+            add(parts, resolver_lib.StringReference(text, rec.path, origin, _line_of(rec, node)))
+    pyproject = config.root / "pyproject.toml"
+    for found in _pyproject_references(pyproject, warnings):
+        if wanted(found.parts):
             ref = resolver_lib.StringReference(
-                node.raw_value, shown, rec.path.resolve(), _line_of(rec, node)
+                found.text, _relative(pyproject), pyproject.resolve(), _constant(found.line)
             )
-            add(parts, ref)
-    for parts, ref in _entry_points(config, warnings):
-        if wanted(parts):
-            add(parts, ref)
+            add(found.parts, ref)
     return {pair: tuple(refs) for pair, refs in named.items()}
 
 
-def _line_of(rec: analyze.FileRecord, node: cst.CSTNode) -> Callable[[], int]:
+def _line_of(rec: analyze.FileRecord, node: cst.CSTNode) -> Callable[[], int | None]:
     """The line of *node* in *rec*, resolved only if someone asks."""
     return lambda: rec.positions[node].start.line
 
 
-#: The ``[project]`` tables whose values are ``module:attribute`` entry points.
-_ENTRY_POINT_TABLES = ("scripts", "gui-scripts")
-
-
-def _entry_points(
-    config: config_lib.Config, warnings: list[str]
-) -> list[tuple[tuple[str, ...], resolver_lib.StringReference]]:
-    """Every entry point the ``pyproject.toml`` in use declares, as a reference.
-
-    ``[project.scripts]``, ``[project.gui-scripts]`` and every group under
-    ``[project.entry-points]``. The value is ``module:attribute`` with
-    optional whitespace around the colon and an optional ``[extras]`` suffix,
-    both dropped. TOML keeps no positions, so the line is the first one of
-    the file that holds the value as written -- or the first line, when the
-    value is spelled some other way (a multi-line or escaped string).
-    """
-    pyproject = config.root / "pyproject.toml"
-    try:
-        text = pyproject.read_text(encoding="utf-8")
-        data = tomllib.loads(text)
-    except FileNotFoundError:
-        return []
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
-        warnings.append(f"{pyproject}: cannot read its entry points ({exc}); they are not evidence")
-        return []
-    project = data.get("project")
-    if not isinstance(project, dict):
-        return []
-    tables = [project.get(key) for key in _ENTRY_POINT_TABLES]
-    groups = project.get("entry-points")
-    if isinstance(groups, dict):
-        tables.extend(groups.values())
-    lines = text.splitlines()
-    shown = _shown(pyproject, config.root)
-    found: list[tuple[tuple[str, ...], resolver_lib.StringReference]] = []
-    for table in tables:
-        if not isinstance(table, dict):
-            continue
-        for value in table.values():
-            if not isinstance(value, str):
-                continue
-            spec = "".join(value.partition("[")[0].split())
-            parts = guards.dotted_reference(spec)
-            if parts is None:
-                continue
-            line = next((i for i, row in enumerate(lines, 1) if value in row), 1)
-            ref = resolver_lib.StringReference(spec, shown, pyproject.resolve(), _constant(line))
-            found.append((parts, ref))
-    return found
-
-
-def _constant(line: int) -> Callable[[], int]:
+def _constant(line: int | None) -> Callable[[], int | None]:
     return lambda: line
 
 
-def _shown(path: pathlib.Path, root: pathlib.Path) -> pathlib.Path:
-    """*path* as a reason names it: relative to the project root, else as the run spells it.
-
-    The reason is read next to a finding about a *different* file, so it
-    names the referencing file the way the project does (``tests/test_x.py``,
-    ``pyproject.toml``) whatever the paths on the command line looked like.
-    """
+def _pyproject_references(
+    pyproject: pathlib.Path, warnings: list[str]
+) -> list[_pyproject.Reference]:
+    """`_pyproject.references` of *pyproject*; none, with a warning, if unreadable."""
     try:
-        return path.resolve().relative_to(root.resolve())
-    except ValueError:
+        return _pyproject.references(pyproject.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        warnings.append(
+            f"{pyproject}: cannot read it for dotted references ({exc}); they are not evidence"
+        )
+        return []
+
+
+def _relative(path: pathlib.Path) -> pathlib.Path:
+    """*path* relative to the working directory, or as it is when it cannot be."""
+    try:
+        return pathlib.Path(os.path.relpath(path, pathlib.Path.cwd()))
+    except ValueError:  # pragma: no cover - different drive on Windows
         return path

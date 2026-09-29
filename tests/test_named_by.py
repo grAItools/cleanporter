@@ -9,11 +9,12 @@ guard; `analyze.Decider` turns it into a per-name `CP003`, in both modes.
 
 from __future__ import annotations
 
+import os
 import pathlib
 
 import pytest
 
-from cleanporter import config, engine, guards
+from cleanporter import _pyproject, config, engine, guards
 
 _CORE = "".join(f"def {name}():\n    return 1\n\n\n" for name in ("helper", "other", "main"))
 _MOD = "from pkg.core import helper, other\n\n\ndef run():\n    return helper() + other()\n"
@@ -34,6 +35,12 @@ def _tree(root: pathlib.Path, files: dict[str, str], pyproject: str = "") -> pat
     return root
 
 
+@pytest.fixture(autouse=True)
+def _in_tmp(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run from the project, so paths are spelled ``pkg/mod.py`` as a user's would be."""
+    monkeypatch.chdir(tmp_path)
+
+
 def _run(
     root: pathlib.Path,
     mode: engine.Mode = engine.Mode.FIX,
@@ -41,7 +48,8 @@ def _run(
     *,
     whole_project: bool = False,
 ) -> engine.RunResult:
-    return engine.run(paths or [root], config.Config(root=root), mode, whole_project=whole_project)
+    listed = paths or [pathlib.Path(os.path.relpath(root))]
+    return engine.run(listed, config.Config(root=root), mode, whole_project=whole_project)
 
 
 def _in(result: engine.RunResult, name: str) -> list[tuple[str, str, str]]:
@@ -55,8 +63,21 @@ def _in(result: engine.RunResult, name: str) -> list[tuple[str, str, str]]:
         'from unittest import mock\n\n\n@mock.patch("pkg.mod.helper")\ndef test_it(m):\n    pass\n',
         'import importlib\n\nHELPER = "pkg.mod:helper"\n',
         'NAME = "pkg.mod.helper.__name__"\n',
+        'def test_it(monkeypatch):\n    monkeypatch.setattr("pkg.mod." "helper", lambda: 5)\n',
+        'X = ("pkg."\n     f"mod.helper")\n',
+        'X = f"pkg.mod.helper"\n',
+        'X = rf"pkg.mod:helper"\n',
     ],
-    ids=["monkeypatch", "mock", "entry-point-spelling", "path-through-it"],
+    ids=[
+        "monkeypatch",
+        "mock",
+        "entry-point-spelling",
+        "path-through-it",
+        "implicit-concatenation",
+        "concatenated-f-string",
+        "f-string",
+        "raw-f-string",
+    ],
 )
 def test_a_string_in_another_file_keeps_that_one_import(
     tmp_path: pathlib.Path, test_source: str
@@ -65,7 +86,7 @@ def test_a_string_in_another_file_keeps_that_one_import(
     result = _run(root)
     [(code, name, detail)] = _in(result, "mod.py")
     assert (code, name) == ("CP003", "helper")
-    line = next(i for i, t in enumerate(test_source.splitlines(), 1) if "pkg.mod" in t)
+    line = next(i for i, t in enumerate(test_source.splitlines(), 1) if "pkg." in t)
     assert f"at {pathlib.Path('tests', 'test_x.py')}:{line}" in detail
     assert detail.startswith("'pkg.mod.helper' is named by the string 'pkg.mod")
     # Per name, like the load-bearing guard: the rest of the file is fixed.
@@ -99,6 +120,96 @@ def test_an_entry_point_in_pyproject_keeps_its_target(tmp_path: pathlib.Path) ->
     assert "named by the string 'pkg.gui:other' at pyproject.toml:6" in detail
 
 
+def test_any_table_of_pyproject_counts(tmp_path: pathlib.Path) -> None:
+    """Poetry's scripts, a plugin list: not only the PEP 621 tables."""
+    root = _tree(
+        tmp_path,
+        {
+            "pkg/cli.py": "from pkg.core import main\n\n\ndef go():\n    return main()\n",
+            "pkg/gui.py": "from pkg.core import other\n\n\ndef go():\n    return other()\n",
+        },
+        '[tool.poetry.scripts]\nx = "pkg.cli:main"\n[tool.thing]\nplugins = ["pkg.gui.other"]\n',
+    )
+    result = _run(root)
+    [(_, _, detail)] = _in(result, "cli.py")
+    assert "named by the string 'pkg.cli:main' at pyproject.toml:4" in detail
+    # In an array: no line can be pinned down, so the file alone is named.
+    [(_, _, detail)] = _in(result, "gui.py")
+    assert "named by the string 'pkg.gui.other' at pyproject.toml;" in detail
+
+
+def test_the_pyproject_line_is_the_assignment_in_its_table() -> None:
+    """The value written earlier -- in a comment, another key, another table -- is not it."""
+    toml = (
+        "[project]\n"
+        '# x = "pkg.cli:main"\n'
+        'description = "pkg.cli:main"\n'
+        "[tool.other]\n"
+        'y = "pkg.cli:main"\n'
+        "[project.scripts]\n"
+        'x = "pkg.cli:main"\n'
+    )
+    refs = _pyproject.references(toml)
+    assert sorted((r.line or 0) for r in refs) == [3, 5, 7]
+
+
+@pytest.mark.parametrize(
+    ("toml", "line"),
+    [
+        ('[a]\nx = "p.m:f"\n', 2),
+        ("[a]\nx = 'p.m:f'  # comment\n", 2),
+        ('[a."b.c"]\n"x" = "p.m:f"\n', 2),
+        ('[a]\nb.x = "p.m:f"\n', None),  # a dotted key
+        ('[a]\nx = { y = "p.m:f" }\n', None),  # an inline table
+        ('[a]\nx = [\n  "p.m:f",\n]\n', None),  # an array
+        ('[a]\nx = """p.m:f"""\n', None),  # a multi-line string
+        ('[b]\ny = "p.m:f"\n[a]\nx = "p.m:f"\n', 2),  # its own table's line
+        ('[a]\ny = "p.m:f"  # x = "p.m:f"\n', 2),
+    ],
+)
+def test_pyproject_lines(toml: str, line: int | None) -> None:
+    ref = _pyproject.references(toml)[0]
+    assert (ref.text, ref.line) == ("p.m:f", line)
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [
+        ("pkg.cli:main", "pkg.cli:main"),
+        ("pkg.cli : main", "pkg.cli:main"),
+        ("pkg.cli:main [extra, other]", "pkg.cli:main"),
+        ("pkg.cli:main[extra]", "pkg.cli:main"),
+        ("pkg.cli.main", "pkg.cli.main"),
+    ],
+)
+def test_pyproject_entry_point_spellings(value: str, text: str) -> None:
+    assert [r.text for r in _pyproject.references(f'x = "{value}"\n')] == [text]
+
+
+@pytest.mark.parametrize("value", ["pkg. cli:main", " pkg.cli:main", "0.4.0", "README.md x"])
+def test_pyproject_values_that_are_not_references(value: str) -> None:
+    assert _pyproject.references(f'x = "{value}"\n') == []
+
+
+def test_the_reason_spells_the_path_as_the_run_does(tmp_path: pathlib.Path) -> None:
+    """With no pyproject, the root is the listed package, not the working directory."""
+    pkg = tmp_path / "pkg"
+    files = {
+        "__init__.py": "",
+        "core.py": _CORE,
+        "mod.py": _MOD,
+        "sub/__init__.py": "",
+        "sub/patcher.py": 'T = "pkg.mod.helper"\n',
+    }
+    for rel, text in files.items():
+        (pkg / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pkg / rel).write_text(text, encoding="utf-8", newline="\n")
+    result = engine.run([pathlib.Path("pkg")], config.Config(root=pkg), engine.Mode.CHECK)
+    [finding] = [f for f in result.findings if f.code == "CP003"]
+    assert finding.path == pathlib.Path("pkg", "mod.py")
+    assert f"at {pathlib.Path('pkg', 'sub', 'patcher.py')}:1;" in finding.detail
+
+
 def test_a_package_reexport_named_through_the_package(tmp_path: pathlib.Path) -> None:
     """``"pkg.helper"`` names what ``pkg/__init__`` imports from ``pkg.core``."""
     init = "from pkg.core import helper\n\n\ndef run():\n    return helper()\n"
@@ -123,7 +234,29 @@ def test_a_package_reexport_named_through_the_package(tmp_path: pathlib.Path) ->
 def test_strings_that_do_not_name_the_binding_do_not_block(
     tmp_path: pathlib.Path, text: str
 ) -> None:
-    root = _tree(tmp_path, {"t.py": f"X = {text!r}\n"})
+    _assert_no_block(tmp_path, f"X = {text!r}\n")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'X = b"pkg.mod.helper"\n',  # bytes
+        'X = b"pkg.mod." b"helper"\n',
+        'X = "pkg.mod." + "helper"\n',  # an expression: dynamic, not a literal
+        'X = f"pkg.mod.{name}"\n',  # a placeholder
+        'X = "pkg.mod." f"{name}"\n',
+        'X = "pkg.mod.\\x68elper"\n',  # an escape
+        'X = "pkg.mod.helper" "()"\n',  # concatenated into code
+    ],
+)
+def test_strings_that_are_not_literal_paths_do_not_block(
+    tmp_path: pathlib.Path, source: str
+) -> None:
+    _assert_no_block(tmp_path, "name = 'x'\n" + source)
+
+
+def _assert_no_block(tmp_path: pathlib.Path, source: str) -> None:
+    root = _tree(tmp_path, {"t.py": source})
     result = _run(root)
     assert _in(result, "mod.py") == []
     assert (root / "pkg" / "mod.py").read_text(encoding="utf-8") != _MOD
@@ -158,7 +291,7 @@ def test_an_unreadable_pyproject_is_a_warning(tmp_path: pathlib.Path) -> None:
     root = _tree(tmp_path, {})
     (root / "pyproject.toml").write_text("[project\n", encoding="utf-8", newline="\n")
     result = _run(root, engine.Mode.CHECK)
-    assert any("cannot read its entry points" in w for w in result.warnings)
+    assert any("cannot read it for dotted references" in w for w in result.warnings)
 
 
 @pytest.mark.parametrize(

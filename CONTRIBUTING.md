@@ -217,9 +217,11 @@ import it names is kept and reported `CP003`:
 monkeypatch.setattr("pkg.cli.helper", fake)
 ```
 
-So are entry points under `[project.scripts]`, `[project.gui-scripts]` and
-`[project.entry-points]` in the `pyproject.toml` in use. What is not: a string
-assembled at runtime, `getattr(module, "helper")`, a reference in a file outside
+So is any dotted string value in the `pyproject.toml` in use -- entry points
+under `[project.scripts]` or `[tool.poetry.scripts]`, plugin addresses. What is
+not: a string assembled at runtime, a lookup through a module object
+(`getattr(module, "helper")`, `monkeypatch.setattr(module, "helper", fake)`,
+`mock.patch.object`), a reference in a file outside
 the run, and dotted paths in `setup.cfg`, `tox.ini`, YAML or any other config
 file. After running `cleanporter --fix` over any codebase, **re-run that
 codebase's test suite.** `--fix` prints a note to stderr saying exactly this

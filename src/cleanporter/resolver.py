@@ -125,18 +125,20 @@ class StringReference:
 
     #: The string as written (an entry point's value, stripped of extras).
     text: str
-    #: The file it is in, as a reason names it: relative to the project root.
+    #: The file it is in, spelled as the run's findings spell their paths.
     path: pathlib.Path
     #: The same file, resolved, to tell whether it is the one asking.
     origin: pathlib.Path
-    #: Its line in that file. A call, because finding it can take position
-    #: metadata for the whole file, and it is wanted only for a reference
-    #: that actually declines a rewrite: rarely, and then once.
-    locate: Callable[[], int] = dataclasses.field(compare=False, repr=False)
+    #: Its line in that file, or ``None`` when it cannot be pinned down (a
+    #: ``pyproject.toml`` value in an array, say). A call, because finding it
+    #: can take position metadata for the whole file, and it is wanted only
+    #: for a reference that actually declines a rewrite: rarely, and then once.
+    locate: Callable[[], int | None] = dataclasses.field(compare=False, repr=False)
 
     def where(self) -> str:
-        """``path:line``, for a message."""
-        return f"{self.path}:{self.locate()}"
+        """``path:line``, or the path alone when there is no line, for a message."""
+        line = self.locate()
+        return f"{self.path}" if line is None else f"{self.path}:{line}"
 
 
 #: No evidence at all, for a resolver built outside a run -- passed explicitly.
@@ -382,9 +384,11 @@ class Resolver:
         nothing reads any more.
 
         *outside* is the file doing the asking: a string in the rewritten file
-        itself is not this question's. The whole-file string guard
-        (`guards.find_string_mentions`) already declines that file, and it
-        stays the one that does.
+        itself is not this question's. Under ``--fix`` the string guard
+        (`guards.find_string_mentions`) sees that string mention the name the
+        rewrite would qualify, and declines the whole file with a `CP003`; a
+        plain check reports the import as the `CP001` it is, exactly as it
+        did before this guard existed.
 
         Returns the first such string in run order, or ``None``. As with
         `is_load_bearing`, the evidence stops at the run's files -- a dynamic

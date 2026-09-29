@@ -441,10 +441,18 @@ configuration would have forbidden. Prefer the bare last-component spelling
 
     The evidence is every string literal in the run whose *whole* text is a
     dotted path of two or more identifiers (`a.b.c`) or an entry-point spec
-    (`a.b:c`, `a.b:c.d`), plus the values under `[project.scripts]`,
-    `[project.gui-scripts]` and `[project.entry-points.*]` in the
-    `pyproject.toml` in use (whitespace around the colon and an `[extras]`
-    suffix are dropped). Every split of the path is a candidate —
+    (`a.b:c`, `a.b:c.d`). A literal is a plain string, an f-string with no
+    placeholders, or an implicit concatenation of those
+    (`"pkg.tool." "dump"`), read whole; bytes, escapes and placeholders are
+    not paths. To that is added every string value of the `pyproject.toml` in
+    use, in any table and at any depth — `[project.scripts]` and
+    `[project.entry-points.*]`, but also `[tool.poetry.scripts]`,
+    `[tool.poetry.plugins.*]` or a tool's own plugin setting — read as an
+    entry point where it is one (whitespace around the colon and an
+    `[extras]` suffix are dropped, nothing else is) and as a dotted path
+    otherwise. The reason gives the line that assigns that key the value in
+    its own table, or the file alone when the value sits in an array, an
+    inline table or a multi-line string. Every split of the path is a candidate —
     `"pkg.tool.dump.__name__"` names `dump` in `pkg.tool` as surely as
     `"pkg.tool.dump"` does — and a candidate counts only when its first
     component is first-party and the module *re-exports* the name, exactly as
@@ -456,8 +464,10 @@ configuration would have forbidden. Prefer the bare last-component spelling
     [`--whole-project`](usage.md#flags) run it covers the whole tree, so a
     test file that was not listed still protects what it patches.
 
-    A string in the file being rewritten is not this guard's business: the
-    string guard above already blocks that file whole, and still does.
+    A string in the file being rewritten is not this guard's business. Under
+    `--fix` the string guard above sees it mention the name the rewrite would
+    qualify and declines the whole file with a `CP003`; a plain check
+    reports the import as `CP001`. Both are as they were before this guard.
 - **A module-level name in `pkg/__init__.py` is the attribute
   `pkg.<name>`,** and that makes two things unsafe there that are fine
   anywhere else.
@@ -568,8 +578,11 @@ configuration would have forbidden. Prefer the bare last-component spelling
   *another* file that spells a rewritten binding's dotted path out whole —
   `monkeypatch.setattr("pkg.cli.helper", ...)`, `mock.patch`, an entry point
   in `pyproject.toml` — is guarded (see above). What is not: a *dynamic*
-  string (`f"{pkg}.cli.helper"`, `"pkg.cli." + name`), `getattr(module,
-  "helper")` and `sys.modules[...]` lookups, a reference in a file outside the
+  string (`f"{pkg}.cli.helper"`, `"pkg.cli." + name`), a lookup of the
+  name *through a module object* — `getattr(module, "helper")`,
+  `monkeypatch.setattr(module, "helper", ...)`,
+  `mock.patch.object(module, "helper")`, `sys.modules[...]` — since the
+  string there is the bare name, not a path, a reference in a file outside the
   run (another project, or — without `--whole-project` — a file that was not
   listed), and an entry point or dotted path in a config file other than
   `pyproject.toml` (`setup.cfg`, `tox.ini`, `pytest.ini`, YAML). Any of those

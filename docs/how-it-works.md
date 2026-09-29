@@ -292,7 +292,8 @@ what it collected.
 
 Those four are the run's cross-file evidence. Before any file is judged, the
 whole run's uses of `module.name` are gathered, together with the strings that
-name one by path and the entry points of the `pyproject.toml` in use. A
+name one by path and the dotted string values (entry points, plugin
+addresses) of the `pyproject.toml` in use. A
 first-party module that only *re-exports* a name something else uses or names
 keeps that import as written and reports it `CP003`, in every mode: rewriting
 it would delete the attribute the other file depends on (see
