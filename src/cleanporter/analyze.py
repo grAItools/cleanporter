@@ -2,8 +2,9 @@
 
 `FileRecord` carries a parsed file and lazily caches what is expensive to
 derive from it -- its `FileFacts`, the import units, where each import
-starts, libcst's position metadata when something needs it, and whatever
-`cleanporter.skip` takes out of the file -- so a record survives being
+starts, libcst's position metadata when something needs it, whatever
+`cleanporter.skip` takes out of the file and its inline suppressions
+(`cleanporter.suppress`) -- so a record survives being
 analysed more than once (`engine.run` re-parses into a fresh record after a
 fix and analyses it again). Building the records of a run, and the resolver
 they are analysed against, is `project.build`'s job.
@@ -37,6 +38,7 @@ from libcst import metadata
 from cleanporter import config, firstparty, model
 from cleanporter import resolver as resolver_lib
 from cleanporter import skip as skip_lib
+from cleanporter import suppress as suppress_lib
 
 from . import _imports, guards
 
@@ -92,6 +94,9 @@ class FileRecord:
         default=None, repr=False, compare=False
     )
     _skipped: skip_lib.Skipped | None = dataclasses.field(default=None, repr=False, compare=False)
+    _suppressions: suppress_lib.Suppressions | None = dataclasses.field(
+        default=None, repr=False, compare=False
+    )
 
     @property
     def facts(self) -> FileFacts:
@@ -160,6 +165,21 @@ class FileRecord:
                 else skip_lib.EMPTY
             )
         return self._skipped
+
+    @property
+    def suppressions(self) -> suppress_lib.Suppressions:
+        """This file's ``# cleanporter: ignore[...]`` comments. Computed once.
+
+        Free for a file `suppress.may_hold` rules out: nothing is walked
+        and `positions` is not forced.
+        """
+        if self._suppressions is None:
+            self._suppressions = (
+                suppress_lib.collect(self.tree, self.positions)
+                if suppress_lib.may_hold(self.source)
+                else suppress_lib.EMPTY
+            )
+        return self._suppressions
 
     @property
     def positions(self) -> Mapping[cst.CSTNode, metadata.CodeRange]:
@@ -288,6 +308,12 @@ class FileFacts:
     #: implicit concatenation of those (`_literal_text`). The raw material
     #: for the cross-file string evidence (`project._named`).
     path_strings: tuple[tuple[cst.BaseExpression, str, tuple[str, ...]], ...] = ()
+    #: Every ``from ... import`` statement inside a ``def`` or a ``class``
+    #: body, however deep. The rest are *module level* -- including those
+    #: under a module-level ``if``, ``try`` or ``with``, which bind module
+    #: attributes all the same. A package ``__init__``'s module-level imports
+    #: are its public surface (`Decider.public_surface`).
+    nested_import_froms: frozenset[cst.ImportFrom] = frozenset()
 
     @property
     def import_froms(self) -> tuple[cst.ImportFrom, ...]:
@@ -398,6 +424,23 @@ class _FactCollector(cst.CSTVisitor):
         self.path_strings: list[tuple[cst.BaseExpression, str, tuple[str, ...]]] = []
         #: Ids of strings that are parts of a concatenation, read with it.
         self._string_parts: set[int] = set()
+        #: Every ``from`` import inside a ``def`` or ``class`` body.
+        self.nested_import_froms: set[cst.ImportFrom] = set()
+        #: How many ``def``/``class`` bodies the walk is inside.
+        self._depth = 0
+
+    # libcst dispatches to these exact signatures; only the nesting matters.
+    def visit_FunctionDef(self, node: cst.FunctionDef) -> None:  # noqa: ARG002
+        self._depth += 1
+
+    def leave_FunctionDef(self, original_node: cst.FunctionDef) -> None:  # noqa: ARG002
+        self._depth -= 1
+
+    def visit_ClassDef(self, node: cst.ClassDef) -> None:  # noqa: ARG002
+        self._depth += 1
+
+    def leave_ClassDef(self, original_node: cst.ClassDef) -> None:  # noqa: ARG002
+        self._depth -= 1
 
     def visit_SimpleString(self, node: cst.SimpleString) -> None:
         if id(node) not in self._string_parts:
@@ -441,6 +484,8 @@ class _FactCollector(cst.CSTVisitor):
 
     def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
         self.imports.append(node)
+        if self._depth:
+            self.nested_import_froms.add(node)
 
     def visit_Attribute(self, node: cst.Attribute) -> None:
         # Descends into import statements too, exactly as the separate walk
@@ -460,6 +505,7 @@ def collect_facts(tree: cst.Module) -> FileFacts:
         tuple(collector.imports),
         frozenset(collector.attribute_reads),
         tuple(collector.path_strings),
+        frozenset(collector.nested_import_froms),
     )
 
 
@@ -568,7 +614,8 @@ class Decision:
     """What cleanporter does with one imported name, in every mode.
 
     ``status`` is the finding to report, or ``None`` for a name nothing is
-    reported about -- exempt, outside the configured `scope`, or a module. The
+    reported about -- exempt, outside the configured `scope`, a module, or part
+    of a package ``__init__``'s public surface (`Decider.public_surface`). The
     fixer rewrites only names checking reports as `CP001` (never-read names
     become `CP003` under ``--fix``); a guard hit still declines the whole
     file. So a name ``check`` reports as anything else -- or does not report
@@ -580,6 +627,9 @@ class Decision:
     #: Kept only because nothing in the file reads it. The fixer collects
     #: these to hand back to `analyze_record`; see `rewrite.FixOutcome.unread`.
     unread: bool = False
+    #: For a `CP004` an inline comment made: the code it replaced and the
+    #: comments naming it. `analyze_record` reports the rest as `CP005`.
+    hit: suppress_lib.Hit | None = None
 
     @property
     def rewrite(self) -> bool:
@@ -644,6 +694,32 @@ class Decider:
     def decide(
         self, unit: ImportUnit, line: int, never_read: frozenset[str] = frozenset()
     ) -> Decision:
+        """`_ladder`'s decision, unless an inline comment suppresses its code.
+
+        A suppressed finding becomes a `CP004`, so the fixer keeps the name
+        exactly as it keeps one a skip rule covers. The code matched is the one
+        plain ``check`` reports: a never-read name is the fixer's `CP003` but
+        check's `CP001`, so ``ignore[CP001]`` covers it in both modes and the
+        two cannot disagree about what is suppressed. See `cleanporter.suppress`.
+        """
+        decision = self._ladder(unit, line, never_read)
+        status = model.Status.VIOLATION if decision.unread else decision.status
+        code = suppress_lib.CODES.get(status) if status is not None else None
+        if code is None:
+            return decision
+        hit = self._rec.suppressions.match(unit.node, unit.alias, code)
+        if hit is None:
+            return decision
+        where = ", ".join(str(s.line) for s in hit.by)
+        return Decision(
+            model.Status.SKIPPED_BY_CONFIG,
+            f"{code} suppressed by the inline comment on line {where}",
+            hit=hit,
+        )
+
+    def _ladder(
+        self, unit: ImportUnit, line: int, never_read: frozenset[str] = frozenset()
+    ) -> Decision:
         """Decide *unit*, an import found on *line* of the record's file.
 
         *never_read* holds the names this import binds that nothing in the file
@@ -655,7 +731,9 @@ class Decider:
         only where a finding is actually produced, never before the filters
         that would report nothing at all -- `CP004` for a compliant ``from pkg
         import module``, or for an exempt ``typing`` import, would pad the one
-        count the docs offer as the way to see how much a rule swallowed. The
+        count the docs offer as the way to see how much a rule swallowed; a
+        package ``__init__``'s public surface (`public_surface`) is one of
+        those filters, for the same reason. The
         line-wide reasons (a skip covering the line, a replacement with no
         relative spelling, an unreachable replacement) precede the per-name
         ones, and never-read comes *last*,
@@ -676,11 +754,52 @@ class Decider:
         verdict = self._resolver.is_module(parent, unit.name)
         if verdict is True:
             return COMPLIANT  # importing a module -> compliant
+        if verdict is False and self.public_surface(unit.node):
+            # Compliant, not a `CP003`: the re-export is the sanctioned
+            # exception to the rule, not a violation declined, so it has no
+            # reason to give and nothing to count against the exit code. So
+            # it is decided here rather than in `_declined`, which only says
+            # why a *violation* is kept, and it outranks every decline there
+            # (re-export, load-bearing, named by a string, never read): each
+            # of those is true of some of these imports, and none is the
+            # reason they stay. Before the skip rule, as a compliant module
+            # is, so a rule over it adds no `CP004`. Only for a proven object:
+            # a module is compliant already, and an unresolved name stays the
+            # `CP002` it is -- whether it is even an import of an object is
+            # what the resolver could not say.
+            return COMPLIANT
         if rule is not None:
             return Decision(model.Status.SKIPPED_BY_CONFIG, rule.describe())
         if verdict is None:
             return Decision(model.Status.UNRESOLVED, self._resolver.reason(parent, unit.name))
         return self._declined(unit, parent, never_read) or VIOLATION
+
+    def public_surface(self, node: cst.ImportFrom) -> bool:
+        """Whether *node* is part of a package's public surface: never reported or rewritten.
+
+        True for a module-level ``from P import S`` in a package's
+        ``__init__.py`` -- module level meaning outside every ``def`` and
+        ``class``, so one under a module-level ``if``, ``try`` or ``with``
+        counts. Whatever such an import binds is an attribute of the package,
+        and a package's attributes are what its users import: ``from
+        ._version_info import VersionInfo`` in attrs' ``attr/__init__.py`` is
+        what makes ``attr.VersionInfo`` exist. Rewriting it deletes public API
+        that nothing in the run need read, name in ``__all__`` or mention in a
+        string, so no evidence-based guard can see it. Style guide §2.2 is
+        commonly relaxed for exactly these re-exports, so the rule is
+        structural, not evidential: the import is the sanctioned exception,
+        not a declined violation.
+
+        A ``__main__.py`` is not a package's surface, a namespace package has
+        no ``__init__.py`` to hold one, and a stub (``__init__.pyi``) is not
+        analysed; an import inside a function in ``__init__.py`` binds a local
+        (in a class body, a class attribute) and is decided like any other --
+        one a ``global`` statement makes a package attribute again is declined
+        by the fixer's ``global``/``nonlocal`` guard.
+        """
+        return (
+            self._rec.path.name == "__init__.py" and node not in self._rec.facts.nested_import_froms
+        )
 
     def own_init(self, parent: str) -> bool:
         """Whether the record's file is *parent*'s own ``__init__.py``."""
@@ -757,9 +876,15 @@ def analyze_record(
     starts = rec.import_starts
     decider = Decider(rec, resolver, config)
     findings: list[model.Finding] = []
+    used: set[tuple[suppress_lib.Suppression, str]] = set()
+    #: Comments covering a name reported as never read, for `CP005`'s hint.
+    on_unread: set[suppress_lib.Suppression] = set()
     for unit in rec.units:
         line, column = starts[unit.node]
         decision = decider.decide(unit, line, unread)
+        _mark_used(rec, unit, decision, used)
+        if decision.unread:
+            on_unread.update(rec.suppressions.covering(unit.node, unit.alias))
         if decision.status is None:
             continue
         findings.append(
@@ -772,6 +897,75 @@ def analyze_record(
                 decision.status,
                 decision.detail,
                 _module_import(rec, unit) if decision.rewrite else "",
+            )
+        )
+    findings.extend(_unused_suppressions(rec, used, on_unread))
+    return findings
+
+
+def _mark_used(
+    rec: FileRecord,
+    unit: ImportUnit,
+    decision: Decision,
+    used: set[tuple[suppress_lib.Suppression, str]],
+) -> None:
+    """Record the suppression codes *decision* consumed, into *used*.
+
+    A `CP004` a skip rule made replaced the finding before any comment was
+    consulted, so what the comments covering the name would have matched is
+    unknowable: every code they name counts as used, rather than be reported
+    unused over a finding nobody could see.
+    """
+    if decision.hit is not None:
+        used.update((s, decision.hit.code) for s in decision.hit.by)
+    elif decision.status is model.Status.SKIPPED_BY_CONFIG:
+        for suppression in rec.suppressions.covering(unit.node, unit.alias):
+            used.update((suppression, code) for code in suppression.codes)
+
+
+def _unused_suppressions(
+    rec: FileRecord,
+    used: set[tuple[suppress_lib.Suppression, str]],
+    on_unread: set[suppress_lib.Suppression],
+) -> list[model.Finding]:
+    """A `CP005` per suppression comment naming a code that matched nothing.
+
+    A comment on a line a skip rule covers is not reported: the rule took
+    whatever it could have matched.
+
+    A never-read name is suppressed by ``CP001`` only (`Decider.decide`), so
+    an ``ignore[CP003]`` written after seeing the fixer's never-read `CP003`
+    is unused -- in both modes, which is what keeps them agreeing. The
+    message says so where the fixer knows the name is never read (*on_unread*).
+    """
+    findings: list[model.Finding] = []
+    for suppression in rec.suppressions.comments:
+        if rec.skipped.covers(suppression.line) is not None:
+            continue
+        unused = [code for code in suppression.codes if (suppression, code) not in used]
+        if not unused:
+            continue
+        findings.append(
+            model.Finding(
+                rec.path,
+                suppression.line,
+                suppression.column,
+                "",
+                "",
+                model.Status.UNUSED_SUPPRESSION,
+                f"no {' or '.join(unused)} finding on the imports this comment covers"
+                + (
+                    " (a never-read import is suppressed by CP001, the code a plain check "
+                    "reports for it, even where --fix reports it as CP003)"
+                    if "CP003" in unused and suppression in on_unread
+                    else ""
+                )
+                + "; "
+                + (
+                    "remove the comment"
+                    if len(unused) == len(suppression.codes)
+                    else f"remove {', '.join(unused)} from it"
+                ),
             )
         )
     return findings

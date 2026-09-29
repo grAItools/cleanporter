@@ -85,6 +85,13 @@ For CI, `--format json`, `--format sarif` (GitHub code scanning) and
 stdout instead; see
 [Machine-readable output](https://graitools.github.io/cleanporter/usage/#machine-readable-output).
 
+Adopting it on a codebase with a backlog? `cleanporter --write-baseline
+cleanporter-baseline.json .` records today's findings, and `baseline =
+"cleanporter-baseline.json"` under `[tool.cleanporter]` (or `--baseline`)
+then fails only on new ones; `--select` / `--ignore` narrow the report to
+chosen codes. See
+[Adopting cleanporter on an existing codebase](https://graitools.github.io/cleanporter/usage/#adopting-cleanporter-on-an-existing-codebase).
+
 Some code is off-limits for reasons no analysis can discover — a body a
 framework re-parses with its own frontend, a `conftest.py` whose namespace
 *is* pytest's fixture registry. Declare those with
@@ -101,7 +108,7 @@ reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: vX.Y.Z  # a release tag
+    rev: v0.5.0  # a release tag
     hooks:
       - id: cleanporter        # or cleanporter-fix, to rewrite
 ```
@@ -126,24 +133,21 @@ reported. See
 | `CP001` | `VIOLATION` | object imported by name — blocks CI |
 | `CP002` | `UNRESOLVED` | could not determine whether the symbol is a module; never rewritten. Also marks a file that was not processed (could not be read, decoded, parsed or written), which always exits `2`, with or without `--strict` |
 | `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely; like `CP001`, it fails the run. A wildcard import, an explicit or load-bearing re-export, a re-export another file names by its dotted path (`monkeypatch.setattr("pkg.mod.name", ...)`, an entry point), an unprovable replacement and a top-level `from . import X` (unless its import root is declared) are reported in every mode; the rest are the fixer explaining a decision, so they appear under `--fix`/`--diff` |
-| `CP004` | `SKIPPED_BY_CONFIG` | matched a [`skip` rule](https://graitools.github.io/cleanporter/configuration/#skip-rules) — never analysed, never rewritten, counted in the summary, printed only under `--show-skipped`, and never part of the exit code |
+| `CP004` | `SKIPPED_BY_CONFIG` | matched a [`skip` rule](https://graitools.github.io/cleanporter/configuration/#skip-rules), or an [inline suppression](https://graitools.github.io/cleanporter/configuration/#inline-suppressions) (`# cleanporter: ignore[CP001]`) named its code (the import is analysed, and the finding is replaced) — never rewritten, counted in the summary, printed only under `--show-skipped`, and never part of the exit code |
+| `CP005` | `UNUSED_SUPPRESSION` | an inline suppression that suppressed nothing — the finding it named is gone, or the comment is on the wrong line; like `CP001`, it fails the run. Not itself suppressible |
 
 ## Dogfooding
 
-cleanporter is run over its own source. `src/` and `tests/` are compliant,
-with one deliberate exception: the package's public API is re-exported from
-`cleanporter/__init__.py`, so `cleanporter .` reports those re-exports as
-`CP001` — or `CP003`, for a name the test suite reads through the package —
-and exits 1.
+cleanporter is run over its own source, and `cleanporter .` exits 0: `src/`
+and `tests/` are compliant.
 
-That is not an oversight, and it is not silenced with an `exclude`. The
-findings are true — the package really does import objects by name there —
-and the fixer declines to rewrite them on its own terms: nothing in
-`__init__.py` reads those names, so rewriting the imports would only delete
-the public surface (and, behind that, the names appear in `__all__` as string
-literals, which a rewrite would leave naming attributes the module no longer
-binds). It is a fair demonstration of both the rule and the guards that keep
-the fixer honest.
+That includes the package's public API, re-exported from
+`cleanporter/__init__.py` with `from .engine import Mode, RunResult, run` and
+the like. It is not silenced with an `exclude` or a `skip` rule: a
+module-level import in a package's `__init__.py` is the package's public
+surface, the conventional exception to §2.2, so cleanporter treats it as
+compliant everywhere — never reported, never rewritten (see
+[A package's `__init__.py`](https://graitools.github.io/cleanporter/configuration/#a-packages-__init__py)).
 
 ## Documentation
 

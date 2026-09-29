@@ -29,16 +29,22 @@ _REEXPORT = "from demo.core import helper\n\n\ndef run():\n    return helper()\n
 
 @pytest.fixture
 def tree(tmp_path: pathlib.Path) -> pathlib.Path:
-    """A project whose ``demo/__init__`` re-exports a name only ``consumer.py`` uses."""
+    """A project whose ``demo/api.py`` re-exports a name only ``consumer.py`` uses.
+
+    Not ``demo/__init__.py``: a module-level import there is the package's
+    public surface and never reported at all (`analyze.Decider.public_surface`),
+    so it could not show what the whole tree's evidence changes.
+    """
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "demo"\n', encoding="utf-8", newline="\n"
     )
     pkg = tmp_path / "demo"
     pkg.mkdir()
     (pkg / "core.py").write_text("def helper():\n    return 1\n", encoding="utf-8", newline="\n")
-    (pkg / "__init__.py").write_text(_REEXPORT, encoding="utf-8", newline="\n")
+    (pkg / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (pkg / "api.py").write_text(_REEXPORT, encoding="utf-8", newline="\n")
     (tmp_path / "consumer.py").write_text(
-        "from demo import helper\n\nhelper()\n", "utf-8", newline="\n"
+        "from demo.api import helper\n\nhelper()\n", "utf-8", newline="\n"
     )
     return tmp_path
 
@@ -48,24 +54,24 @@ def _codes(result: engine.RunResult) -> list[tuple[str, str]]:
 
 
 def test_a_use_in_an_unlisted_file_still_blocks_the_rewrite(tree: pathlib.Path) -> None:
-    init = tree / "demo" / "__init__.py"
+    api = tree / "demo" / "api.py"
     cfg = config.Config(root=tree)
-    result = engine.run([init], cfg, engine.Mode.FIX, whole_project=True)
-    # consumer.py was not listed, but it imports `helper` from `demo`: the
+    result = engine.run([api], cfg, engine.Mode.FIX, whole_project=True)
+    # consumer.py was not listed, but it imports `helper` from `demo.api`: the
     # rewrite would delete that attribute, so it is declined.
-    assert _codes(result) == [("__init__.py", "CP003")]
+    assert _codes(result) == [("api.py", "CP003")]
     assert "another file imports 'helper'" in result.findings[0].detail
-    assert init.read_text(encoding="utf-8") == _REEXPORT
+    assert api.read_text(encoding="utf-8") == _REEXPORT
     assert result.files_checked == 1
     assert result.exit_code() == 1
 
 
 def test_without_the_flag_the_same_file_alone_is_rewritten(tree: pathlib.Path) -> None:
     """The contrast: the partial tree is what makes the plain run unsafe."""
-    init = tree / "demo" / "__init__.py"
-    result = engine.run([init], config.Config(root=tree), engine.Mode.FIX)
+    api = tree / "demo" / "api.py"
+    result = engine.run([api], config.Config(root=tree), engine.Mode.FIX)
     assert result.wrote
-    assert init.read_text(encoding="utf-8") != _REEXPORT
+    assert api.read_text(encoding="utf-8") != _REEXPORT
 
 
 def test_only_listed_files_are_reported_and_counted(tree: pathlib.Path) -> None:
@@ -81,8 +87,8 @@ def test_only_listed_files_are_reported_and_counted(tree: pathlib.Path) -> None:
 
 def test_a_listed_directory_reports_every_file_under_it(tree: pathlib.Path) -> None:
     result = engine.run([tree / "demo"], config.Config(root=tree), whole_project=True)
-    assert _codes(result) == [("__init__.py", "CP003")]
-    assert result.files_checked == 2
+    assert _codes(result) == [("api.py", "CP003")]
+    assert result.files_checked == 3
 
 
 def test_a_first_party_package_no_listed_file_lives_in_stays_first_party(
@@ -146,7 +152,7 @@ def test_the_library_refuses_a_listed_file_outside_the_root(
     assert result.exit_code() == 2
     # The whole run is refused: not even the file inside the root is fixed.
     assert outside.read_text(encoding="utf-8") == before
-    assert consumer.read_text(encoding="utf-8") == "from demo import helper\n\nhelper()\n"
+    assert consumer.read_text(encoding="utf-8") == "from demo.api import helper\n\nhelper()\n"
 
 
 def test_a_missing_listed_path_is_a_warning(tree: pathlib.Path) -> None:
@@ -170,9 +176,9 @@ def test_an_unparseable_unlisted_file_is_a_warning_not_an_error(tree: pathlib.Pa
 
 def test_cli_reports_listed_files_relative_to_the_cwd(tree: pathlib.Path, monkeypatch, capsys):
     monkeypatch.chdir(tree)
-    rc = cli.main(["--whole-project", "demo/__init__.py"])
+    rc = cli.main(["--whole-project", "demo/api.py"])
     out = capsys.readouterr().out
-    assert out.startswith(f"{pathlib.PurePath('demo', '__init__.py')}:1:0: CP003 ")
+    assert out.startswith(f"{pathlib.PurePath('demo', 'api.py')}:1:0: CP003 ")
     assert "checked 1 file(s)" in out
     assert rc == 1
 
@@ -182,7 +188,7 @@ def test_cli_fix_exits_0_once_everything_listed_is_fixed(tree: pathlib.Path, mon
     monkeypatch.chdir(tree)
     assert cli.main(["--whole-project", "--fix", "consumer.py"]) == 0
     fixed = (tree / "consumer.py").read_text(encoding="utf-8")
-    assert fixed == "import demo\n\ndemo.helper()\n"
+    assert fixed == "from demo import api\n\napi.helper()\n"
     assert "fixed: consumer.py" in capsys.readouterr().err
 
 
@@ -296,7 +302,7 @@ def test_files_from_two_projects_are_refused(
 ) -> None:
     """A nested project's file must not decide the project -- nor be outvoted.
 
-    Anchored on ``examples/ex``, ``demo/__init__.py`` became an outside file,
+    Anchored on ``examples/ex``, ``demo/api.py`` became an outside file,
     ``consumer.py`` was never read, and ``--fix`` deleted the re-export it
     imports. Either order is refused, and nothing is written.
     """
@@ -307,7 +313,7 @@ def test_files_from_two_projects_are_refused(
     )
     (nested / "a.py").write_text("import os\n", encoding="utf-8", newline="\n")
     monkeypatch.chdir(tree)
-    listed = ["examples/ex/a.py", "demo/__init__.py"]
+    listed = ["examples/ex/a.py", "demo/api.py"]
     rc = cli.main(["--whole-project", "--fix", *(listed if nested_first else listed[::-1])])
     err = capsys.readouterr().err
     assert rc == 2
@@ -316,16 +322,16 @@ def test_files_from_two_projects_are_refused(
     nested_toml = pathlib.PurePath("examples", "ex", "pyproject.toml")
     nested_a = pathlib.PurePath("examples", "ex", "a.py")
     assert f"{nested_toml} ({nested_a})" in err
-    assert f" pyproject.toml ({pathlib.PurePath('demo', '__init__.py')})" in err
+    assert f" pyproject.toml ({pathlib.PurePath('demo', 'api.py')})" in err
     assert "files:" in err
-    assert (tree / "demo" / "__init__.py").read_text(encoding="utf-8") == _REEXPORT
+    assert (tree / "demo" / "api.py").read_text(encoding="utf-8") == _REEXPORT
 
 
 def test_relative_and_absolute_paths_of_one_project_are_one_project(
     tree: pathlib.Path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(tree)
-    rc = cli.main(["--whole-project", "demo/__init__.py", str(tree / "consumer.py")])
+    rc = cli.main(["--whole-project", "demo/api.py", str(tree / "consumer.py")])
     assert "checked 2 file(s)" in capsys.readouterr().out
     assert rc == 1
 

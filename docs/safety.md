@@ -217,6 +217,17 @@ trailing comment attached to it. Discarding an author's comment silently is
 worse than declining the fix, so the file is left alone. A *blank* line before
 the import is not a comment and does not block.
 
+### The rewrite would move a suppression comment
+
+An [inline suppression](configuration.md#inline-suppressions) covers the
+imports on its physical line. A partial rewrite writes the kept names on one
+line with the statement's trailing comment, so a comment that covered only a
+rewritten name, or none, could end up covering — and suppressing — the kept
+ones. The coverage of every suppression is recomputed on the output, counting
+each import separately (the same name imported twice is two imports), and any
+comment whose coverage changes — other than losing the names the rewrite takes
+away — declines the file.
+
 ### The file's encoding cannot hold the rewrite unchanged
 
 The rewrite is written back in the encoding the file was read in. If the file
@@ -259,6 +270,10 @@ symbol your rule now pins will have its *other* imports rewritten instead. That
 is sound — the pinned name is still bound, and the guard still fires for every
 name that is still being rewritten — but the file changes more, not less.
 `exempt_names` has always worked this way; a rule is not special.
+
+An [inline suppression](configuration.md#inline-suppressions) takes the same
+path: the finding it names becomes a `CP004`, and the name joins the same
+*keep* list, so everything above holds for it too.
 
 One more edge, enforced rather than documented away: a rule can match code the
 fixer is about to *write*. `{ decorator = 'gtx\.field_operator' }` matches
@@ -510,9 +525,30 @@ configuration would have forbidden. Prefer the bare last-component spelling
     `--fix` the string guard above sees it mention the name the rewrite would
     qualify and declines the whole file with a `CP003`; a plain check
     reports the import as `CP001`. Both are as they were before this guard.
+- **A package's `__init__.py` keeps its module-level imports.** Every
+  `from P import S` there outside a `def` or `class` — under a module-level
+  `try`, `if` or `with` too — binds an attribute of the package, and those
+  attributes are its public surface: `from ._version_info import VersionInfo`
+  in attrs' `attr/__init__.py` is `attr.VersionInfo`. Nothing need read that
+  name, list it in `__all__`, import it or spell it in a string, so none of
+  the evidence-based guards here can see what the rewrite would delete. So
+  the rule is structural rather than evidential: such an import is compliant
+  (see [A package's `__init__.py`](configuration.md#a-packages-__init__py)),
+  never reported and never rewritten, in every mode — the one decision
+  `check` and `--fix` share makes it, so they cannot disagree. It is
+  per import, not per file: an import inside a function in the same
+  `__init__.py` binds a local (in a class body, a class attribute) and is
+  still fixed, and nothing else in the file is blocked. One a `global`
+  statement turns back into a package attribute is declined by the
+  `global`/`nonlocal` guard above.
 - **A module-level name in `pkg/__init__.py` is the attribute
   `pkg.<name>`,** and that makes two things unsafe there that are fine
-  anywhere else.
+  anywhere else. Since the item above keeps every module-level import there
+  as written, the fixer now only ever rewrites an `__init__.py` import inside
+  a `def` or `class`, whose binding is not a package attribute. Such an import
+  can still *reuse* a module-level binding, though, so of the rules below the
+  reuse half and the second rule are live; only the allocation half is now
+  defence in depth.
 
     A new binding must not take the name of one of `pkg`'s **own
     submodules**. Rewriting `from kombu.serialization import loads` inside
@@ -523,16 +559,21 @@ configuration would have forbidden. Prefer the bare last-component spelling
     attribute and this file's own `serialization.loads` starts resolving
     against the wrong module. So the alias allocator treats a sibling
     submodule's name as taken and picks `serialization_2` instead. Nothing is
-    declined for this; it only changes which name is chosen. Binding a
+    declined for this; it only changes which name is chosen. (No module-level
+    import in an `__init__.py` is rewritten any more, so this allocation
+    rule no longer fires; it is kept as defence in depth.) Binding a
     submodule under *its own* name is the one case with nothing to collide —
     the global and the attribute would hold the same object — so
     `from pkg import serialization` inside `pkg/__init__.py` is still spelled
     without an alias.
 
-    The same rule governs *reuse*. An import the author already wrote under a
-    sibling submodule's name is no more durable than one the fixer would
-    allocate there, so references are never qualified through it; a fresh
-    alias is bound instead and their import is left untouched. Their binding
+    The same rule governs *reuse*, and this half is live. An import the
+    author already wrote under a sibling submodule's name — a module-level
+    `from kombu import serialization` in `pkg/__init__.py` — is no more
+    durable than one the fixer would allocate there, so a rewritten
+    function-local `from kombu.serialization import loads` never qualifies
+    references through it; a fresh alias (`serialization_2`) is bound in the
+    function instead and their import is left untouched. Their binding
     was harmless while nothing depended on it, and qualifying through it is
     exactly what would have made it load-bearing.
 

@@ -1843,10 +1843,14 @@ def test_importing_from_the_package_two_up_adds_a_dot(tmp_path: pathlib.Path) ->
 
 
 def test_a_package_init_importing_from_itself_adds_a_dot(tmp_path: pathlib.Path) -> None:
-    src = "class Obj:\n    pass\n\n\nfrom . import Obj as O\nx = O()\n"
+    # In a function: at module level the import is the package's public
+    # surface, never rewritten (`analyze.Decider.public_surface`).
+    src = "class Obj:\n    pass\n\n\ndef make():\n    from . import Obj as O\n    return O()\n"
     result = _fix_in(tmp_path, "pkg/__init__.py", src)
     assert result.status == "fixed"
-    assert result.source == "class Obj:\n    pass\n\n\nfrom .. import pkg\nx = pkg.Obj()\n"
+    assert result.source == (
+        "class Obj:\n    pass\n\n\ndef make():\n    from .. import pkg\n    return pkg.Obj()\n"
+    )
 
 
 def test_importing_from_a_top_level_package_itself_keeps_that_line(

@@ -384,8 +384,9 @@ around a regular `analytics/io/` — defeats rule 1 entirely: the walk infers
 package deep, so its own relative imports rule nothing out. Nothing *inside*
 `analytics` can settle it. A file outside it saying `from analytics.io import
 x` can: `analytics` is then a package under some higher root, so it is not a
-root itself. Without this rule, `from .readers import read` inside that
-`__init__.py` is classified as an import from `io.readers`. The fixer still
+root itself. Without this rule, `from .readers import read` inside a
+function in that `__init__.py` is classified as an import from `io.readers`
+(at module level it is the package's public surface, and never rewritten). The fixer still
 writes `from . import readers`, which is right either way; before it wrote
 relative imports relative, it wrote `from io import readers` — the standard
 library. Only *inferred* roots that sit inside another root can be demoted

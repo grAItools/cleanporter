@@ -144,6 +144,13 @@ class RunResult:
     #: Every note, in the order it arose: which interpreter was detected for
     #: the probe, and why (see `Config.python`). Informational, never a failure.
     notes: tuple[str, ...] = ()
+    #: The files counted by `files_checked`, in discovery order.
+    checked: tuple[pathlib.Path, ...] = ()
+    #: With a baseline applied (`cleanporter.baseline.apply`), how many
+    #: findings it took out of `findings`; ``None`` when none was.
+    baselined: int | None = None
+    #: With a baseline applied, how many of its entries matched no finding.
+    stale_baseline: int | None = None
 
     def _count(self, status: model.Status) -> int:
         return sum(f.status is status for f in self.findings)
@@ -169,6 +176,11 @@ class RunResult:
         return self._count(model.Status.SKIPPED_BY_CONFIG)
 
     @property
+    def unused_suppressions(self) -> int:
+        """`CP005` findings."""
+        return self._count(model.Status.UNUSED_SUPPRESSION)
+
+    @property
     def write_errors(self) -> tuple[model.Finding, ...]:
         """The `errors` that are failed writes under `Mode.FIX`, in file order."""
         return tuple(p.write_error for p in self.patches if p.write_error is not None)
@@ -187,13 +199,20 @@ class RunResult:
         """The command's exit code for this result: 0 clean, 1 violations, 2 errors.
 
         2 when any file could not be read, decoded, parsed or written;
-        otherwise 1 when a `CP001` or `CP003` remains -- or, under *strict*
-        (``--strict`` / ``treat_unresolved_as_error``), a `CP002`; otherwise 0.
-        `CP004` never counts.
+        otherwise 1 when a `CP001`, `CP003` or `CP005` remains -- or, under
+        *strict* (``--strict`` / ``treat_unresolved_as_error``), a `CP002`;
+        otherwise 0. `CP004` never counts. Only `findings` count, so a code
+        `Config.select` / `Config.ignore` left out, or a finding a baseline
+        took out, cannot fail the run.
         """
         if self.errors:
             return 2
-        hard = self.violations + self.skipped + (self.unresolved if strict else 0)
+        hard = (
+            self.violations
+            + self.skipped
+            + self.unused_suppressions
+            + (self.unresolved if strict else 0)
+        )
         return 1 if hard else 0
 
 
@@ -209,8 +228,8 @@ class Listener:
     building the project (a missing path, nesting roots, a failed warm-up
     probe), then the files that could not be loaded (sorted by path; in a
     whole-project run an unlisted one is a warning instead), then per file a
-    write error or a patch, then warnings from probes the warm-up did not
-    foresee.
+    write error or a patch followed by its malformed suppression comments,
+    then warnings from probes the warm-up did not foresee.
     """
 
     def warning(self, message: str) -> None:
@@ -273,7 +292,9 @@ def run(
     applied to it (see `config.load_config` for reading ``[tool.cleanporter]``).
     Raises what reading the paths themselves can raise (`OSError`); a file
     that cannot be read, parsed or written is a `RunResult.errors` entry
-    instead, and the run goes on.
+    instead, and the run goes on. `Config.select` and `Config.ignore` filter
+    the findings reported, never what is fixed; `Config.baseline` is not read
+    here (see `cleanporter.baseline.apply`).
 
     With *whole_project*, the whole tree under ``config.root`` is read for
     evidence and only the files under *paths* are fixed, reported and counted;
@@ -331,15 +352,19 @@ def run(
     for warning in project.resolver.take_warnings():
         tally.warn(warning)
 
-    tally.findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
+    # `select` / `ignore` choose what is reported and counted, and nothing
+    # else: the fixer above has already rewritten what it would have anyway.
+    findings = [f for f in tally.findings if config.reports(f.code)]
+    findings.sort(key=lambda f: (str(f.path), f.line, f.column, f.code))
     return RunResult(
         mode,
         len(records),
-        tuple(tally.findings),
+        tuple(findings),
         tuple(tally.patches),
         tuple(tally.errors),
         tuple(tally.warnings),
         tuple(tally.notes),
+        tuple(r.path for r in records),
     )
 
 
@@ -417,6 +442,9 @@ def _process(
             current = _apply(current, outcome.source, write=mode is Mode.FIX, tally=tally)
         tally.findings.extend(outcome.blockers)
         unread = outcome.unread
+    # Read off the file as it now is, so the lines match its findings'.
+    for warning in current.suppressions.warnings(current.path):
+        tally.warn(warning)
     tally.findings.extend(analyze.analyze_record(current, project.resolver, project.config, unread))
 
 

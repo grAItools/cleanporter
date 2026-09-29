@@ -9,19 +9,24 @@ and [prek](https://prek.j178.dev/), in its
 | `cleanporter` | `cleanporter --whole-project FILES` | a changed file has a `CP001` or `CP003` (or a `CP002` under `--strict`), or cannot be read or parsed. |
 | `cleanporter-fix` | `cleanporter --whole-project --fix FILES` | it rewrote a file (the rewrite is left in your working tree to review and stage), or something it could not rewrite remains. |
 
+With a [baseline](usage.md#adopting-cleanporter-on-an-existing-codebase)
+configured, `cleanporter` is the hook that gates only *new* findings;
+`cleanporter-fix` does not apply the baseline (a baseline describes check
+runs), so it rewrites and reports the backlog in every file it is handed.
+
 Add one of them to your project's `.pre-commit-config.yaml`:
 
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: vX.Y.Z  # a release tag
+    rev: v0.5.0  # a release tag
     hooks:
       - id: cleanporter
       # or, to rewrite what is provably safe:
       # - id: cleanporter-fix
 ```
 
-`rev` is a release tag. The hooks first ship in the release after `0.4.0`;
+`rev` is a release tag. The hooks first ship in `0.5.0`;
 `pre-commit autoupdate` (`prek autoupdate`) moves `rev` to the latest one.
 
 Both hooks run on `*.py` files only (`types: [python]` plus `files: \.py$`:
@@ -115,7 +120,7 @@ project's files:
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: vX.Y.Z
+    rev: v0.5.0
     hooks:
       # The outer project, without the nested one.
       - id: cleanporter
@@ -135,9 +140,9 @@ The whole project is one `pyproject.toml`'s directory, and nothing outside it
 is read. In a repository of nested projects or a uv workspace, a consumer in
 *another* project is invisible, as it is to any run. Say
 `libs/foo/pyproject.toml` and `apps/web/pyproject.toml`, with
-`libs/foo/src/foo/__init__.py` re-exporting `helper` (`from foo.core import
-helper`) and only `apps/web/app.py` importing it from there (`from foo import
-helper`). A commit touching `libs/foo` runs on `libs/foo`'s project;
+`libs/foo/src/foo/api.py` re-exporting `helper` (`from foo.core import
+helper`) and only `apps/web/app.py` importing it from there (`from foo.api
+import helper`). A commit touching `libs/foo` runs on `libs/foo`'s project;
 `apps/web` is not evidence, so the re-export looks unused, and
 `cleanporter-fix` rewrites it and breaks `apps/web` at import time.
 `--whole-project` judges a changed file on a full run over its own project,

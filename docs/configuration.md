@@ -39,6 +39,9 @@ treat_unresolved_as_error = false
 exempt_modules = ["six.moves"]    # extends the built-in defaults
 exempt_names = ["THING"]
 # python = "/path/to/target/venv/bin/python"   # omit (or "auto") = detect; "self" = cleanporter's own
+# select = ["CP001", "CP003"]     # omit = every code
+ignore = []
+# baseline = "cleanporter-baseline.json"   # written by --write-baseline
 
 skip = [
     { decorator = 'field_operator|scan_operator|program', reason = "GT4Py re-parses these bodies" },
@@ -58,6 +61,9 @@ skip = [
 | `exempt_names` | `[]` | Individual bound names that are always allowed, whatever module they came from. Checked before the module is even looked at. |
 | `python` | absent (detect the project's interpreter) | The interpreter used for the stdlib/third-party classification probe: a non-empty string. Omit the key, or write `"auto"`, to detect the project's own interpreter; write `"self"` for the interpreter running cleanporter, probed in process — see [The probe interpreter](#the-probe-interpreter). Any other value names an interpreter (an interpreter literally called `auto` or `self` is named with a separator, `"./self"`). A value containing a path separator is a path, and a *relative* one is read against the `pyproject.toml` directory, like every other path here — so `".venv/bin/python"` works from any subdirectory. A value with no separator (`"python3"`) is a command name, looked up on `PATH` as usual. A leading `~` or `~user` is expanded first (an unknown user, or no home directory, is an error). Environment variables are *not* expanded, and symlinks are not resolved. A Windows drive also makes the value a path: `'C:\venv\Scripts\python.exe'` and `'\\server\share\python.exe'` are used as written, while a drive with no root, `'C:python.exe'`, is an error — it is relative to that drive's current directory, which the project root cannot stand in for. Drives are recognised on every platform, so a configuration means the same everywhere — which means a single letter followed by a colon reads as a drive even on Linux and macOS: `'a:b/python'` is drive `a:` with no root, and so an error, not a relative path under a directory called `a:b`. |
 | `skip` | `[]` | Regions of your code the tool must not analyse or rewrite, as a list of rule tables. See [`skip` rules](#skip-rules) below. |
+| `select` | absent (every code) | The finding codes reported and counted, as a list (`["CP001", "CP003"]`); must name at least one. Reporting only: `--fix` rewrites exactly what it would have without it, and the exit code follows only what is reported (a selected `CP002` still fails the run only under `treat_unresolved_as_error`). An unknown code is an error. Replaced by `--select`. |
+| `ignore` | `[]` | Finding codes neither reported nor counted, applied after `select`. Reporting only, like `select`. Replaced by `--ignore`. |
+| `baseline` | absent | A baseline file (written by `--write-baseline`) whose findings are left out of the report and the exit code, relative to the `pyproject.toml` directory. The file must exist. Applied by check runs only: under `--fix` or `--diff` it is skipped, with a note. Replaced by `--baseline`. See [Adopting cleanporter on an existing codebase](usage.md#adopting-cleanporter-on-an-existing-codebase). |
 
 !!! tip "`exempt_modules` matches ancestors"
 
@@ -82,6 +88,31 @@ These are built in and cannot be switched off through configuration.
 
 Note that `six.moves` is **not** exempt by default, even though the style
 guide mentions it. Add it explicitly if your codebase needs it.
+
+### A package's `__init__.py`
+
+A module-level `from P import S` in a package's `__init__.py` is never
+reported and never rewritten when `S` is an object (a module is compliant
+anyway, and a name the resolver cannot classify is still the `CP002` it
+would be anywhere). Whatever such an import binds
+is an attribute of the package, and a package's attributes are what its users
+import: `from ._version_info import VersionInfo` in attrs' `attr/__init__.py`
+is what makes `attr.VersionInfo` exist. Rewriting it deletes public API, and
+nothing in your run need read that name, list it in `__all__` or spell it in a
+string, so no evidence could show the rewrite was unsafe. The re-export is
+the conventional exception to §2.2, so it is treated as compliant rather than
+as a declined violation: it adds no finding, `CP004` included, and does not
+count towards the exit code.
+
+"Module level" means outside every `def` and `class` body, so an import under
+a module-level `try`, `if` or `with` counts — it binds a package attribute all
+the same. An import inside a function in `__init__.py` binds a local (one
+in a class body, a class attribute), and is reported and fixed like any
+other; one a `global` statement makes a module global is declined by the
+fixer's `global`/`nonlocal` guard, as anywhere. The rule is about the file name, not the
+directory: `__main__.py` and every other module in the package are checked as
+usual, and a namespace package has no `__init__.py` to exempt. Like the
+modules above, it is built in and cannot be switched off.
 
 ## The probe interpreter
 
@@ -162,8 +193,7 @@ and never a rewrite. `python = "self"` (or `--python self`) turns detection off.
 
 ## How CLI flags layer on top of config
 
-Flags do not replace configured values; with one exception they extend or
-strengthen them. This means a developer can tighten a run locally without
+Most flags do not replace configured values: they extend or strengthen them. This means a developer can tighten a run locally without
 having to restate what the project already declares.
 
 | Flag | Effect on the loaded config |
@@ -171,6 +201,8 @@ having to restate what the project already declares.
 | `--exempt MODULE` | Added to `exempt_modules` (which already contains the built-in defaults). |
 | `--root PATH` | Appended to `source_roots`. Relative values resolve against the project root, i.e. the `pyproject.toml` directory. |
 | `--strict` | OR-ed into `treat_unresolved_as_error`. `--strict` can turn it on; it can never turn it off. |
+| `--select CODES`, `--ignore CODES` | **Override** `select` and `ignore`, each only when given: `--select` replaces the configured `select` while the configured `ignore` still applies, until `--ignore` replaces that too. |
+| `--baseline FILE` | **Overrides** the `baseline` key. A relative value is read against the current directory. |
 | `--python PATH` | **Overrides** the `python` key, but only when the flag is actually given — so `--python auto` restores detection over a configured interpreter, and `--python self` turns it off. Like any path on the command line, a relative value is read against the current directory, not the project root. An empty value (`--python ""`) is an error (exit `2`). |
 
 There is no flag that removes an exemption, drops a source root, or relaxes
@@ -398,3 +430,146 @@ and only suppresses the findings.
 
 Use `exclude` for code that is not yours to fix: vendored trees, generated
 files, build output.
+
+## Inline suppressions
+
+A `skip` rule is for a *kind* of code. For one import you have looked at and
+decided to keep, put the decision on the import itself:
+
+```python
+from gt4py.next import broadcast  # cleanporter: ignore[CP001]
+from vendored_thing import handle  # cleanporter: ignore[CP001, CP002]
+```
+
+The finding the comment names is reported as `CP004` instead — counted in the
+summary, printed only under `--show-skipped`, never part of the exit code —
+with a message saying which code was suppressed and by the comment on which
+line. `--fix` keeps a suppressed import exactly as it keeps one a `skip` rule
+covers: the name is not rewritten, nor is any use of it, and the rest of the
+file is fixed as usual. The import is still analysed — a suppression
+replaces the finding only once it exists, so the resolver (and the probe) are
+asked about it as about any other — but the suppression never feeds back into
+the verdict: it cannot turn an unresolved name into an answer, and it changes
+nothing about any other import.
+
+### Syntax
+
+The comment is split at each `#`, so a suppression can share a line with
+other tools' directives (`# noqa: F401  # cleanporter: ignore[CP001]`). Each
+piece is, in order:
+
+1. optional whitespace after the `#`;
+2. `cleanporter:` — exactly, lowercase, with no space before the colon;
+3. optional whitespace, then `ignore[`;
+4. one or more codes, separated by commas, each with optional whitespace
+   around it; each code is `CP001`, `CP002` or `CP003`, in capitals;
+5. `]`;
+6. nothing more, or whitespace followed by any text — a reason, say.
+
+So these are accepted:
+
+```python
+# cleanporter: ignore[CP001]
+#cleanporter:ignore[CP001,CP002]
+# cleanporter: ignore[ CP002 ]  -- the vendored copy is not importable
+```
+
+A piece that starts with `cleanporter` and a colon in any other way — in any
+case, with any spacing before the colon — is **malformed**. A malformed comment
+suppresses nothing: cleanporter prints a warning naming its file and line and
+goes on, and the finding it meant to suppress is reported as usual. Malformed
+are, for example:
+
+- `# cleanporter: ignore` with no codes — a bare ignore would silence findings
+  nobody has seen yet, which is why the rule exists — and `ignore[]`;
+- a code that is not one of the three: an unknown one (`CP009`), a lowercase
+  one (`cp001`), `CP004` (already your own decision) or `CP005` (the report
+  that a suppression did nothing);
+- a near miss: `# Cleanporter: ignore[CP001]`, `# cleanporter : ignore[CP001]`,
+  `# cleanporter: IGNORE[CP001]`, `# cleanporter: ignore [CP001]`,
+  `# cleanporter: ignore[CP001]: reason` (no whitespace before the reason),
+  `# cleanporter: noqa`.
+
+One malformed piece voids the whole comment, including a well-formed piece
+beside it.
+
+A never-read import is `CP001` to a plain check and `CP003` under `--fix` (the
+fixer knows nothing reads it). It is suppressed by `ignore[CP001]`, the code a
+check reports, so one comment works in both modes. `ignore[CP003]` on it
+suppresses nothing in either mode — a check cannot know the name is never read,
+so accepting it under `--fix` alone would make the two modes disagree — and is
+reported `CP005`, whose message under `--fix` points to `CP001`.
+
+### Which imports a comment covers
+
+Attachment is by **physical line**. A suppression comment covers
+
+1. every name imported by a `from` statement that **starts** on its line, and
+2. every imported name **written** on its line.
+
+```python
+from pkg.shapes import Circle, Square  # cleanporter: ignore[CP001]  <- both names
+
+from pkg.shapes import (  # cleanporter: ignore[CP001]              <- every name below
+    Circle,
+    Square,
+)
+
+from pkg.shapes import (
+    Circle,  # cleanporter: ignore[CP001]                            <- Circle only
+    Square,
+)
+```
+
+A comment on a line of its own, on the closing `)`, or on anything but a
+`from` import covers nothing. It applies only to findings about an imported
+name: a file-level `CP003` (the fixer declining a whole file) cannot be
+suppressed.
+
+!!! warning "A per-name comment inside a statement `--fix` rewrites"
+
+    `--fix` never discards a comment. A comment *inside* a parenthesised
+    import cannot survive a rewrite of that statement, so when another name
+    in it is a `CP001`, the file is declined
+    ([`CP003`](safety.md#a-comment-inside-the-import-statement)). Give the
+    suppressed name a statement of its own.
+
+!!! warning "`--fix` never moves a suppression onto other imports"
+
+    When `--fix` rewrites some names of a statement and keeps others, the kept
+    names are written on one line, which takes the statement's trailing
+    comment. A comment that covered only a rewritten name, or nothing at all
+    (one on a closing `)`), would then cover the kept names and start
+    suppressing them. cleanporter recomputes which imports every suppression
+    covers on its own output, and when what any comment covers changes —
+    beyond losing the names the rewrite takes away: a kept name, a second
+    import of the same name, or the module import just written — it declines
+    the whole file (`CP003`: *the rewrite would move this
+    suppression comment onto imports it does not cover now*). Give the
+    suppressed names a statement of their own, or delete a stale comment.
+
+### Unused suppressions: `CP005`
+
+A code in a suppression that matches no finding on the names the comment
+covers is reported as `CP005`, at the comment, and it makes the run exit `1`
+like a `CP001`: a stale suppression would otherwise silently swallow the next
+finding of that code to land on its line. It appears when the import was fixed
+or became compliant, and when the comment is on a line that covers nothing.
+Two cases are exempt, because a `skip` rule has already replaced whatever the
+comment could have matched: a comment on a line a rule covers (every line of a
+file a rule takes whole), and a comment covering an import a rule has already
+reported as `CP004`. Nothing else is: a comment on an import a rule pins, but
+whose name is compliant or exempt, is still `CP005`.
+
+That includes a package's public surface. A module-level import of an
+object in a package's `__init__.py` is compliant (see
+[A package's `__init__.py`](#a-packages-__init__py)), so it has no finding
+for a comment to suppress, and `# cleanporter: ignore[CP001]` on it is a
+`CP005` asking you to delete the comment: the import is kept without it. The
+rule covers only a name proven to be an object: a module-level `CP002` (a name
+the resolver cannot classify) or a wildcard import's `CP003` there is still a
+finding, and a comment naming its code suppresses it as anywhere else. The
+public surface is decided before any comment is read, so the comment cannot
+change it. A suppression on an import *inside a function* in `__init__.py`
+works as it does in any module, since that import is reported and fixed like
+any other.

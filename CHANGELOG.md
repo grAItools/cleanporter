@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-29
+
 Breaking under the pre-1.0 policy above:
 
 - With no `--python` and no `python` key, the probe now runs under the
@@ -23,9 +25,65 @@ Breaking under the pre-1.0 policy above:
   `Config(python="self")` restores the old behaviour. `RunResult` and
   `Project` gain a trailing `notes` field, and `engine.Listener` a `note`
   method.
+- A module-level `from P import S` of an object in a package's `__init__.py`
+  is no longer reported or rewritten (see *Changed*). Its `CP001`s and
+  `CP003`s disappear, so a run whose only findings were there now exits `0`
+  rather than `1`, and so do its `CP004`s, which `--show-skipped` no longer
+  lists. Under `--fix`, an `__init__.py` that a whole-file guard used to leave
+  byte-identical may now have its function-local imports rewritten, since the
+  module-level imports that tripped the guard are no longer candidates.
 
 ### Added
 
+- **Baselines, for adopting cleanporter on an existing codebase.**
+  `--write-baseline FILE` records the current findings in a sorted,
+  versioned JSON file (`{"version": 1, "findings": [...]}`) and exits `0`;
+  `--baseline FILE`, or `baseline = "..."` under `[tool.cleanporter]`
+  (relative to the `pyproject.toml`), then leaves those findings out of the
+  report and the exit code, so only new ones fail. A finding is keyed by its
+  project-relative POSIX path, code, parent and name: it survives lines
+  moving and any reformatting of its statement, and comes back when the
+  import changes what it imports. `CP001` and `CP003` match each other, since
+  which one a run reports can depend on the files in it. Identical findings
+  count as a multiset. Entries that no longer match are counted in a stderr
+  note, never a failure; `--format json` adds `baselined` and
+  `stale_baseline` counts. Baselines are for check runs: `--baseline` or
+  `--write-baseline` with `--fix` or `--diff` is a usage error, a configured
+  `baseline` is skipped under them with a note, and both flags need a
+  `pyproject.toml`. For the library, the new `cleanporter.baseline` module
+  (`load`, `write`, `entries`, `apply`); `RunResult` gains trailing
+  `checked`, `baselined` and `stale_baseline` fields.
+- **`--select CODES` / `--ignore CODES`** (and the `select` / `ignore`
+  configuration keys, which the flags replace) choose which finding codes are
+  reported and counted. Reporting only: `--fix` rewrites exactly what it
+  would have. The exit code follows the reported codes, so `--select CP002`
+  fails on a `CP002` only under `--strict`. An unknown code exits `2`.
+  `engine.run` applies them, via the new `Config.select`, `Config.ignore`
+  and `Config.reports`.
+- **Inline suppressions.** `# cleanporter: ignore[CP001]` (or several codes,
+  `ignore[CP001, CP002]`) on an import's line suppresses the named findings for
+  every name the statement imports; on one line of a parenthesised multi-line
+  import, for the names on that line only. `CP001`, `CP002` and `CP003` can be
+  named. A suppressed finding is reported as `CP004`, shown under
+  `--show-skipped`, and `--fix` keeps the import exactly as it keeps one a
+  `skip` rule covers. A bare `# cleanporter: ignore`, an unknown code, or
+  `CP004`/`CP005` in the brackets is a warning naming the file and line, and
+  suppresses nothing. So does any other comment piece starting with
+  `cleanporter` and a colon in any case or spacing: an existing
+  `# cleanporter: ...` or `# Cleanporter: ...` note in your code now prints a
+  warning (and suppresses nothing). `--fix` declines a file (`CP003`) rather
+  than move a suppression onto imports it did not cover. See
+  [Inline suppressions](https://graitools.github.io/cleanporter/configuration/#inline-suppressions).
+- **`CP005`, unused suppression.** A suppression code that matched no finding on
+  the names its comment covers is reported at the comment and, like `CP001`,
+  makes the run exit `1`. It is in every format (a SARIF rule, an `::error` in
+  GitHub's), counted as `unused_suppressions` in JSON's `counts` and in
+  `RunResult.unused_suppressions`, and added to the summary line when non-zero.
+  A suppression on a module-level import of an object in a package
+  `__init__.py` is always unused, since that import is compliant (see *Changed*). `--select` /
+  `--ignore` take `CP005` like any code, but a baseline never records or
+  accepts one: a stale suppression is always reported, and deleting it is the
+  fix.
 - **A cross-file string guard.** A string literal in another analysed file
   that spells a first-party binding's dotted path out whole —
   `monkeypatch.setattr("pkg.mod.helper", ...)`, `mock.patch("pkg.mod.helper")`,
@@ -138,6 +196,27 @@ Breaking under the pre-1.0 policy above:
 
 ### Changed
 
+- **A package's `__init__.py` keeps its module-level imports: they are its
+  public surface.** Every `from P import S` of an object in an `__init__.py`
+  outside a `def` or `class` — one under a module-level `try`, `if` or `with`
+  included — is now compliant: never reported, never rewritten, in every
+  mode. Such an import is what makes `pkg.S` exist for the package's users,
+  and rewriting it deletes that attribute. `--fix` did exactly that whenever
+  no guard happened to see a use: `from ._version_info import VersionInfo` in
+  attrs' `attr/__init__.py` is public API, but it is not in `__all__` and
+  nothing in the run reads it, so `--fix` rewrote it and deleted
+  `attr.VersionInfo`. The re-export is the conventional exception to §2.2, so
+  it is treated as compliant rather than reported as a `CP003` on every
+  package in a project. The findings these imports used to produce are gone,
+  and so is their effect on the exit code: `CP001` in a check; a `CP003` for
+  whatever reason one was kept (an explicit, load-bearing, string-named or
+  never-read re-export, an unspellable or unreachable replacement); and
+  `CP004` under a skip rule. An unresolvable name is still `CP002`.
+  cleanporter over its own source now exits `0`. An import inside a function
+  or class body in an `__init__.py`, `__main__.py`, and every other module
+  are decided exactly as before, and the rule is per import: the rest of the
+  file is still fixed. Documented under
+  [A package's `__init__.py`](https://graitools.github.io/cleanporter/configuration/#a-packages-__init__py).
 - **`--diff` and `--fix` skip the fixer's scope analysis for files with nothing
   to fix.** libcst's scope metadata, which the fixer's guards need, used to be
   built for every file in the run; it is now built only for a file in which
@@ -1021,6 +1100,7 @@ never-guess design, and the rewriter gained its all-or-nothing safety model.
   the annotation rewrite.
 - An existing binding that is rebound or deleted is never reused for a rewrite.
 
-[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/grAItools/cleanporter/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/grAItools/cleanporter/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/grAItools/cleanporter/releases/tag/v0.3.0

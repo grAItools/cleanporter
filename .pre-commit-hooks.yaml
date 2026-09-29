@@ -2,7 +2,7 @@
 # project's .pre-commit-config.yaml (see docs/pre-commit.md):
 #
 #     - repo: https://github.com/grAItools/cleanporter
-#       rev: vX.Y.Z  # a release tag; the first with these hooks follows 0.4.0
+#       rev: v0.5.0  # a release tag; the first with these hooks is v0.5.0
 #       hooks:
 #         - id: cleanporter
 #
