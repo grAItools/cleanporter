@@ -1,0 +1,122 @@
+name: Release
+
+# Pushing a version tag is the whole release: build once, check the tag against
+# pyproject.toml, then publish those same files as a GitHub release and --
+# only where the repository has opted in -- to PyPI. See CONTRIBUTING.md,
+# "Releasing".
+on:
+  push:
+    tags: ["v*"]
+
+# Least privilege by default; the two jobs that write get exactly what they
+# write with, and nothing else does.
+permissions:
+  contents: read
+
+# Never cancel a release half-way: a second tag push waits for the first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # No cache: nothing restored from an earlier run should be able to end
+      # up in a published artifact.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: false
+
+      # The wheel takes its version from pyproject.toml, not from the tag, and
+      # PyPI never accepts a version twice: a mismatch has to stop here.
+      - name: The tag names project.version
+        run: uv run --no-project python .github/scripts/release.py check-tag "$GITHUB_REF_NAME"
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          mkdir notes
+          uv run --no-project python .github/scripts/release.py notes "${GITHUB_REF_NAME#v}" \
+            > notes/notes.md
+          cat notes/notes.md
+
+      - name: Build the sdist and wheel
+        run: uv build
+
+      - name: Upload the distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+      # Kept apart from dist/: the PyPI upload takes every file in dist/.
+      - name: Upload the release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: notes
+          path: notes/notes.md
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: notes
+          path: notes
+
+      # A PEP 440 pre- or dev-release (0.5.0rc1, 1.0.0b2, 0.5.0.dev0) is
+      # marked as a pre-release, so it is never shown as "Latest".
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=()
+          if [[ "${GITHUB_REF_NAME#v}" =~ (a|b|rc|dev)[0-9]+$ ]]; then prerelease=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes/notes.md \
+            --verify-tag \
+            "${prerelease[@]}"
+
+  # Off unless the repository variable PUBLISH_TO_PYPI is 'true' (Settings >
+  # Secrets and variables > Actions > Variables). Without it the job is
+  # skipped, not failed, and the GitHub release above still happens.
+  #
+  # Trusted publishing: no token is stored anywhere. PyPI trusts an OIDC token
+  # minted for this repository, this workflow file (release.yml) and the
+  # `pypi` environment -- the publisher configured on pypi.org must name all
+  # three, and the environment is where required reviewers can be added.
+  pypi:
+    name: PyPI
+    needs: build
+    if: vars.PUBLISH_TO_PYPI == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cleanporter/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.13.0

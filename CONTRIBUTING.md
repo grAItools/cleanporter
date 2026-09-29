@@ -283,6 +283,56 @@ zuban used to have a CI job of its own that reported disagreements as a warning
 annotation and always exited 0. It is gone: zuban is a hook like the others
 now, so it gates through the lint job.
 
+## Releasing
+
+A release is a version tag; `.github/workflows/release.yml` does the rest.
+
+1. **Open a PR that bumps the version.** Set `project.version` in
+   `pyproject.toml` to `X.Y.Z`, rename `CHANGELOG.md`'s `## [Unreleased]`
+   section to `## [X.Y.Z] - YYYY-MM-DD` (and start a fresh, empty
+   `## [Unreleased]` above it), and update the link definitions at the bottom
+   of the file. `tests/test_release.py` fails the PR if the new version has no
+   changelog section.
+2. **Merge it**, then tag the merge commit and push the tag:
+
+   ```bash
+   git switch main && git pull
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+The workflow then:
+
+- checks that the tag is exactly `v` + `project.version` and stops if not —
+  the wheel takes its version from `pyproject.toml`, not from the tag;
+- takes the release notes from the `## [X.Y.Z] - DATE` section of
+  `CHANGELOG.md`, and stops if there is none;
+- builds the sdist and wheel once, with `uv build`;
+- creates the GitHub release for the tag, with those notes and both files
+  attached (marked a pre-release for an `rc`, `a`, `b` or `dev` version);
+- uploads the same files to PyPI — **only if PyPI publishing is enabled**.
+
+Both checks are `.github/scripts/release.py`, which you can run before tagging:
+`uv run --no-project python .github/scripts/release.py check-tag vX.Y.Z`.
+
+### Enabling PyPI publishing
+
+PyPI publishing is off: with it off, the PyPI job is skipped (not failed) and
+the GitHub release is still made. It uses
+[trusted publishing](https://docs.pypi.org/trusted-publishers/), so no API
+token is stored anywhere. To turn it on:
+
+1. On pypi.org, add a trusted publisher for the `cleanporter` project (a
+   *pending* publisher, before the first upload) with owner `grAItools`,
+   repository `cleanporter`, workflow `release.yml` and environment `pypi`.
+2. In the GitHub repository settings, create an environment named `pypi`
+   (add required reviewers there if a release should wait for approval).
+3. Under *Settings → Secrets and variables → Actions → Variables*, add the
+   repository variable `PUBLISH_TO_PYPI` with the value `true`.
+
+The next tag pushed is then published to PyPI as well. A version already on
+PyPI can never be uploaded again, which is why the tag check comes first.
+
 ## Reporting bugs
 
 The most useful bug report for a codemod is a minimal input file, the command you
