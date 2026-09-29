@@ -61,6 +61,13 @@ contains, and `read_reply` takes the *last* opening marker, so noise before
 the reply cannot be mistaken for it. Anything that does not yield a JSON
 object between the markers is no reply at all, and the caller reports the
 batch undetermined -- the transport never guesses either.
+
+The reply's *encoding* is fixed as well: `json.dumps` escapes every non-ASCII
+character, so the frame and its contents are ASCII whatever the child's
+stdout encoding is, and the caller reads the pipe as bytes, decoded as UTF-8
+with replacement. What the probed packages print around it can be any bytes
+at all; decoding it in the locale's codec (cp1252 on Windows) used to raise
+out of the run instead of reading past it.
 """
 
 from __future__ import annotations
@@ -224,7 +231,7 @@ def _main() -> int:
         flat = classify_many(pairs)
     finally:
         sys.stdout = reply_stream
-    reply_stream.write(REPLY_BEGIN + json.dumps(flat) + REPLY_END)
+    reply_stream.write(REPLY_BEGIN + json.dumps(flat, ensure_ascii=True) + REPLY_END)
     reply_stream.flush()
     return 0
 

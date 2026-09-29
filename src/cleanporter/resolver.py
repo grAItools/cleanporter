@@ -72,6 +72,11 @@ from . import _interpreter, _probe
 #: outlives it is killed and its whole batch reported undetermined.
 _PROBE_TIMEOUT = 120
 
+#: The child probe's ``PYTHONIOENCODING``: its streams in UTF-8, the codec the
+#: parent decodes them with, so the stderr a failed batch's warning quotes is
+#: the text a package printed rather than its locale's escapes of it.
+_PROBE_IO_ENCODING = "utf-8:backslashreplace"
+
 _AMBIGUOUS = "'{name}' is both a submodule of '{parent}' and bound in its __init__"
 _NOT_IMPORTABLE = "'{parent}' is not importable in the target interpreter"
 
@@ -493,13 +498,22 @@ class Resolver:
         undetermined. "Never guess" applies to the transport exactly as it
         does to the classification: reporting nothing is recoverable,
         guessing wrong in --fix mode is not.
+
+        The pipes carry *bytes*, decoded here as UTF-8 with replacement, never
+        in the locale's encoding: what a probed package writes on either
+        stream is arbitrary, and a strict locale decode (cp1252 on Windows,
+        or UTF-8 meeting a stray 0xFF byte) raised `UnicodeDecodeError` out of
+        the run instead of reading the frame around it. The child is told the
+        same encoding (`_PROBE_IO_ENCODING`), so what it writes arrives in the
+        codec it is read with; the request and the framed reply are ASCII JSON
+        either way, so the frame is found whatever the child's encoding.
         """
         try:
             proc = subprocess.run(
                 [self._python, self._probe_path],
-                input=json.dumps(pairs),
+                input=json.dumps(pairs).encode("ascii"),
                 capture_output=True,
-                text=True,
+                env={**os.environ, "PYTHONIOENCODING": _PROBE_IO_ENCODING},
                 timeout=_PROBE_TIMEOUT,
                 check=False,
             )
@@ -508,7 +522,7 @@ class Resolver:
         except (subprocess.SubprocessError, OSError) as exc:
             why = f"could not be run: {exc}"
         else:
-            reply = _probe.read_reply(proc.stdout or "")
+            reply = _probe.read_reply(proc.stdout.decode("utf-8", "replace"))
             if proc.returncode == 0 and reply is not None:
                 return reply
             status = (

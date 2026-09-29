@@ -129,6 +129,13 @@ Breaking under the pre-1.0 policy above:
   the URI's host, rather than `file:////server/share/...`, and an
   extended-length `\\?\C:\...` path is `file:///C:/...`. The test suite now
   also runs on Windows in CI.
+- **An out-of-process probe no longer crashes on output it cannot decode.**
+  The probe's pipes were decoded in the locale's encoding, so a probed package
+  that printed bytes that encoding rejects -- anything cp1252 leaves undefined
+  on Windows, or invalid UTF-8 elsewhere -- raised `UnicodeDecodeError` out of
+  the run. They are now read as bytes and decoded as UTF-8 with replacement,
+  the probe is told to write UTF-8 (`PYTHONIOENCODING`), and its reply is
+  ASCII JSON inside its frame whatever the child's encoding.
 
 ## [0.4.0] - 2026-09-28
 
