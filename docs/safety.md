@@ -510,9 +510,26 @@ configuration would have forbidden. Prefer the bare last-component spelling
     `--fix` the string guard above sees it mention the name the rewrite would
     qualify and declines the whole file with a `CP003`; a plain check
     reports the import as `CP001`. Both are as they were before this guard.
+- **A package's `__init__.py` keeps its module-level imports.** Every
+  `from P import S` there outside a `def` or `class` — under a module-level
+  `try`, `if` or `with` too — binds an attribute of the package, and those
+  attributes are its public surface: `from ._version_info import VersionInfo`
+  in attrs' `attr/__init__.py` is `attr.VersionInfo`. Nothing need read that
+  name, list it in `__all__`, import it or spell it in a string, so none of
+  the evidence-based guards here can see what the rewrite would delete. So
+  the rule is structural rather than evidential: such an import is compliant
+  (see [A package's `__init__.py`](configuration.md#a-packages-__init__py)),
+  never reported and never rewritten, in every mode — the one decision
+  `check` and `--fix` share makes it, so they cannot disagree. It is
+  per import, not per file: an import inside a function in the same
+  `__init__.py` binds a local and is still fixed, and nothing else in the
+  file is blocked.
 - **A module-level name in `pkg/__init__.py` is the attribute
   `pkg.<name>`,** and that makes two things unsafe there that are fine
-  anywhere else.
+  anywhere else. Since the item above keeps every module-level import there
+  as written, the fixer now only ever rewrites an `__init__.py` import inside
+  a `def` or `class`, whose binding is not a package attribute; both rules
+  stay as defence in depth, and the second still decides such an import.
 
     A new binding must not take the name of one of `pkg`'s **own
     submodules**. Rewriting `from kombu.serialization import loads` inside

@@ -552,8 +552,12 @@ def test_a_namespace_package_holding_a_subpackage_is_not_rewritten_to_stdlib(
     (tmp_path / "analytics" / "io" / "readers.py").write_text(
         "def read():\n    return []\n", encoding="utf-8", newline="\n"
     )
+    # In a function: a module-level import in an ``__init__`` is the package's
+    # public surface, never reported or rewritten (`analyze.Decider.public_surface`).
     (tmp_path / "analytics" / "io" / "__init__.py").write_text(
-        "from .readers import read\n\nvalues = read()\n", encoding="utf-8", newline="\n"
+        "def _load():\n    from .readers import read\n    return read()\n\n\nvalues = _load()\n",
+        encoding="utf-8",
+        newline="\n",
     )
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
@@ -566,7 +570,7 @@ def test_a_namespace_package_holding_a_subpackage_is_not_rewritten_to_stdlib(
     capsys.readouterr()
 
     assert (tmp_path / "analytics" / "io" / "__init__.py").read_text(encoding="utf-8") == (
-        "from . import readers\n\nvalues = readers.read()\n"
+        "def _load():\n    from . import readers\n    return readers.read()\n\n\nvalues = _load()\n"
     )
     proc = _runs(tmp_path, "analytics.io", tmp_path)
     assert proc.returncode == 0, proc.stderr
@@ -591,17 +595,25 @@ def test_a_namespace_package_nothing_imports_is_rewritten_relative_not_to_stdlib
         "def read():\n    return 1\n", encoding="utf-8", newline="\n"
     )
     init = tmp_path / "analytics" / "io" / "__init__.py"
-    init.write_text("from .readers import read\n\nprint(read())\n", encoding="utf-8", newline="\n")
+    # In a function: a module-level import in an ``__init__`` is the package's
+    # public surface, never reported or rewritten (`analyze.Decider.public_surface`).
+    init.write_text(
+        "def show():\n    from .readers import read\n    print(read())\n\n\nshow()\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     monkeypatch.chdir(tmp_path)
 
     cli.main(["--diff", "analytics"])
     patch = capsys.readouterr().out
-    assert "+from . import readers\n" in patch
+    assert "+    from . import readers\n" in patch
     assert "from io import" not in patch
 
     cli.main(["--fix", "analytics"])
     capsys.readouterr()
-    assert init.read_text(encoding="utf-8") == ("from . import readers\n\nprint(readers.read())\n")
+    assert init.read_text(encoding="utf-8") == (
+        "def show():\n    from . import readers\n    print(readers.read())\n\n\nshow()\n"
+    )
     proc = _runs(tmp_path, "analytics.io", tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == "1\n"
@@ -659,12 +671,15 @@ def test_a_package_init_importing_from_itself_climbs_one_level_further(
 
     ``from .. import pkg`` there finds ``top.pkg`` half-initialised in
     ``sys.modules`` -- the same module object ``from . import Obj`` read
-    ``Obj`` from.
+    ``Obj`` from. The import sits in a function the ``__init__`` calls while
+    it runs: at module level it is the package's public surface, never
+    rewritten (`analyze.Decider.public_surface`).
     """
     project = nested_packages
     init = project / "top" / "pkg" / "__init__.py"
     init.write_text(
-        "class Obj:\n    pass\n\n\nfrom . import Obj as Alias\n\nx = Alias()\n",
+        "class Obj:\n    pass\n\n\ndef make():\n    from . import Obj as Alias\n"
+        "    return Alias()\n\n\nx = make()\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -674,7 +689,8 @@ def test_a_package_init_importing_from_itself_climbs_one_level_further(
     capsys.readouterr()
 
     assert init.read_text(encoding="utf-8") == (
-        "class Obj:\n    pass\n\n\nfrom .. import pkg\n\nx = pkg.Obj()\n"
+        "class Obj:\n    pass\n\n\ndef make():\n    from .. import pkg\n"
+        "    return pkg.Obj()\n\n\nx = make()\n"
     )
     proc = _runs(project, "top.pkg", project)
     assert proc.returncode == 0, proc.stderr
@@ -688,18 +704,24 @@ def test_importing_from_a_top_level_package_itself_keeps_that_line(
 
     The only other spelling is absolute, ``import pkg``, which depends on the
     import root where the original did not. That line is kept byte-identical
-    with a ``CP003`` saying why; the rest of the file is still rewritten.
+    with a ``CP003`` saying why; the rest of the file is still rewritten. In
+    ``__init__.py`` the imports sit in a function, because at module level
+    they are the package's public surface and never reported at all.
     """
     (tmp_path / "pyproject.toml").write_text("", encoding="utf-8", newline="\n")
     (tmp_path / "pkg").mkdir()
     (tmp_path / "pkg" / "__init__.py").write_text("VERSION = '1'\n", encoding="utf-8", newline="\n")
     target = tmp_path / "pkg" / filename
-    head = "VERSION = '1'\n" if filename == "__init__.py" else ""
-    target.write_text(
-        head + "from . import VERSION as V\nfrom os.path import join\nprint(V, join('a'))\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    in_init = filename == "__init__.py"
+    head = "VERSION = '1'\n\n\ndef show():\n" if in_init else ""
+    indent = "    " if in_init else ""
+
+    def body(fixed: str, join: str) -> str:
+        lines = ("from . import VERSION as V", fixed, f"print(V, {join}('a'))")
+        tail = "\n\nshow()\n" if in_init else ""
+        return head + "".join(f"{indent}{ln}\n" for ln in lines) + tail
+
+    target.write_text(body("from os.path import join", "join"), encoding="utf-8", newline="\n")
     monkeypatch.chdir(tmp_path)
 
     assert cli.main(["--fix", "."]) == 1
@@ -708,9 +730,7 @@ def test_importing_from_a_top_level_package_itself_keeps_that_line(
     assert "CP003" in report
     own_init = "in 'pkg''s own __init__ names the package itself"
     assert (own_init if filename == "__init__.py" else "names the package 'pkg' itself") in report
-    assert target.read_text(encoding="utf-8") == (
-        head + "from . import VERSION as V\nfrom os import path\nprint(V, path.join('a'))\n"
-    )
+    assert target.read_text(encoding="utf-8") == body("from os import path", "path.join")
     proc = _runs(tmp_path, "pkg" if filename == "__init__.py" else "pkg.mod", tmp_path)
     assert proc.returncode == 0, proc.stderr
 
@@ -878,19 +898,30 @@ def test_a_self_referential_import_is_still_rewritten_when_nothing_shadows_it(
     exactly right -- and it needs no alias either, because the name it binds
     is the same object the import system puts in that attribute anyway.
     """
+    # In a function the ``__init__`` calls while it runs: at module level the
+    # import is the package's public surface, never rewritten.
     project = _two_serializations(
         tmp_path,
-        "from pkg.serialization import MARK\n\nVALUE = MARK\n\n\ndef use():\n    return 1\n",
+        "def _mark():\n"
+        "    from pkg.serialization import MARK\n"
+        "    return MARK\n"
+        "\n"
+        "\n"
+        "VALUE = _mark()\n"
+        "\n"
+        "\n"
+        "def use():\n"
+        "    return 1\n",
     )
     monkeypatch.chdir(project)
     cli.main(["--fix", "."])
     capsys.readouterr()
 
-    assert (
-        (project / "pkg" / "__init__.py")
-        .read_text(encoding="utf-8")
-        .startswith("from pkg import serialization\n")
-    ), "a self-referential import nothing shadows is fixed, and without an alias"
+    assert "    from pkg import serialization\n    return serialization.MARK\n" in (
+        project / "pkg" / "__init__.py"
+    ).read_text(encoding="utf-8"), (
+        "a self-referential import nothing shadows is fixed, and without an alias"
+    )
     after = _package_values(project)
     assert after.returncode == 0, after.stderr
     assert after.stdout.split() == ["pkg", "1"]
@@ -907,9 +938,14 @@ def test_a_binding_the_author_wrote_over_a_submodule_name_is_declined(
     project = _two_serializations(
         tmp_path,
         "serialization = 42\n"
-        "from pkg.serialization import MARK\n"
         "\n"
-        "VALUE = MARK\n"
+        "\n"
+        "def _mark():\n"
+        "    from pkg.serialization import MARK\n"
+        "    return MARK\n"
+        "\n"
+        "\n"
+        "VALUE = _mark()\n"
         "\n"
         "\n"
         "def use():\n"

@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 import libcst as cst
+import pytest
 
 from cleanporter import analyze, config, engine, firstparty, model, project, rewrite
 from cleanporter import resolver as resolver_lib
@@ -351,10 +352,17 @@ def test_a_reexport_is_protected_through_a_module_of_the_same_name(
     while rewriting ``consumer.py`` to read it. Found in the corpus:
     ``click_plugins.py`` beside ``click_plugins/`` broke
     ``celery.bin.celery``.
+
+    A module-level import in a package ``__init__`` is now its public surface
+    and never reported at all, so the evidence is asserted on the resolver
+    directly: the load-bearing guard still sees the package, not the flat
+    module, for the ``__init__`` imports it still decides (one in a function).
     """
-    by_file = _findings_by_file(_shadowed_package_tree(tmp_path))
-    assert [f.code for f in by_file["__init__.py"]] == ["CP003"]
-    assert "another file imports 'helper' from 'pkg'" in by_file["__init__.py"][0].detail
+    tree = _shadowed_package_tree(tmp_path)
+    by_file = _findings_by_file(tree)
+    assert by_file["__init__.py"] == []
+    built = project.build([tree], config.Config(root=tree))
+    assert built.resolver.is_load_bearing("pkg", "helper") is True
 
 
 def test_the_consumer_of_a_shadowed_reexport_is_still_a_violation(
@@ -384,8 +392,11 @@ def test_an_import_of_a_submodule_its_own_init_shadows_is_skipped(
     wins. Reported rather than silently left as a ``CP001`` nothing will
     ever clear.
     """
+    # In a function: at module level the import is the package's public
+    # surface (`analyze.Decider.public_surface`) and never decided this far.
     pkg = _self_shadowing_tree(
-        tmp_path, "serialization = 42\nfrom pkg.serialization import MARK\nx = MARK\n"
+        tmp_path,
+        "serialization = 42\ndef f():\n    from pkg.serialization import MARK\n    return MARK\n",
     )
     findings = _findings_by_file(pkg)["__init__.py"]
     assert [f.code for f in findings] == ["CP003"]
@@ -396,7 +407,9 @@ def test_the_same_import_is_an_ordinary_violation_without_the_shadow(
     tmp_path: pathlib.Path,
 ) -> None:
     """Self-reference alone is not the problem; only the competing binding is."""
-    pkg = _self_shadowing_tree(tmp_path, "from pkg.serialization import MARK\nx = MARK\n")
+    pkg = _self_shadowing_tree(
+        tmp_path, "def f():\n    from pkg.serialization import MARK\n    return MARK\n"
+    )
     assert [f.code for f in _findings_by_file(pkg)["__init__.py"]] == ["CP001"]
 
 
@@ -639,12 +652,27 @@ class _RecordingFixer(rewrite._Fixer):
 #: an unanchorable parent, relative, aliased, re-exported, load-bearing,
 #: named-by-a-string,
 #: never-read, unreachable-replacement, no-relative-spelling, function-local, TYPE_CHECKING-gated,
+#: package-surface,
 #: skip-pinned, skip-covered and guard-blocked imports.
 _AGREEMENT_TREE = {
     "__init__.py": "from app.helpers import THING as THING\n",
     "helpers.py": "THING = 1\n\ndef go():\n    return 2\n\nclass Widget:\n    pass\n",
     "sub/__init__.py": "",
     "sub/tool.py": "def dump():\n    return 3\n",
+    # A package's public surface: its module-level imports -- one under a
+    # `try` too -- are compliant; only the function-local one is decided.
+    "surface/__init__.py": (
+        "from app.helpers import Widget\n"
+        "try:\n"
+        "    from app.helpers import go\n"
+        "except ImportError:\n"
+        "    go = None\n"
+        "\n"
+        "def later():\n"
+        "    from app.helpers import THING\n"
+        "\n"
+        "    return THING, Widget, go\n"
+    ),
     # `app.shadow` binds `mod` to an int while `app/shadow/mod.py` exists, so
     # the replacement `from app.shadow import mod` cannot be trusted.
     "shadow/__init__.py": "mod = 1\n",
@@ -1084,7 +1112,10 @@ def test_the_advice_never_names_the_module_the_inferred_root_implies(tmp_path):
     messages = _messages(
         tmp_path,
         {
-            "analytics/io/__init__.py": "from .readers import read\n\nx = read\n",
+            # In a function: a module-level one is the package's public surface.
+            "analytics/io/__init__.py": (
+                "def f():\n    from .readers import read\n    return read\n"
+            ),
             "analytics/io/readers.py": "def read():\n    return 1\n",
         },
     )
@@ -1208,8 +1239,10 @@ def test_the_package_own_init_keeps_the_cp003_under_a_declared_root(tmp_path):
     _write_tree(
         tmp_path,
         {
+            # In a function: a module-level one is the package's public surface.
             "src/toppkg/__init__.py": (
-                "def helper():\n    return 1\n\nfrom . import helper as again\n\nx = again()\n"
+                "def helper():\n    return 1\n\n"
+                "def f():\n    from . import helper as again\n    return again()\n"
             ),
         },
     )
@@ -1261,8 +1294,10 @@ def test_a_package_own_init_has_its_own_reason(tmp_path):
     _write_tree(
         tmp_path,
         {
+            # In a function: a module-level one is the package's public surface.
             "src/toppkg/__init__.py": (
-                "def helper():\n    return 1\n\nfrom . import helper as again\n\nx = again()\n"
+                "def helper():\n    return 1\n\n"
+                "def f():\n    from . import helper as again\n    return again()\n"
             ),
         },
     )
@@ -1271,3 +1306,143 @@ def test_a_package_own_init_has_its_own_reason(tmp_path):
         detail = _stays_cp003(tmp_path, table, "src/toppkg/__init__.py")[0]
         assert "'toppkg''s own __init__ names the package itself" in detail, table
         assert "declaring" not in detail
+
+
+# -- a package __init__'s module-level imports are its public surface ----------
+#: The attrs shape: ``attr/__init__.py`` re-exports ``VersionInfo``, which
+#: nothing in the run reads and ``__all__`` does not list, beside ``_Nothing``,
+#: which the ``__init__`` reads itself. Rewriting the first deletes
+#: ``attr.VersionInfo``, public API no evidence-based guard can see.
+_ATTRS_LIKE = {
+    "attr/__init__.py": (
+        "from ._version_info import VersionInfo\n"
+        "from ._make import NOTHING, _Nothing\n"
+        "\n"
+        '__all__ = ["NOTHING"]\n'
+        "\n"
+        "\n"
+        "def is_nothing(value):\n"
+        "    return isinstance(value, _Nothing)\n"
+    ),
+    "attr/_version_info.py": "class VersionInfo:\n    pass\n",
+    "attr/_make.py": "class _Nothing:\n    pass\n\n\nNOTHING = _Nothing()\n",
+}
+
+
+def _both_modes(
+    root: pathlib.Path, files: dict[str, str], table: dict[str, object] | None = None
+) -> tuple[engine.RunResult, engine.RunResult, dict[pathlib.Path, bytes]]:
+    """``check``, then ``--fix``, over *files*; and every file's bytes before either."""
+    before = _write_tree(root, files)
+    cfg = config._parse_table(table or {}, root)
+    return engine.run([root], cfg), engine.run([root], cfg, engine.Mode.FIX), before
+
+
+def _after(before: dict[pathlib.Path, bytes]) -> dict[pathlib.Path, bytes]:
+    return {p: p.read_bytes() for p in before}
+
+
+def test_an_attrs_like_init_is_compliant_and_byte_identical_under_fix(tmp_path):
+    checked, fixed, before = _both_modes(tmp_path, _ATTRS_LIKE)
+    for result in (checked, fixed):
+        assert result.findings == ()
+        assert result.exit_code() == 0
+    assert not fixed.wrote
+    assert _after(before) == before
+    proc = subprocess.run(
+        [sys.executable, "-c", "import attr; print(attr.VersionInfo.__name__)"],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert (proc.returncode, proc.stdout) == (0, "VersionInfo\n"), proc.stderr
+
+
+def test_the_same_import_in_a_plain_module_is_still_fixed(tmp_path):
+    """Only ``__init__.py`` is a package's surface: ``api.py`` is an ordinary module."""
+    api = "from ._version_info import VersionInfo\n\nx = VersionInfo\n"
+    checked, _fixed, _before = _both_modes(tmp_path, {**_ATTRS_LIKE, "attr/api.py": api})
+    assert [(f.path.name, f.code, f.name) for f in checked.findings] == [
+        ("api.py", "CP001", "VersionInfo")
+    ]
+    assert (tmp_path / "attr" / "api.py").read_text(encoding="utf-8") == (
+        "from . import _version_info\n\nx = _version_info.VersionInfo\n"
+    )
+    init = (tmp_path / "attr" / "__init__.py").read_text(encoding="utf-8")
+    assert init == _ATTRS_LIKE["attr/__init__.py"]
+
+
+def test_a_main_module_is_not_a_package_surface(tmp_path):
+    main = "from ._make import NOTHING\n\nprint(NOTHING)\n"
+    checked, _fixed, _before = _both_modes(tmp_path, {**_ATTRS_LIKE, "attr/__main__.py": main})
+    assert [(f.path.name, f.code) for f in checked.findings] == [("__main__.py", "CP001")]
+    assert (tmp_path / "attr" / "__main__.py").read_text(encoding="utf-8") == (
+        "from . import _make\n\nprint(_make.NOTHING)\n"
+    )
+
+
+_SURFACE_CORE = "def helper():\n    return 1\n\n\ndef other():\n    return 2\n"
+
+
+def test_a_function_local_import_in_an_init_is_still_fixed(tmp_path):
+    """Per name, not per file: the module-level import stays, the local one is fixed."""
+    init = (
+        "from .core import helper\n"
+        "\n"
+        "\n"
+        "def run():\n"
+        "    from .core import other\n"
+        "\n"
+        "    return helper(), other()\n"
+    )
+    files = {"pkg/__init__.py": init, "pkg/core.py": _SURFACE_CORE}
+    checked, fixed, _before = _both_modes(tmp_path, files)
+    assert [(f.line, f.code, f.name) for f in checked.findings] == [(5, "CP001", "other")]
+    assert fixed.findings == ()
+    assert (tmp_path / "pkg" / "__init__.py").read_text(encoding="utf-8") == (
+        "from .core import helper\n"
+        "\n"
+        "\n"
+        "def run():\n"
+        "    from . import core\n"
+        "\n"
+        "    return helper(), core.other()\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "try:\n    from .core import helper\nexcept ImportError:\n    helper = None\n",
+        "import sys\n\nif sys.version_info >= (3,):\n    from .core import helper\n",
+        (
+            "import contextlib\n\n"
+            "with contextlib.suppress(ImportError):\n    from .core import helper\n"
+        ),
+    ],
+    ids=["try", "if", "with"],
+)
+def test_a_module_level_import_under_a_block_is_still_the_surface(tmp_path, block):
+    """``try``/``if``/``with`` at module level still bind the package's attributes."""
+    init = f"{block}\n\ndef run():\n    return helper()\n"
+    files = {"pkg/__init__.py": init, "pkg/core.py": _SURFACE_CORE}
+    checked, fixed, before = _both_modes(tmp_path, files)
+    assert checked.findings == fixed.findings == ()
+    assert _after(before) == before
+
+
+def test_a_skip_rule_over_the_surface_reports_nothing(tmp_path):
+    """Compliant before a rule is consulted, so no `CP004` pads ``--show-skipped``."""
+    table: dict[str, object] = {"skip": [{"file": r".*__init__\.py"}]}
+    checked, fixed, before = _both_modes(tmp_path, _ATTRS_LIKE, table)
+    assert checked.findings == fixed.findings == ()
+    assert _after(before) == before
+
+
+def test_the_agreement_tree_keeps_a_package_surface_in_both_modes(tmp_path):
+    """``surface/__init__.py``: only the function-local import is decided, in every config."""
+    for label, table in _AGREEMENT_CONFIGS.items():
+        a = _agreement(tmp_path / label, table)["surface/__init__.py"]
+        assert [(f.line, f.code, f.name) for f in a.check] == [(8, "CP001", "THING")], label
+        assert _violations(a.fix_mode) == a.rewritten == {(8, "app.helpers", "THING")}, label

@@ -288,6 +288,12 @@ class FileFacts:
     #: implicit concatenation of those (`_literal_text`). The raw material
     #: for the cross-file string evidence (`project._named`).
     path_strings: tuple[tuple[cst.BaseExpression, str, tuple[str, ...]], ...] = ()
+    #: Every ``from ... import`` statement inside a ``def`` or a ``class``
+    #: body, however deep. The rest are *module level* -- including those
+    #: under a module-level ``if``, ``try`` or ``with``, which bind module
+    #: attributes all the same. A package ``__init__``'s module-level imports
+    #: are its public surface (`Decider.public_surface`).
+    nested_import_froms: frozenset[cst.ImportFrom] = frozenset()
 
     @property
     def import_froms(self) -> tuple[cst.ImportFrom, ...]:
@@ -398,6 +404,23 @@ class _FactCollector(cst.CSTVisitor):
         self.path_strings: list[tuple[cst.BaseExpression, str, tuple[str, ...]]] = []
         #: Ids of strings that are parts of a concatenation, read with it.
         self._string_parts: set[int] = set()
+        #: Every ``from`` import inside a ``def`` or ``class`` body.
+        self.nested_import_froms: set[cst.ImportFrom] = set()
+        #: How many ``def``/``class`` bodies the walk is inside.
+        self._depth = 0
+
+    # libcst dispatches to these exact signatures; only the nesting matters.
+    def visit_FunctionDef(self, node: cst.FunctionDef) -> None:  # noqa: ARG002
+        self._depth += 1
+
+    def leave_FunctionDef(self, original_node: cst.FunctionDef) -> None:  # noqa: ARG002
+        self._depth -= 1
+
+    def visit_ClassDef(self, node: cst.ClassDef) -> None:  # noqa: ARG002
+        self._depth += 1
+
+    def leave_ClassDef(self, original_node: cst.ClassDef) -> None:  # noqa: ARG002
+        self._depth -= 1
 
     def visit_SimpleString(self, node: cst.SimpleString) -> None:
         if id(node) not in self._string_parts:
@@ -441,6 +464,8 @@ class _FactCollector(cst.CSTVisitor):
 
     def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
         self.imports.append(node)
+        if self._depth:
+            self.nested_import_froms.add(node)
 
     def visit_Attribute(self, node: cst.Attribute) -> None:
         # Descends into import statements too, exactly as the separate walk
@@ -460,6 +485,7 @@ def collect_facts(tree: cst.Module) -> FileFacts:
         tuple(collector.imports),
         frozenset(collector.attribute_reads),
         tuple(collector.path_strings),
+        frozenset(collector.nested_import_froms),
     )
 
 
@@ -568,7 +594,8 @@ class Decision:
     """What cleanporter does with one imported name, in every mode.
 
     ``status`` is the finding to report, or ``None`` for a name nothing is
-    reported about -- exempt, outside the configured `scope`, or a module. The
+    reported about -- exempt, outside the configured `scope`, a module, or part
+    of a package ``__init__``'s public surface (`Decider.public_surface`). The
     fixer rewrites only names checking reports as `CP001` (never-read names
     become `CP003` under ``--fix``); a guard hit still declines the whole
     file. So a name ``check`` reports as anything else -- or does not report
@@ -655,7 +682,9 @@ class Decider:
         only where a finding is actually produced, never before the filters
         that would report nothing at all -- `CP004` for a compliant ``from pkg
         import module``, or for an exempt ``typing`` import, would pad the one
-        count the docs offer as the way to see how much a rule swallowed. The
+        count the docs offer as the way to see how much a rule swallowed; a
+        package ``__init__``'s public surface (`public_surface`) is one of
+        those filters, for the same reason. The
         line-wide reasons (a skip covering the line, a replacement with no
         relative spelling, an unreachable replacement) precede the per-name
         ones, and never-read comes *last*,
@@ -676,11 +705,50 @@ class Decider:
         verdict = self._resolver.is_module(parent, unit.name)
         if verdict is True:
             return COMPLIANT  # importing a module -> compliant
+        if verdict is False and self.public_surface(unit.node):
+            # Compliant, not a `CP003`: the re-export is the sanctioned
+            # exception to the rule, not a violation declined, so it has no
+            # reason to give and nothing to count against the exit code. So
+            # it is decided here rather than in `_declined`, which only says
+            # why a *violation* is kept, and it outranks every decline there
+            # (re-export, load-bearing, named by a string, never read): each
+            # of those is true of some of these imports, and none is the
+            # reason they stay. Before the skip rule, as a compliant module
+            # is, so a rule over it adds no `CP004`. Only for a proven object:
+            # a module is compliant already, and an unresolved name stays the
+            # `CP002` it is -- whether it is even an import of an object is
+            # what the resolver could not say.
+            return COMPLIANT
         if rule is not None:
             return Decision(model.Status.SKIPPED_BY_CONFIG, rule.describe())
         if verdict is None:
             return Decision(model.Status.UNRESOLVED, self._resolver.reason(parent, unit.name))
         return self._declined(unit, parent, never_read) or VIOLATION
+
+    def public_surface(self, node: cst.ImportFrom) -> bool:
+        """Whether *node* is part of a package's public surface: never reported or rewritten.
+
+        True for a module-level ``from P import S`` in a package's
+        ``__init__.py`` -- module level meaning outside every ``def`` and
+        ``class``, so one under a module-level ``if``, ``try`` or ``with``
+        counts. Whatever such an import binds is an attribute of the package,
+        and a package's attributes are what its users import: ``from
+        ._version_info import VersionInfo`` in attrs' ``attr/__init__.py`` is
+        what makes ``attr.VersionInfo`` exist. Rewriting it deletes public API
+        that nothing in the run need read, name in ``__all__`` or mention in a
+        string, so no evidence-based guard can see it. Style guide §2.2 is
+        commonly relaxed for exactly these re-exports, so the rule is
+        structural, not evidential: the import is the sanctioned exception,
+        not a declined violation.
+
+        A ``__main__.py`` is not a package's surface, a namespace package has
+        no ``__init__.py`` to hold one, and a stub (``__init__.pyi``) is not
+        analysed; an import inside a function in ``__init__.py`` binds a local
+        and is decided like any other.
+        """
+        return (
+            self._rec.path.name == "__init__.py" and node not in self._rec.facts.nested_import_froms
+        )
 
     def own_init(self, parent: str) -> bool:
         """Whether the record's file is *parent*'s own ``__init__.py``."""

@@ -254,13 +254,24 @@ def test_the_reason_spells_the_path_as_the_run_does(tmp_path: pathlib.Path) -> N
 
 
 def test_a_package_reexport_named_through_the_package(tmp_path: pathlib.Path) -> None:
-    """``"pkg.helper"`` names what ``pkg/__init__`` imports from ``pkg.core``."""
+    """``"pkg.helper"`` names what ``pkg/__init__`` imports from ``pkg.core``.
+
+    At module level that import is the package's public surface
+    (`analyze.Decider.public_surface`): kept without being reported, string or
+    no string. In a function it binds a local, not the attribute the string
+    names, so it is decided like any other import -- and fixed.
+    """
     init = "from pkg.core import helper\n\n\ndef run():\n    return helper()\n"
     root = _tree(tmp_path, {"pkg/__init__.py": init, "t.py": 'X = "pkg.helper"\n'})
-    [(code, name, detail)] = _in(_run(root), "__init__.py")
-    assert (code, name) == ("CP003", "helper")
-    assert "'pkg.helper' is named by the string 'pkg.helper' at t.py:1" in detail
+    assert _in(_run(root), "__init__.py") == []
     assert (root / "pkg" / "__init__.py").read_text(encoding="utf-8") == init
+
+    local = "def run():\n    from pkg.core import helper\n\n    return helper()\n"
+    (root / "pkg" / "__init__.py").write_text(local, encoding="utf-8", newline="\n")
+    assert _in(_run(root), "__init__.py") == []
+    assert (root / "pkg" / "__init__.py").read_text(encoding="utf-8") == (
+        "def run():\n    from pkg import core\n\n    return core.helper()\n"
+    )
 
 
 @pytest.mark.parametrize(

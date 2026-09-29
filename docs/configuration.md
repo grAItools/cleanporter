@@ -83,6 +83,29 @@ These are built in and cannot be switched off through configuration.
 Note that `six.moves` is **not** exempt by default, even though the style
 guide mentions it. Add it explicitly if your codebase needs it.
 
+### A package's `__init__.py`
+
+A module-level `from P import S` in a package's `__init__.py` is never
+reported and never rewritten when `S` is an object (a module is compliant
+anyway, and a name the resolver cannot classify is still the `CP002` it
+would be anywhere). Whatever such an import binds
+is an attribute of the package, and a package's attributes are what its users
+import: `from ._version_info import VersionInfo` in attrs' `attr/__init__.py`
+is what makes `attr.VersionInfo` exist. Rewriting it deletes public API, and
+nothing in your run need read that name, list it in `__all__` or spell it in a
+string, so no evidence could show the rewrite was unsafe. The re-export is
+the conventional exception to §2.2, so it is treated as compliant rather than
+as a declined violation: it adds no finding, `CP004` included, and does not
+count towards the exit code.
+
+"Module level" means outside every `def` and `class` body, so an import under
+a module-level `try`, `if` or `with` counts — it binds a package attribute all
+the same. An import inside a function in `__init__.py` binds a local, and is
+reported and fixed like any other. The rule is about the file name, not the
+directory: `__main__.py` and every other module in the package are checked as
+usual, and a namespace package has no `__init__.py` to exempt. Like the
+modules above, it is built in and cannot be switched off.
+
 ## The probe interpreter
 
 Stdlib and third-party names are classified by asking a Python interpreter

@@ -13,8 +13,9 @@ module-level import of the same module.
 The fixer rewrites only names checking reports as ``CP001`` (never-read names
 become ``CP003`` under ``--fix``); a guard hit still declines the whole file.
 Both ask `analyze.Decider.decide` about every imported name, so an exempt name,
-one outside the configured ``scope``, or a module is neither reported nor
-touched.
+one outside the configured ``scope``, a module, or a module-level import in a
+package ``__init__`` -- its public surface (`analyze.Decider.public_surface`)
+-- is neither reported nor touched.
 
 Safety boundary (these are reported by ``check`` but deliberately NOT auto-fixed
 because a mechanical rewrite could change runtime behaviour):

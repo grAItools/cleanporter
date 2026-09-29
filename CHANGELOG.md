@@ -23,6 +23,9 @@ Breaking under the pre-1.0 policy above:
   `Config(python="self")` restores the old behaviour. `RunResult` and
   `Project` gain a trailing `notes` field, and `engine.Listener` a `note`
   method.
+- A module-level `from P import S` of an object in a package's `__init__.py`
+  is no longer reported or rewritten (see *Changed*). Its `CP001`s and `CP003`s disappear,
+  so a run whose only findings were there now exits `0` rather than `1`.
 
 ### Added
 
@@ -134,6 +137,27 @@ Breaking under the pre-1.0 policy above:
 
 ### Changed
 
+- **A package's `__init__.py` keeps its module-level imports: they are its
+  public surface.** Every `from P import S` in an `__init__.py` outside a
+  `def` or `class` — one under a module-level `try`, `if` or `with` included
+  — is now compliant: never reported, never rewritten, in every mode. Such an
+  import is what makes `pkg.S` exist for the package's users, and rewriting it
+  deletes that attribute. `--fix` used to do exactly that whenever no guard
+  happened to see a use: `from ._version_info import VersionInfo` in attrs'
+  `attr/__init__.py` is public API, but it is not in `__all__` and nothing in
+  the run reads it, and it had been kept only by coincidence, while another
+  name in the file tripped the whole-file string guard. The re-export is the
+  conventional exception to §2.2, so it is treated as compliant rather than
+  reported as a `CP003` on every package in a project. The findings these
+  imports used to produce — `CP001` in a check, a `CP003` for whatever
+  reason one was kept (an explicit, load-bearing, string-named or never-read
+  re-export, an unspellable or unreachable replacement), and `CP004` under a
+  skip rule — are gone; an unresolvable name is still `CP002`, and so is their effect on the exit code; cleanporter
+  over its own source now exits `0`. An import inside a function in an
+  `__init__.py`, `__main__.py`, and every other module are decided exactly as
+  before, and the rule is per import: the rest of the file is still fixed.
+  Documented under
+  [A package's `__init__.py`](https://graitools.github.io/cleanporter/configuration/#a-packages-__init__py).
 - **`--diff` and `--fix` skip the fixer's scope analysis for files with nothing
   to fix.** libcst's scope metadata, which the fixer's guards need, used to be
   built for every file in the run; it is now built only for a file in which

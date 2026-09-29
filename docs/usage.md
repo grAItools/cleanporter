@@ -65,6 +65,11 @@ modules are passed over before they are classified. Under that scope the probe
 still classifies a third-party name that one of your own modules re-exports,
 because an import of it from your package depends on what it is.
 
+Nothing at all is reported for a module-level import in a package's
+`__init__.py`: it is the package's public surface, never reported or
+rewritten (see [A package's `__init__.py`](configuration.md#a-packages-__init__py)).
+An import inside a function there is checked like any other.
+
 !!! note "`CP003` findings count toward the failure exit code"
 
     A file the fixer declined still contains a violation, so `CP003` is not
