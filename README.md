@@ -80,6 +80,11 @@ w = Widget()                            w = helpers.Widget()
 Because stdout carries only the patch, `cleanporter --diff src/ | git apply`
 works as-is.
 
+For CI, `--format json`, `--format sarif` (GitHub code scanning) and
+`--format github` (pull-request annotations) put a machine-readable report on
+stdout instead; see
+[Machine-readable output](https://graitools.github.io/cleanporter/usage/#machine-readable-output).
+
 Some code is off-limits for reasons no analysis can discover — a body a
 framework re-parses with its own frontend, a `conftest.py` whose namespace
 *is* pytest's fixture registry. Declare those with

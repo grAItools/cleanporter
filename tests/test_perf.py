@@ -62,12 +62,13 @@ def test_build_walks_each_tree_exactly_once(monkeypatch, tmp_path):
     """
     pkg = tmp_path / "pkg"
     (pkg / "sub").mkdir(parents=True)
-    (pkg / "__init__.py").write_text("")
-    (pkg / "sub" / "__init__.py").write_text("from .mod import *\n")
-    (pkg / "sub" / "mod.py").write_text("THING = 1\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "sub" / "__init__.py").write_text("from .mod import *\n", newline="\n")
+    (pkg / "sub" / "mod.py").write_text("THING = 1\n", newline="\n")
     (pkg / "a.py").write_text(
         "import os\nfrom .sub.mod import THING\nfrom ..outside import x\n"
-        "from pkg import sub\nprint(os.sep, sub.mod.THING, THING)\n"
+        "from pkg import sub\nprint(os.sep, sub.mod.THING, THING)\n",
+        newline="\n",
     )
     walks: list[cst.Module] = []
     real_visit = cst.Module.visit

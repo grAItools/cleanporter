@@ -171,11 +171,12 @@ def test_scope_first_party_never_classifies_other_imports(tmp_path: pathlib.Path
     """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "mod.py").write_text("THING = 1\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "mod.py").write_text("THING = 1\n", newline="\n")
     (pkg / "a.py").write_text(
         "import os\nfrom functools import partial\nfrom os import path\n"
-        "from pkg.mod import THING\n\nx = partial(THING, path, os)\n"
+        "from pkg.mod import THING\n\nx = partial(THING, path, os)\n",
+        newline="\n",
     )
     asked: list[tuple[str, str]] = []
     real = resolver_lib.Resolver._probe
@@ -205,8 +206,8 @@ def test_scope_first_party_still_classifies_a_reexported_third_party_name(
     """``from pkg import path`` is first-party, but only ``os.path`` can say what it is."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("from os import path\n")
-    (pkg / "a.py").write_text("from pkg import path\n\nx = path.sep\n")
+    (pkg / "__init__.py").write_text("from os import path\n", newline="\n")
+    (pkg / "a.py").write_text("from pkg import path\n\nx = path.sep\n", newline="\n")
     asked: list[tuple[str, str]] = []
     real = resolver_lib.Resolver._probe
 
@@ -250,10 +251,12 @@ def _reexport_tree(tmp_path: pathlib.Path) -> pathlib.Path:
     """`pkg.tool` re-exports `dump`; `pkg.user` imports it from there."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "display.py").write_text("def dump():\n    return 1\n")
-    (pkg / "tool.py").write_text("from pkg.display import dump\n\ndef go():\n    return dump()\n")
-    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n", newline="\n")
+    (pkg / "tool.py").write_text(
+        "from pkg.display import dump\n\ndef go():\n    return dump()\n", newline="\n"
+    )
+    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n", newline="\n")
     return pkg
 
 
@@ -292,9 +295,11 @@ def test_a_reexport_nobody_imports_is_still_fixable(tmp_path: pathlib.Path) -> N
     """No consumer, no hazard: deleting an attribute nothing reads is free."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "display.py").write_text("def dump():\n    return 1\n")
-    (pkg / "tool.py").write_text("from pkg.display import dump\n\ndef go():\n    return dump()\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n", newline="\n")
+    (pkg / "tool.py").write_text(
+        "from pkg.display import dump\n\ndef go():\n    return dump()\n", newline="\n"
+    )
     by_file = _findings_by_file(pkg)
     assert [f.code for f in by_file["tool.py"]] == ["CP001"]
 
@@ -303,13 +308,14 @@ def test_a_name_both_imported_and_defined_is_not_protected(tmp_path: pathlib.Pat
     """A try/except import with a fallback definition survives a rewrite."""
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "display.py").write_text("def dump():\n    return 1\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "display.py").write_text("def dump():\n    return 1\n", newline="\n")
     (pkg / "tool.py").write_text(
         "try:\n    from pkg.display import dump\nexcept ImportError:\n"
-        "    def dump():\n        return 0\n"
+        "    def dump():\n        return 0\n",
+        newline="\n",
     )
-    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n")
+    (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n", newline="\n")
     built = project.build([pkg], config.Config(root=pkg.parent))
     resolver = built.resolver
     assert resolver.is_load_bearing("pkg.tool", "dump") is False
@@ -322,12 +328,12 @@ def _shadowed_package_tree(tmp_path: pathlib.Path) -> pathlib.Path:
     place next to a newer packaged one -- the corpus has exactly this in
     ``click_plugins.py`` (2.0dev) beside ``click_plugins/`` (1.1.1.2).
     """
-    (tmp_path / "pkg.py").write_text('def helper():\n    return "flat"\n')
+    (tmp_path / "pkg.py").write_text('def helper():\n    return "flat"\n', newline="\n")
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("from pkg.core import helper\n")
-    (pkg / "core.py").write_text('def helper():\n    return "from package"\n')
-    (tmp_path / "consumer.py").write_text("from pkg import helper\nx = helper()\n")
+    (pkg / "__init__.py").write_text("from pkg.core import helper\n", newline="\n")
+    (pkg / "core.py").write_text('def helper():\n    return "from package"\n', newline="\n")
+    (tmp_path / "consumer.py").write_text("from pkg import helper\nx = helper()\n", newline="\n")
     return tmp_path
 
 
@@ -360,8 +366,8 @@ def test_the_consumer_of_a_shadowed_reexport_is_still_a_violation(
 def _self_shadowing_tree(tmp_path: pathlib.Path, init: str) -> pathlib.Path:
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "serialization.py").write_text('MARK = "pkg"\n')
-    (pkg / "__init__.py").write_text(init)
+    (pkg / "serialization.py").write_text('MARK = "pkg"\n', newline="\n")
+    (pkg / "__init__.py").write_text(init, newline="\n")
     return pkg
 
 
@@ -396,10 +402,10 @@ def _lazy_reexport_tree(tmp_path: pathlib.Path, init: str) -> pathlib.Path:
     """``pkg.sub`` is a package whose ``__init__`` decides what ``mod`` means."""
     pkg = tmp_path / "pkg"
     (pkg / "sub").mkdir(parents=True)
-    (pkg / "__init__.py").write_text("")
-    (pkg / "sub" / "__init__.py").write_text(init)
-    (pkg / "sub" / "mod.py").write_text("def mod():\n    return 1\n\n\nOTHER = 2\n")
-    (pkg / "consumer.py").write_text("from pkg.sub.mod import OTHER\nx = OTHER\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "sub" / "__init__.py").write_text(init, newline="\n")
+    (pkg / "sub" / "mod.py").write_text("def mod():\n    return 1\n\n\nOTHER = 2\n", newline="\n")
+    (pkg / "consumer.py").write_text("from pkg.sub.mod import OTHER\nx = OTHER\n", newline="\n")
     return pkg
 
 
@@ -443,8 +449,8 @@ def test_an_import_from_a_module_this_run_cannot_see_is_unresolved(
     """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    (pkg / "__init__.py").write_text("")
-    (pkg / "consumer.py").write_text("from pkg.missing.mod import OTHER\nx = OTHER\n")
+    (pkg / "__init__.py").write_text("", newline="\n")
+    (pkg / "consumer.py").write_text("from pkg.missing.mod import OTHER\nx = OTHER\n", newline="\n")
     findings = _findings_by_file(pkg)["consumer.py"]
     assert [f.code for f in findings] == ["CP002"]
     assert "'pkg.missing.mod' is not a module or package on disk" in (findings[0].detail)
@@ -523,13 +529,13 @@ def test_a_skipped_file_still_contributes_reexport_evidence(tmp_path: pathlib.Pa
     """
     root = tmp_path / "src"
     (root / "demo").mkdir(parents=True)
-    (root / "demo" / "__init__.py").write_text("", encoding="utf-8")
-    (root / "demo" / "origin.py").write_text("THING = 1\n", encoding="utf-8")
+    (root / "demo" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (root / "demo" / "origin.py").write_text("THING = 1\n", encoding="utf-8", newline="\n")
     (root / "demo" / "helpers.py").write_text(
-        "from demo.origin import THING\nx = THING\n", encoding="utf-8"
+        "from demo.origin import THING\nx = THING\n", encoding="utf-8", newline="\n"
     )
     (root / "demo" / "conftest.py").write_text(
-        "from demo.helpers import THING\ny = THING\n", encoding="utf-8"
+        "from demo.helpers import THING\ny = THING\n", encoding="utf-8", newline="\n"
     )
     from cleanporter import config as config_lib
 
@@ -732,7 +738,7 @@ def _agreement(tmp_path: pathlib.Path, table: dict[str, object]) -> dict[str, _A
     root = tmp_path / "app"
     for rel, text in _AGREEMENT_TREE.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        (root / rel).write_text(text, encoding="utf-8")
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
     cfg = config._parse_table(table, tmp_path)
     built = project.build([root], cfg)
     records, resolver, errors = built.records, built.resolver, built.errors
@@ -843,7 +849,7 @@ def test_the_agreement_check_is_not_vacuous(tmp_path):
 def _write_agreement_tree(root: pathlib.Path) -> None:
     for rel, text in _AGREEMENT_TREE.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
-        (root / rel).write_text(text, encoding="utf-8")
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
 
 
 def _snapshot(root: pathlib.Path) -> dict[str, bytes]:

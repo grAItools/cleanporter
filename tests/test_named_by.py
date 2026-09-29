@@ -151,7 +151,7 @@ def test_whole_project_evidence_from_an_unlisted_file_blocks(tmp_path: pathlib.P
     # Without the flag the test file is not read, and the import is rewritten.
     plain = _run(root, paths=[mod])
     assert _in(plain, "mod.py") == []
-    assert "core.helper()" in mod.read_text(encoding="utf-8", newline="\n")
+    assert "core.helper()" in mod.read_text(encoding="utf-8")
 
 
 def test_an_unreadable_pyproject_is_a_warning(tmp_path: pathlib.Path) -> None:

@@ -30,12 +30,16 @@ _REEXPORT = "from demo.core import helper\n\n\ndef run():\n    return helper()\n
 @pytest.fixture
 def tree(tmp_path: pathlib.Path) -> pathlib.Path:
     """A project whose ``demo/__init__`` re-exports a name only ``consumer.py`` uses."""
-    (tmp_path / "pyproject.toml").write_text('[project]\nname = "demo"\n', encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "demo"\n', encoding="utf-8", newline="\n"
+    )
     pkg = tmp_path / "demo"
     pkg.mkdir()
-    (pkg / "core.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
-    (pkg / "__init__.py").write_text(_REEXPORT, encoding="utf-8")
-    (tmp_path / "consumer.py").write_text("from demo import helper\n\nhelper()\n", "utf-8")
+    (pkg / "core.py").write_text("def helper():\n    return 1\n", encoding="utf-8", newline="\n")
+    (pkg / "__init__.py").write_text(_REEXPORT, encoding="utf-8", newline="\n")
+    (tmp_path / "consumer.py").write_text(
+        "from demo import helper\n\nhelper()\n", "utf-8", newline="\n"
+    )
     return tmp_path
 
 
@@ -65,7 +69,9 @@ def test_without_the_flag_the_same_file_alone_is_rewritten(tree: pathlib.Path) -
 
 
 def test_only_listed_files_are_reported_and_counted(tree: pathlib.Path) -> None:
-    (tree / "demo" / "clean.py").write_text("from demo import core\n\ncore.helper()\n", "utf-8")
+    (tree / "demo" / "clean.py").write_text(
+        "from demo import core\n\ncore.helper()\n", "utf-8", newline="\n"
+    )
     result = engine.run([tree / "demo" / "clean.py"], config.Config(root=tree), whole_project=True)
     # consumer.py's CP001 is not this run's to report, nor to fail on.
     assert result.findings == ()
@@ -89,13 +95,15 @@ def test_a_first_party_package_no_listed_file_lives_in_stays_first_party(
     and answers from whatever is installed under that name -- here nothing,
     so ``CP002``; elsewhere, a stale copy.
     """
-    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n', encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "app"\n', encoding="utf-8", newline="\n"
+    )
     (tmp_path / "src" / "app").mkdir(parents=True)
-    (tmp_path / "src" / "app" / "__init__.py").write_text("", encoding="utf-8")
-    (tmp_path / "src" / "app" / "core.py").write_text("THING = 1\n", encoding="utf-8")
+    (tmp_path / "src" / "app" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
+    (tmp_path / "src" / "app" / "core.py").write_text("THING = 1\n", encoding="utf-8", newline="\n")
     (tmp_path / "tests").mkdir()
     test = tmp_path / "tests" / "test_app.py"
-    test.write_text("from app.core import THING\n\nTHING\n", encoding="utf-8")
+    test.write_text("from app.core import THING\n\nTHING\n", encoding="utf-8", newline="\n")
     cfg = config.Config(root=tmp_path, python="self")
 
     partial = engine.run([test], cfg)
@@ -107,7 +115,9 @@ def test_a_first_party_package_no_listed_file_lives_in_stays_first_party(
 def test_an_excluded_listed_file_is_not_reported(tree: pathlib.Path) -> None:
     (tree / "gen").mkdir()
     generated = tree / "gen" / "out.py"
-    generated.write_text("from demo.core import helper\n\nhelper()\n", encoding="utf-8")
+    generated.write_text(
+        "from demo.core import helper\n\nhelper()\n", encoding="utf-8", newline="\n"
+    )
     cfg = config.Config(root=tree, exclude=("gen",))
     result = engine.run([generated], cfg, whole_project=True)
     assert result.findings == ()
@@ -122,7 +132,7 @@ def test_the_library_refuses_a_listed_file_outside_the_root(
     """Refused by the engine itself, so a library caller cannot skip the check."""
     outside = tmp_path_factory.mktemp("elsewhere") / "script.py"
     before = "from os.path import join\n\njoin\n"
-    outside.write_text(before, encoding="utf-8")
+    outside.write_text(before, encoding="utf-8", newline="\n")
     consumer = tree / "consumer.py"
     cfg = config.Config(root=tree, python="self")
     result = engine.run([consumer, outside], cfg, engine.Mode.FIX, whole_project=True)
@@ -148,7 +158,7 @@ def test_a_missing_listed_path_is_a_warning(tree: pathlib.Path) -> None:
 
 
 def test_an_unparseable_unlisted_file_is_a_warning_not_an_error(tree: pathlib.Path) -> None:
-    (tree / "broken.py").write_text("def (:\n", encoding="utf-8")
+    (tree / "broken.py").write_text("def (:\n", encoding="utf-8", newline="\n")
     cfg = config.Config(root=tree)
     result = engine.run([tree / "consumer.py"], cfg, whole_project=True)
     assert result.errors == ()
@@ -162,7 +172,7 @@ def test_cli_reports_listed_files_relative_to_the_cwd(tree: pathlib.Path, monkey
     monkeypatch.chdir(tree)
     rc = cli.main(["--whole-project", "demo/__init__.py"])
     out = capsys.readouterr().out
-    assert out.startswith("demo/__init__.py:1:0: CP003 ")
+    assert out.startswith(f"{pathlib.PurePath('demo', '__init__.py')}:1:0: CP003 ")
     assert "checked 1 file(s)" in out
     assert rc == 1
 
@@ -178,7 +188,7 @@ def test_cli_fix_exits_0_once_everything_listed_is_fixed(tree: pathlib.Path, mon
 
 def test_cli_without_a_pyproject_is_an_error(tmp_path: pathlib.Path, capsys) -> None:
     script = tmp_path / "script.py"
-    script.write_text("import os\n", encoding="utf-8")
+    script.write_text("import os\n", encoding="utf-8", newline="\n")
     assert cli.main(["--whole-project", str(script)]) == 2
     assert "needs a pyproject.toml" in capsys.readouterr().err
 
@@ -194,21 +204,24 @@ def test_a_stray_file_under_no_pyproject_is_refused(
     and the re-export went. Refused in either order, and nothing is written.
     """
     (tmp_path / "py").mkdir()
-    (tmp_path / "py" / "pyproject.toml").write_text('[project]\nname = "p"\n', "utf-8")
-    (tmp_path / "py" / "app.py").write_text("import os\n", encoding="utf-8")
+    (tmp_path / "py" / "pyproject.toml").write_text(
+        '[project]\nname = "p"\n', "utf-8", newline="\n"
+    )
+    (tmp_path / "py" / "app.py").write_text("import os\n", encoding="utf-8", newline="\n")
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    (scripts / "lib.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    (scripts / "lib.py").write_text("def helper():\n    return 1\n", encoding="utf-8", newline="\n")
     util = "from lib import helper\n\n\ndef main():\n    return helper()\n"
-    (scripts / "util.py").write_text(util, encoding="utf-8")
-    (scripts / "run.py").write_text("from util import helper\n\nhelper()\n", "utf-8")
+    (scripts / "util.py").write_text(util, encoding="utf-8", newline="\n")
+    (scripts / "run.py").write_text("from util import helper\n\nhelper()\n", "utf-8", newline="\n")
     assert config.find_pyproject(scripts / "util.py") is None
     monkeypatch.chdir(tmp_path)
     listed = ["py/app.py", "scripts/util.py"]
     rc = cli.main(["--whole-project", "--fix", *(listed if stray_first else listed[::-1])])
     err = capsys.readouterr().err
     assert rc == 2
-    assert "scripts/util.py:1:0: CP002 file not processed: outside the project root py" in err
+    util_path = pathlib.PurePath("scripts", "util.py")
+    assert f"{util_path}:1:0: CP002 file not processed: outside the project root py" in err
     assert (scripts / "util.py").read_text(encoding="utf-8") == util
 
 
@@ -217,9 +230,11 @@ def test_a_symlink_into_another_project_is_refused(
 ) -> None:
     """Inside the root as written, in another project once resolved."""
     other = tmp_path_factory.mktemp("other")
-    (other / "pyproject.toml").write_text('[project]\nname = "other"\n', encoding="utf-8")
+    (other / "pyproject.toml").write_text(
+        '[project]\nname = "other"\n', encoding="utf-8", newline="\n"
+    )
     target = other / "mod.py"
-    target.write_text("from os.path import join\n\njoin\n", encoding="utf-8")
+    target.write_text("from os.path import join\n\njoin\n", encoding="utf-8", newline="\n")
     link = tree / "linked.py"
     try:
         link.symlink_to(target)
@@ -239,13 +254,15 @@ def test_a_symlink_out_of_the_root_inside_a_listed_directory_is_refused(
     """The check covers what a listed directory expands to, not just what is listed."""
     project = tmp_path / "proj"
     (project / "pkg").mkdir(parents=True)
-    (project / "pyproject.toml").write_text('[project]\nname = "proj"\n', encoding="utf-8")
-    (project / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "proj"\n', encoding="utf-8", newline="\n"
+    )
+    (project / "pkg" / "__init__.py").write_text("", encoding="utf-8", newline="\n")
     own = "from os.path import join\n\njoin\n"
-    (project / "pkg" / "own.py").write_text(own, encoding="utf-8")
+    (project / "pkg" / "own.py").write_text(own, encoding="utf-8", newline="\n")
     (tmp_path / "ext").mkdir()
     ext = "from os.path import join\n\njoin\n"
-    (tmp_path / "ext" / "util.py").write_text(ext, encoding="utf-8")
+    (tmp_path / "ext" / "util.py").write_text(ext, encoding="utf-8", newline="\n")
     try:
         (project / "pkg" / "util.py").symlink_to(pathlib.Path("..") / ".." / "ext" / "util.py")
     except OSError:  # pragma: no cover - e.g. Windows without the privilege
@@ -254,7 +271,8 @@ def test_a_symlink_out_of_the_root_inside_a_listed_directory_is_refused(
     rc = cli.main(["--whole-project", "--fix", "--python", "self", "pkg"])
     err = capsys.readouterr().err
     assert rc == 2
-    assert "pkg/util.py:1:0: CP002 file not processed: outside the project root" in err
+    util_path = pathlib.PurePath("pkg", "util.py")
+    assert f"{util_path}:1:0: CP002 file not processed: outside the project root" in err
     assert "through a symlink" in err
     assert "warning" not in err  # a refused run says nothing else
     assert (tmp_path / "ext" / "util.py").read_text(encoding="utf-8") == ext
@@ -284,8 +302,10 @@ def test_files_from_two_projects_are_refused(
     """
     nested = tree / "examples" / "ex"
     nested.mkdir(parents=True)
-    (nested / "pyproject.toml").write_text('[project]\nname = "ex"\n', encoding="utf-8")
-    (nested / "a.py").write_text("import os\n", encoding="utf-8")
+    (nested / "pyproject.toml").write_text(
+        '[project]\nname = "ex"\n', encoding="utf-8", newline="\n"
+    )
+    (nested / "a.py").write_text("import os\n", encoding="utf-8", newline="\n")
     monkeypatch.chdir(tree)
     listed = ["examples/ex/a.py", "demo/__init__.py"]
     rc = cli.main(["--whole-project", "--fix", *(listed if nested_first else listed[::-1])])
@@ -293,8 +313,10 @@ def test_files_from_two_projects_are_refused(
     assert rc == 2
     assert "judges one project per run" in err
     # Named relative to the cwd, with the listed paths that belong to each.
-    assert "examples/ex/pyproject.toml (examples/ex/a.py)" in err
-    assert " pyproject.toml (demo/__init__.py)" in err
+    nested_toml = pathlib.PurePath("examples", "ex", "pyproject.toml")
+    nested_a = pathlib.PurePath("examples", "ex", "a.py")
+    assert f"{nested_toml} ({nested_a})" in err
+    assert f" pyproject.toml ({pathlib.PurePath('demo', '__init__.py')})" in err
     assert "files:" in err
     assert (tree / "demo" / "__init__.py").read_text(encoding="utf-8") == _REEXPORT
 

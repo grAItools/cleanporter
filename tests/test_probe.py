@@ -41,8 +41,8 @@ def _package_on_path(tmp_path, monkeypatch, name: str, init: str, leaf: str = _L
     """Install a two-file package under *name* and forget it again afterwards."""
     pkg = tmp_path / name
     pkg.mkdir()
-    (pkg / "__init__.py").write_text(init, encoding="utf-8")
-    (pkg / "leaf.py").write_text(leaf, encoding="utf-8")
+    (pkg / "__init__.py").write_text(init, encoding="utf-8", newline="\n")
+    (pkg / "leaf.py").write_text(leaf, encoding="utf-8", newline="\n")
     monkeypatch.syspath_prepend(str(tmp_path))
     for dotted in (name, f"{name}.leaf"):
         monkeypatch.delitem(sys.modules, dotted, raising=False)
@@ -149,7 +149,7 @@ def test_a_module_getattr_that_raises_does_not_take_the_run_down(tmp_path, monke
 
 def _fake_interpreter(tmp_path: pathlib.Path, body: str) -> pathlib.Path:
     script = tmp_path / "fake-python"
-    script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+    script.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8", newline="\n")
     script.chmod(0o755)
     return script
 

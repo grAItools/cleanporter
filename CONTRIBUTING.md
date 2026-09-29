@@ -272,11 +272,90 @@ Before you open a PR:
 CI runs `uv run prek run --all-files` once — the same hooks you run locally,
 which is the point: CI does not re-spell the commands, so it cannot drift from
 `.pre-commit-config.yaml` in its options. The test suite runs separately on
-Python 3.12, 3.13 and 3.14.
+Python 3.12, 3.13 and 3.14 on Linux, and on 3.12 and 3.14 on Windows. A test
+that cannot mean anything on Windows (a `/bin/sh` stub interpreter, POSIX mode
+bits, a non-UTF-8 filename) is skipped there with a `skipif` giving the reason;
+one that only *spells* something the POSIX way — a report path with `/`, a
+`bin/python` venv layout — is written portably instead
+(`pathlib.PurePath("src", "mod.py")`, `_interpreter._venv_python`). Symlinks
+are made in a `try` that skips on `OSError`, since creating one on Windows
+needs a privilege. The checkout is LF on every platform (`.gitattributes`), so
+a test that needs CRLF writes the bytes itself.
+
+**Pass `newline="\n"` to every `write_text` in a test.** Without it, Windows
+writes `\r\n` for each `\n`; the fixer preserves those line endings, and the
+test's expected output — spelled with `\n` — no longer matches. This failed a
+dozen tests on Windows and nothing on Linux, which is why
+`tests/test_portability.py` now rejects a `write_text` call without `newline=`.
 
 zuban used to have a CI job of its own that reported disagreements as a warning
 annotation and always exited 0. It is gone: zuban is a hook like the others
 now, so it gates through the lint job.
+
+## Releasing
+
+A release is a version tag; `.github/workflows/release.yml` does the rest.
+
+1. **Open a PR that bumps the version.** Set `project.version` in
+   `pyproject.toml` to `X.Y.Z`, rename `CHANGELOG.md`'s `## [Unreleased]`
+   section to `## [X.Y.Z] - YYYY-MM-DD` (and start a fresh, empty
+   `## [Unreleased]` above it), and update the link definitions at the bottom
+   of the file. `tests/test_release.py` fails the PR if the new version has no
+   changelog section.
+2. **Merge it**, then tag the merge commit and push the tag:
+
+   ```bash
+   git switch main && git pull
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+
+The workflow then, in one `build` job that stops at the first failure:
+
+- checks that the tagged commit is on `main` — tag the merge, not a branch;
+- checks that the tag is exactly `v` + `project.version`, a normalised public
+  version (`0.5.0`, `0.5.0rc1`; not `0.5.0-rc1` or `0.5.0+local`) — the wheel
+  takes its version from `pyproject.toml`, not from the tag;
+- takes the release notes from the `## [X.Y.Z] - DATE` section of
+  `CHANGELOG.md`, and stops if there is none;
+- runs the test suite on the tagged commit;
+- checks that nothing was left in the checkout (the sdist packs every file
+  there that git does not ignore; the notes are written outside it);
+- builds the sdist and wheel once, with `uv build --no-sources`.
+
+Only after all of that succeeds do two jobs start, side by side and
+independent of each other:
+
+- the GitHub release for the tag, with those notes and both files attached
+  (marked a pre-release for an `rc`, `a`, `b` or `dev` version);
+- the upload of the same files to PyPI — **only if PyPI publishing is
+  enabled**.
+
+So a failed check publishes nothing anywhere, but once the build is done a
+PyPI failure does not hold back the GitHub release, nor the other way round;
+re-run the failed job from the Actions tab.
+
+The tag and notes checks are `.github/scripts/release.py`, which you can run
+before tagging:
+`uv run --no-project python .github/scripts/release.py check-tag vX.Y.Z`.
+
+### Enabling PyPI publishing
+
+PyPI publishing is off: with it off, the PyPI job is skipped (not failed) and
+the GitHub release is still made. It uses
+[trusted publishing](https://docs.pypi.org/trusted-publishers/), so no API
+token is stored anywhere. To turn it on:
+
+1. On pypi.org, add a trusted publisher for the `cleanporter` project (a
+   *pending* publisher, before the first upload) with owner `grAItools`,
+   repository `cleanporter`, workflow `release.yml` and environment `pypi`.
+2. In the GitHub repository settings, create an environment named `pypi`
+   (add required reviewers there if a release should wait for approval).
+3. Under *Settings → Secrets and variables → Actions → Variables*, add the
+   repository variable `PUBLISH_TO_PYPI` with the value `true`.
+
+The next tag pushed is then published to PyPI as well. A version already on
+PyPI can never be uploaded again, which is why the tag check comes first.
 
 ## Reporting bugs
 

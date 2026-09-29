@@ -58,6 +58,27 @@ Breaking under the pre-1.0 policy above:
   run is: nothing is analysed or written. The library call enforces the
   same. Documented
   under [pre-commit](https://graitools.github.io/cleanporter/pre-commit/).
+- **Machine-readable output: `--format json|sarif|github`.** The default,
+  `text`, is unchanged. `json` is one document with the tool version, exit
+  code, counts, findings (code, level, path, line, column, parent, name,
+  message and `detail`), unprocessable files, warnings, notes and — under
+  `--diff`/`--fix` — the patches. `sarif`
+  is a SARIF 2.1.0 log, one rule per finding code, ready for
+  `github/codeql-action/upload-sarif`. `github` prints workflow commands that
+  annotate pull requests. In each, stdout carries only the document, the exit
+  code is the text report's, `CP004` is listed only under `--show-skipped`,
+  and severity follows the exit code (`CP002` is a warning, an error under
+  `--strict`). `--diff` with `sarif` or `github`, which have no place for a
+  patch, is a usage error, even alongside `--fix`. CLI-only: there is no
+  configuration key. For library callers, `model.Finding` gains `message`.
+  So that stdout really holds only the document, the in-process probe now
+  also points file descriptor 1 at stderr while it imports (it redirected
+  only `sys.stdout` before), so a package that writes to the descriptor on
+  import (`os.write`, unbuffered C output, a subprocess) cannot corrupt a
+  report or a `--diff` patch either. C stdio output an extension buffers is
+  still flushed at exit, after the document: use `--python` for such a
+  dependency. See
+  [Machine-readable output](https://graitools.github.io/cleanporter/usage/#machine-readable-output).
 - **cleanporter finds the project's interpreter by itself.** Installed with
   `pipx` or `uv tool`, cleanporter runs in an environment without the target
   project's dependencies, so every third-party import used to come back
@@ -96,6 +117,16 @@ Breaking under the pre-1.0 policy above:
   (34 of 297 files still with a `CP001`), `--diff` went from 200 s to 112 s,
   against 33 s for a check; over libcst as released, where 261 of the 297 files
   have one, it is unchanged at about 232 s.
+
+### Fixed
+
+- **SARIF `file:` URIs on Windows keep the drive's colon.** A file outside the
+  working directory, and `SRCROOT` itself, were written `file:///C%3A/...`;
+  they are now `file:///C:/...`, as `pathlib` spells them and SARIF viewers
+  resolve them. A UNC path is `file://server/share/...`, with the server as
+  the URI's host, rather than `file:////server/share/...`, and an
+  extended-length `\\?\C:\...` path is `file:///C:/...`. The test suite now
+  also runs on Windows in CI.
 
 ## [0.4.0] - 2026-09-28
 

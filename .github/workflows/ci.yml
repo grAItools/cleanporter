@@ -79,3 +79,36 @@ jobs:
 
       - name: pytest
         run: uv run pytest
+
+  # Only the tests: the lint job's type checkers and ruff read source, not the
+  # platform, so running them twice would prove nothing new. What differs on
+  # Windows is the tool's behaviour -- path spelling in reports, `Scripts\`
+  # venv layouts, CRLF, file replacement -- and the suite is what exercises it.
+  #
+  # Tests that cannot mean anything here (a `/bin/sh` stub interpreter, POSIX
+  # mode bits, non-UTF-8 filenames) are skipped with a reason, and `-ra`
+  # prints every skip, xfail and failure in the summary, so a red run -- or a
+  # quietly skipped one -- says which and why without a log dive.
+  test-windows:
+    name: Tests (Windows, Python ${{ matrix.python-version }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor and the newest: the ends of what the Linux matrix covers.
+        python-version: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+          python-version: ${{ matrix.python-version }}
+
+      - name: Sync the locked environment
+        run: uv sync --locked
+
+      - name: pytest
+        run: uv run pytest -ra
