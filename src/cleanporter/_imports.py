@@ -83,17 +83,23 @@ def module_import_spelling(
     root in exactly the silent way the relative form does not, so this
     returns ``None`` and the import is kept (`unspellable_reason`).
 
-    Unless the root is *declared*. *declared_root* says the file is anchored
-    in a root the user named (``--root`` / ``source_roots``;
-    `firstparty.ModuleMap.anchored_in_declared_root`), and then *parent* is
-    not a reading of the directory tree but the name the user said the
-    package has on ``sys.path``: ``import pkg`` binds exactly the package the
-    dots reach, on the same footing as any absolute import the fixer writes.
-    Only this case consults it -- every relative spelling above stays
-    relative, since it needs no root at all. A package named like a
-    standard-library module is still kept: ``import io`` is the standard
-    library's whatever the user's root holds, which is precisely the silent
-    rebinding the relative spelling exists to avoid.
+    Unless the root is *declared*, and soundly so. *declared_root* says the
+    file is anchored in a root the user named (``--root`` / ``source_roots``)
+    that also passes the structural checks in
+    `firstparty.ModuleMap.root_for_absolute_spelling`: it is not itself
+    inside a package, it neither nests in nor contains another root, it is
+    the only root holding a top-level name ``pkg``, and the file is not
+    ``pkg``'s own ``__init__``. Then *parent* is not a reading of the
+    directory tree but the name the user said the package has on
+    ``sys.path``, and ``import pkg`` binds exactly the package the dots
+    reach, on the same footing as any absolute import the fixer writes. Only
+    this case consults it -- every relative spelling above stays relative,
+    since it needs no root at all.
+
+    A package named like a standard-library module is kept even then
+    (`is_stdlib_name`): ``import io`` is the standard library's whatever the
+    user's root holds, which is precisely the silent rebinding the relative
+    spelling exists to avoid.
     """
     level = relative_level(node)
     if level == 0:
@@ -105,7 +111,7 @@ def module_import_spelling(
         return "." * level + head, token
     package, _, token = parent.rpartition(".")
     if not package:
-        return ("", token) if declared_root and not _is_stdlib(token) else None
+        return ("", token) if declared_root and not is_stdlib_name(token) else None
     return "." * (level + 1), token
 
 
@@ -118,26 +124,86 @@ def render_import(spelling: tuple[str, str], bind: str | None = None) -> str:
     return code
 
 
-def _is_stdlib(name: str) -> bool:
-    """Whether *name* is a top-level standard-library module of this interpreter."""
-    return name in sys.stdlib_module_names
+#: Top-level standard-library modules some supported Python has that the one
+#: running cleanporter may not: removed in 3.12 (PEP 594's first wave and
+#: ``distutils``/``imp``) or 3.13, or added in 3.14. The target interpreter
+#: can be any of them, and its ``sys.stdlib_module_names`` is not asked --
+#: that would cost a probe round-trip for a check that only ever declines.
+_OTHER_VERSIONS_STDLIB = frozenset(
+    {
+        # removed in 3.12
+        "asynchat",
+        "asyncore",
+        "distutils",
+        "imp",
+        "smtpd",
+        # removed in 3.13 (PEP 594)
+        "aifc",
+        "audioop",
+        "cgi",
+        "cgitb",
+        "chunk",
+        "crypt",
+        "imghdr",
+        "lib2to3",
+        "mailcap",
+        "msilib",
+        "nis",
+        "nntplib",
+        "ossaudiodev",
+        "pipes",
+        "sndhdr",
+        "spwd",
+        "sunau",
+        "telnetlib",
+        "uu",
+        "xdrlib",
+        # added in 3.14
+        "annotationlib",
+        "compression",
+    }
+)
 
 
-def unspellable_reason(node: cst.ImportFrom, parent: str, *, declared_root: bool = False) -> str:
-    """Why *node*, for which `module_import_spelling` is ``None``, is kept."""
+def is_stdlib_name(name: str) -> bool:
+    """Whether *name* is, or in some supported Python was, a top-level stdlib module.
+
+    This interpreter's ``sys.stdlib_module_names``, widened by the names
+    other supported versions add or removed (`_OTHER_VERSIONS_STDLIB`).
+    Over-approximating is the safe direction: a name in here only ever keeps
+    an import as written.
+    """
+    return name in sys.stdlib_module_names or name in _OTHER_VERSIONS_STDLIB
+
+
+def unspellable_reason(node: cst.ImportFrom, parent: str, *, root_hint: str = "") -> str:
+    """Why *node*, for which `module_import_spelling` is ``None``, is kept.
+
+    *root_hint* is the inferred import root the file is anchored in, when
+    declaring it would let the import be spelled ``import pkg`` (see
+    `firstparty.ModuleMap.root_for_absolute_spelling`); the reason then says
+    so, conditionally -- declaring a root is a statement about where Python
+    imports the package from, not a switch to flip. It is left out for a
+    standard-library name, which no declaration unlocks.
+    """
     dots = "." * relative_level(node)
-    if declared_root:
+    if is_stdlib_name(parent):
         return (
             f"`from {dots} import` names the top-level package '{parent}' itself, whose "
-            f"only spelling is the absolute 'import {parent}', and that is the standard "
+            f"only spelling is the absolute 'import {parent}', and that names the standard "
             f"library's '{parent}', not this package"
         )
+    hint = (
+        f" (if '{root_hint}' is where Python imports it from, declaring it with --root or "
+        f"source_roots lets --fix write 'import {parent}')"
+        if root_hint
+        else ""
+    )
     return (
         f"`from {dots} import` names the package '{parent}' itself, and a relative import "
         f"can reach a package only from its parent, which '{parent}' does not have under "
         "this run's import roots; an absolute spelling would depend on the import root, "
-        "which the original relative import did not (declare the root with --root or "
-        f"source_roots to have it rewritten to 'import {parent}')"
+        f"which the original relative import did not{hint}"
     )
 
 

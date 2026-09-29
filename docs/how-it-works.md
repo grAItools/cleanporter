@@ -335,9 +335,11 @@ root giving the package a parent, but a wrong root makes it fail loudly with
 `ImportError` at import time; it cannot bind a different module. Where the
 package is top-level there is no relative spelling, and that import is kept
 as a `CP003` — see [Known limitations](safety.md#known-limitations) — unless
-the file's import root is one you declared (`--root` / `source_roots`): then
-`import pkg` names the package you said is on `sys.path`, and the import is
-an ordinary `CP001` that `--fix` rewrites to it.
+the file's import root is one you declared (`--root` / `source_roots`) and
+the declaration is structurally sound — not itself a package directory, not
+nested with another root, the only root holding `pkg`, and `pkg` not a
+standard-library name: then `import pkg` names the package you said is on
+`sys.path`, and the import is an ordinary `CP001` that `--fix` rewrites to it.
 
 ## Import roots
 

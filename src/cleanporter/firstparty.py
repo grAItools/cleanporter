@@ -849,20 +849,57 @@ class ModuleMap:
         anchor = self._anchor(path, relative_level)
         return None if anchor is None else anchor[1]
 
-    def anchored_in_declared_root(self, path: pathlib.Path, relative_level: int = 0) -> bool:
-        """Whether `qualname_for` anchors *path* in a root the user declared.
+    def root_for_absolute_spelling(
+        self, path: pathlib.Path, relative_level: int = 0
+    ) -> pathlib.Path | None:
+        """The root *path* is anchored in, when it could vouch for ``import pkg``.
 
-        True only when the winning root is both usable by rules 1 and 1b --
-        the file's relative imports can really anchor there -- and one of
-        `declared`. An inferred root is a reading of the directory tree, which
-        a PEP 420 namespace directory can fool; a declared one is the user
-        saying which directory is on ``sys.path``. That is the one fact the
-        absolute spelling of a top-level package's own import needs
-        (`_imports.module_import_spelling`), so it is only ever taken from
-        here, never inferred.
+        ``from . import C`` in a top-level package ``pkg`` has no relative
+        replacement, and the absolute ``import pkg`` is only as good as the
+        claim that this root is on ``sys.path`` (`_imports.module_import_spelling`).
+        An inferred root is a reading of the directory tree, and never makes
+        that claim; a declared one is the user making it -- but only a root
+        that is not self-evidently wrong is taken at its word. So this is the
+        winning root of `qualname_for` when *all* of these hold, and ``None``
+        otherwise:
+
+        * the file really anchors there (rules 1 and 1b of `qualname_for`);
+        * the root is not itself a package directory (no ``__init__.py``):
+          ``--root src/pkg`` puts a package's *inside* on ``sys.path``, and
+          ``import sub`` there can name some other top-level ``sub``;
+        * it neither nests inside nor contains another root, declared or
+          inferred -- the case `_nesting_warnings` already warns about, where
+          the same file has two dotted names;
+        * no other root holds a top-level ``pkg`` too, so ``import pkg`` has
+          one candidate, not a ``sys.path`` race;
+        * the file is not ``pkg``'s own ``__init__``, where ``import pkg``
+          would only bind the package to a name inside itself.
+
+        The caller decides what to do with an inferred root that passes:
+        `project` offers it in the `CP003` message as the root that, if
+        declared, would lift the finding, and uses a declared one to allow
+        the spelling.
         """
         anchor = self._anchor(path, relative_level)
-        return anchor is not None and anchor[2] and anchor[0] in self.declared
+        if anchor is None or not anchor[2]:
+            return None
+        root, dotted, _usable = anchor
+        top = dotted.split(".", 1)[0]
+        if not top or (path.name == "__init__.py" and "." not in dotted):
+            return None
+        if (root / "__init__.py").is_file():
+            return None
+        for other in self.roots:
+            if other == root or other in self._demoted:
+                continue
+            if other.is_relative_to(root) or root.is_relative_to(other):
+                return None
+            if (other / top).is_dir() or any(
+                _is_importable_file(child) and _module_stem(child) == top
+                for child in other.glob(f"{top}.*")
+            ):
+                return None
+        return root
 
     def _anchor(
         self, path: pathlib.Path, relative_level: int

@@ -846,7 +846,7 @@ def test_a_declared_root_turns_the_unspellable_import_into_a_cp001(tmp_path):
     """The one config that changes `near.py`'s answer, in both modes at once."""
     inferred = _agreement(tmp_path / "inferred", {})["near.py"]
     assert [_rung(f) for f in inferred.check] == ["CP003 no relative spelling"]
-    assert "declare the root" in inferred.check[0].detail
+    assert "is where Python imports it from, declaring it with --root" in inferred.check[0].detail
     assert inferred.rewritten == set()
     declared = _agreement(tmp_path / "declared", {"source_roots": ["."]})["near.py"]
     assert [f.code for f in declared.check] == ["CP001"]
@@ -1130,3 +1130,101 @@ def test_a_circular_read_past_a_star_import_is_cp002_and_never_rewritten(tmp_pat
         found = {(f.path.name, f.code) for f in result.findings if f.name == "path"}
         assert found == {("c.py", "CP002")}, mode
     assert (tmp_path / "app" / "c.py").read_text(encoding="utf-8") == files["app/c.py"]
+
+
+# -- a declared root is taken at its word only when it is structurally sound ----
+def _write_tree(root: pathlib.Path, files: dict[str, str]) -> dict[pathlib.Path, bytes]:
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8", newline="\n")
+    return {root / rel: (root / rel).read_bytes() for rel in files}
+
+
+def _stays_cp003(root: pathlib.Path, table: dict[str, object], file: str) -> list[str]:
+    """Check and fix both keep *file*'s unspellable import; every file byte-identical."""
+    before = {p: p.read_bytes() for p in root.rglob("*.py")}
+    cfg = config._parse_table(table, root)
+    details: list[str] = []
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([root / "src" if (root / "src").is_dir() else root], cfg, mode)
+        found = [f for f in result.findings if f.path == root / file]
+        assert [f.code for f in found] == ["CP003"], (mode, found)
+        details.append(found[0].detail)
+    assert {p: p.read_bytes() for p in root.rglob("*.py")} == before
+    return details
+
+
+def test_a_root_declared_inside_the_package_keeps_the_cp003(tmp_path):
+    """``source_roots = ["src/toppkg"]``: `import utils` could be any top-level `utils`."""
+    _write_tree(
+        tmp_path,
+        {
+            "src/toppkg/__init__.py": "from .utils import cli\n",
+            "src/toppkg/utils/__init__.py": 'def helper():\n    return "mine"\n',
+            "src/toppkg/utils/cli.py": "from . import helper\ndef main():\n    return helper()\n",
+            "elsewhere/utils/__init__.py": 'def helper():\n    return "IMPOSTOR"\n',
+        },
+    )
+    (detail, _) = _stays_cp003(
+        tmp_path, {"source_roots": ["src/toppkg"]}, "src/toppkg/utils/cli.py"
+    )
+    assert "declaring it" not in detail
+
+
+def test_nested_roots_keep_the_cp003(tmp_path):
+    """``src`` declared, and a ``tests`` package makes the repository root a root too."""
+    _write_tree(
+        tmp_path,
+        {
+            "src/toppkg/__init__.py": "def helper():\n    return 1\n",
+            "src/toppkg/cli.py": "from . import helper\ndef main():\n    return helper()\n",
+            "tests/__init__.py": "",
+            "tests/test_cli.py": "def test_it():\n    pass\n",
+        },
+    )
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*.py")}
+    cfg = config._parse_table({"source_roots": ["src"]}, tmp_path)
+    for mode in (engine.Mode.CHECK, engine.Mode.FIX):
+        result = engine.run([tmp_path / "src", tmp_path / "tests"], cfg, mode)
+        found = [f.code for f in result.findings if f.path.name == "cli.py"]
+        assert found == ["CP003"], mode
+    assert {p: p.read_bytes() for p in tmp_path.rglob("*.py")} == before
+
+
+def test_a_package_two_declared_roots_hold_keeps_the_cp003(tmp_path):
+    files = {
+        f"{side}/toppkg/{rel}": text
+        for side in ("a", "b")
+        for rel, text in {
+            "__init__.py": f'def helper():\n    return "{side}"\n',
+            "cli.py": "from . import helper\ndef main():\n    return helper()\n",
+        }.items()
+    }
+    _write_tree(tmp_path, files)
+    _stays_cp003(tmp_path, {"source_roots": ["a", "b"]}, "a/toppkg/cli.py")
+
+
+def test_the_package_own_init_keeps_the_cp003_under_a_declared_root(tmp_path):
+    _write_tree(
+        tmp_path,
+        {
+            "src/toppkg/__init__.py": (
+                "def helper():\n    return 1\n\nfrom . import helper as again\n\nx = again()\n"
+            ),
+        },
+    )
+    _stays_cp003(tmp_path, {"source_roots": ["src"]}, "src/toppkg/__init__.py")
+
+
+def test_the_hint_names_the_inferred_root_and_not_for_a_stdlib_name(tmp_path):
+    pkg = _top_level_tree(tmp_path / "plain")
+    result = engine.run([pkg], config.Config(root=tmp_path / "plain"))
+    detail = next(f.detail for f in result.findings if f.path.name == "deep.py")
+    assert f"(if '{(tmp_path / 'plain').resolve()}' is where Python imports it from" in detail
+    assert detail.endswith("lets --fix write 'import toppkg')")
+
+    pkg = _top_level_tree(tmp_path / "std", package="cgi")  # stdlib only before 3.13
+    result = engine.run([pkg], config.Config(root=tmp_path / "std"))
+    detail = next(f.detail for f in result.findings if f.path.name == "deep.py")
+    assert "standard library's 'cgi'" in detail
+    assert "declaring" not in detail

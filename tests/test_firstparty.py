@@ -371,16 +371,63 @@ def test_a_declared_root_is_kept_even_when_no_file_implies_it(tmp_path):
     assert mm.classify("mypkg", "other") is model.Kind.MODULE
 
 
-def test_only_a_usable_declared_root_counts_as_declared_anchoring(tmp_path):
-    root = _declared_namespace(tmp_path)
-    mod = root / "src" / "mypkg" / "mod.py"
+def _regular_src(tmp_path: pathlib.Path, extra: dict[str, str] | None = None) -> pathlib.Path:
+    """``src/toppkg`` with an ``__init__.py`` and a ``cli.py``, plus *extra*."""
+    _write(
+        tmp_path,
+        {"src/toppkg/__init__.py": "def helper(): ...\n", "src/toppkg/cli.py": "", **(extra or {})},
+    )
+    return tmp_path
+
+
+def _sound_root(
+    root: pathlib.Path, file: str, *declared: str, level: int = 1
+) -> pathlib.Path | None:
     files = sorted(root.rglob("*.py"))
-    declared = firstparty.ModuleMap.from_paths(files, declared=(root / "src",))
-    assert declared.anchored_in_declared_root(mod, relative_level=1)
+    mm = firstparty.ModuleMap.from_paths(files, declared=tuple(root / d for d in declared))
+    return mm.root_for_absolute_spelling(root / file, level)
+
+
+def test_a_plain_source_root_can_vouch_for_the_absolute_spelling(tmp_path):
+    root = _regular_src(tmp_path)
+    assert _sound_root(root, "src/toppkg/cli.py", "src") == (root / "src").resolve()
+    # Inferred, it is the same root: `project` offers it in the message.
+    assert _sound_root(root, "src/toppkg/cli.py") == (root / "src").resolve()
     # A depth no root can hold: the best-effort qualname is not an anchor.
-    assert not declared.anchored_in_declared_root(mod, relative_level=9)
-    assert not firstparty.ModuleMap.from_paths(files).anchored_in_declared_root(mod, 1)
-    assert not declared.anchored_in_declared_root(tmp_path.parent / "elsewhere.py")
+    assert _sound_root(root, "src/toppkg/cli.py", "src", level=9) is None
+
+
+def test_the_package_own_init_is_never_spelled_absolutely(tmp_path):
+    root = _regular_src(tmp_path)
+    assert _sound_root(root, "src/toppkg/__init__.py", "src") is None
+
+
+def test_a_root_inside_a_package_cannot_vouch(tmp_path):
+    """``source_roots = ["src/toppkg"]`` puts a package's inside on sys.path."""
+    root = _regular_src(
+        tmp_path, {"src/toppkg/utils/__init__.py": "", "src/toppkg/utils/cli.py": ""}
+    )
+    assert _sound_root(root, "src/toppkg/utils/cli.py", "src/toppkg") is None
+
+
+def test_nested_roots_cannot_vouch(tmp_path):
+    """A ``tests/__init__.py`` infers the repository root, which contains ``src``."""
+    root = _regular_src(tmp_path, {"tests/__init__.py": "", "tests/test_it.py": ""})
+    assert _sound_root(root, "src/toppkg/cli.py", "src") is None
+
+
+def test_a_name_two_roots_hold_cannot_vouch(tmp_path):
+    _write(
+        tmp_path,
+        {
+            "a/toppkg/__init__.py": "",
+            "a/toppkg/cli.py": "",
+            "b/toppkg/__init__.py": "",
+            "b/toppkg/cli.py": "",
+        },
+    )
+    assert _sound_root(tmp_path, "a/toppkg/cli.py", "a", "b") is None
+    assert _sound_root(tmp_path, "b/toppkg/cli.py", "a", "b") is None
 
 
 # -- a namespace package holding a regular subpackage ------------------------

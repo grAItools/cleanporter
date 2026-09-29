@@ -110,9 +110,14 @@ Breaking under the pre-1.0 policy above:
   anchored in a root you declared with `--root` or `source_roots`, the
   absolute `import pkg` names the package you said is on `sys.path`, and the
   import is now a `CP001` that `--fix` rewrites to `import pkg` plus `pkg.C`.
-  An inferred root keeps the `CP003`, whose message now says that declaring
-  the root lifts it; a package named like a standard-library module keeps it
-  under a declared root too, since `import io` is the standard library's.
+  Only a structurally sound declaration counts: the `CP003` stays when the
+  declared directory is itself a package, when it nests in or around another
+  import root, when another root also holds `pkg`, in `pkg/__init__.py`
+  itself, and when `pkg` is named like a standard-library module of any
+  supported Python (`import io` is the standard library's). An inferred root
+  keeps the `CP003`; when declaring it would pass those checks, the message
+  now names it: "if `<root>` is where Python imports it from, declaring it
+  with --root or source_roots lets --fix write 'import pkg'".
   Documented under
   [Known limitations](https://graitools.github.io/cleanporter/safety/#known-limitations).
 

@@ -73,10 +73,13 @@ class FileRecord:
     #: decoded text would not encode back to them.
     raw: bytes | None = dataclasses.field(default=None, repr=False, compare=False)
     #: Whether the file is anchored in an import root the user *declared*
-    #: (`firstparty.ModuleMap.anchored_in_declared_root`), which is what lets
-    #: a top-level package's ``from . import C`` be spelled ``import pkg``
-    #: (`_imports.module_import_spelling`).
+    #: and that passes `firstparty.ModuleMap.root_for_absolute_spelling`,
+    #: which is what lets a top-level package's ``from . import C`` be
+    #: spelled ``import pkg`` (`_imports.module_import_spelling`).
     declared_root: bool = False
+    #: The *inferred* root the file is anchored in, when declaring it would
+    #: do the same; named in that import's `CP003` (`_imports.unspellable_reason`).
+    root_hint: str = ""
     #: The tree's `FileFacts`, when the caller already walked it for them
     #: (`project.build` must, before it can know ``base_pkg``); otherwise
     #: collected on first use.
@@ -696,9 +699,7 @@ class Decider:
         if spelling is None:
             return Decision(
                 model.Status.SKIPPED,
-                _imports.unspellable_reason(
-                    unit.node, parent, declared_root=self._rec.declared_root
-                ),
+                _imports.unspellable_reason(unit.node, parent, root_hint=self._rec.root_hint),
             )
         unreachable = self._resolver.replacement_unreachable(
             parent, _imports.render_import(spelling)

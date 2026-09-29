@@ -342,14 +342,37 @@ configuration would have forbidden. Prefer the bare last-component spelling
     and kept exactly as written, in every mode; the rest of the file is still
     fixed.
 
-    Unless the root is *declared*. When the file sits under a root you named
-    with `--root` or `source_roots` — and that root is the one the file is
-    qualified against — the package's name is no longer a reading of the
-    directory tree but what you said is on `sys.path`, so `import pkg` binds
-    exactly the package the dots reached. There the import is an ordinary
-    `CP001`, in `check` and `--fix` alike, and `--fix` writes `import pkg`
-    plus `pkg.C`. An inferred root keeps the `CP003`, and its message says
-    that declaring the root is what lifts it.
+    Unless the root is *declared*, and soundly so. When the file sits under
+    a root you named with `--root` or `source_roots` — and that root is the
+    one the file is qualified against — the package's name is no longer a
+    reading of the directory tree but what you said is on `sys.path`, so
+    `import pkg` binds exactly the package the dots reached. There the
+    import is an ordinary `CP001`, in `check` and `--fix` alike, and `--fix`
+    writes `import pkg` plus `pkg.C`. A declaration is taken at its word
+    only when it is not self-evidently wrong, so the `CP003` stays when:
+
+    - the declared directory is itself a package (it holds an
+      `__init__.py`): `source_roots = ["src/pkg"]` puts a package's inside on
+      `sys.path`, where `import utils` can reach some other top-level `utils`;
+    - it nests inside, or contains, another import root, declared or
+      inferred — the layout cleanporter already warns about ("import roots
+      nest"), where one file has two dotted names; a `tests/__init__.py`
+      beside `src/` is enough;
+    - another root holds a top-level `pkg` as well, so which one `import pkg`
+      finds depends on `sys.path` order;
+    - the file is `pkg/__init__.py` itself, where `import pkg` would only bind
+      the package to a name inside itself;
+    - `pkg` is named like a standard-library module: this interpreter's
+      `sys.stdlib_module_names`, plus the top-level modules removed in 3.12 and
+      3.13 (`imp`, `distutils`, `asyncore`, `cgi`, `telnetlib`, …) and added
+      in 3.14 (`annotationlib`, `compression`), since the target interpreter
+      may be any supported version. `import io` is the standard library's
+      whatever your root holds.
+
+    Under an inferred root that would pass those checks, the `CP003` message
+    names it — "if `<root>` is where Python imports it from, declaring it
+    with `--root` or `source_roots` lets `--fix` write `import pkg`". Declare
+    it only if that is true: the declaration is the whole of the evidence.
 
     A relative and an absolute import of the same module in one file are
     given separate module bindings (one of them aliased, `mod_2`): they are
@@ -567,7 +590,7 @@ configuration would have forbidden. Prefer the bare last-component spelling
   re-export another file names by its dotted path, a
   replacement that cannot be shown to bind the module it names, and
   `from . import C` where the package is top-level under an inferred root
-  (declare the root to have it rewritten) are all reported in every
+  (a sound declared root lifts it; see above) are all reported in every
   mode and are never rewritten, and the exit code counts `CP003` toward
   failure. A project that legitimately uses those idioms therefore cannot
   reach exit `0` on the strength of `--fix` alone; the finding is a true
