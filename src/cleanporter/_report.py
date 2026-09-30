@@ -13,8 +13,8 @@ is shown and what it means:
 * the findings shown are the text report's: every one but `CP004`, which
   appears only under ``--show-skipped`` -- though the counts include it
   either way, as the summary line's do;
-* a finding's severity is its effect on the exit code: `CP001`, `CP003` and
-  `CP005` fail the run, so they are errors; `CP002` is a warning, or an error under
+* a finding's severity is its effect on the exit code: `CP001`, `CP003`,
+  `CP005` and `CP006` fail the run, so they are errors; `CP002` is a warning, or an error under
   ``--strict``; `CP004` never fails a run, so it is a note;
 * a file that could not be processed is not a finding, in the text report
   or here: it is listed apart (``errors`` in JSON, a tool execution
@@ -122,6 +122,16 @@ _RULES: tuple[_Rule, ...] = (
         "Remove it (or the unused code) before it silences the next finding to land there.",
         "error",
     ),
+    _Rule(
+        "CP006",
+        "alias-mismatch",
+        "A module is bound under a name its alias convention does not allow; it fails the run.",
+        "An alias rule in [[tool.cleanporter.alias]] (or a ruff flake8-import-conventions "
+        "alias read as a default) says which name this module must be bound under in this "
+        "file, and the import binds it under another. Report-only: --fix does not rename "
+        "existing bindings, though every binding it creates follows the convention.",
+        "error",
+    ),
 )
 _RULE_INDEX = {rule.id: index for index, rule in enumerate(_RULES)}
 
@@ -191,6 +201,7 @@ def _json(result: engine.RunResult, options: _Options) -> str:
         "unresolved": result.unresolved,
         "skipped_by_config": result.skipped_by_config,
         "unused_suppressions": result.unused_suppressions,
+        "alias_mismatches": result.alias_mismatches,
         "errors": len(result.errors),
     }
     # Only with a baseline applied: absent, not 0, when there was none.

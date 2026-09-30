@@ -14,6 +14,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Module alias conventions (`[[tool.cleanporter.alias]]`) and `CP006`.** An
+  ordered list of rules, first match wins, says which name a module must be
+  bound under: `module` (an exact dotted name, or a pattern whose components
+  may be `*` for one component and `**` for one or more), `as` (an
+  identifier, a template using `{leaf}` for the module's last component, or
+  `false` for the module's own name), and optionally `importer` / `file`
+  regexes (both `re.fullmatch`, both must match) scoping the rule to the
+  importing module or file, and a `reason`. A binding that breaks its rule --
+  `import M as N`, `import M`, `import a.b.c` (judged as `a` and as the chain
+  `a.b.c`), or `from P import L [as N]` when the resolver proves `P.L` is a
+  module -- is reported as `CP006` and makes the run exit `1`. It is
+  report-only; module-level imports in a package `__init__.py`, `__future__`
+  and wildcard imports, and (under `scope = "first-party"`) modules outside
+  the analysis roots are not judged. `CP006` works with `--select` /
+  `--ignore`, inline `# cleanporter: ignore[CP006]` (which a plain `import`
+  line can now carry), baselines (keyed by path, module and bound name),
+  SARIF (a new rule), JSON (`alias_mismatches` in `counts`) and the summary
+  line (`, N alias mismatch(es)` when there are any). For the library,
+  `Config.alias`, `Config.ruff_aliases`, `Config.conventions`,
+  `RunResult.alias_mismatches` and `model.Status.ALIAS_MISMATCH`.
+- **`--fix` names new bindings by the conventions.** `from numpy import array`
+  becomes `import numpy as np` under a rule saying so, and `from P.L import X`
+  becomes `from P import L as E` (relative imports stay relative). When the
+  configured name is taken in the scope the whole file is declined with a
+  `CP003` rather than written with a suffixed name, so `--fix` never
+  introduces a `CP006`. Existing bindings are reused as before, whatever they
+  are called. With no rules the output is unchanged.
+- **Ruff's `flake8-import-conventions` aliases as defaults.** `aliases` and
+  `extend-aliases` from `[tool.ruff.lint.flake8-import-conventions]` (or the
+  legacy `[tool.ruff.flake8-import-conventions]`) in the same
+  `pyproject.toml` are read as unconditional rules ranked after every
+  cleanporter rule. Ruff's built-in default table is not assumed. The new
+  `ruff_aliases = false` turns this off.
+- An `as` template that renders a keyword or `__debug__` for one particular
+  module (`"i{leaf}"` for `f`) makes every binding of that module a `CP006`
+  naming the rendered name, and `--fix` declines the file; `__debug__` is
+  refused as a literal alias at load, like a keyword.
+
+### Fixed
+
+- `--fix` could bind a new module import under the name of a builtin that
+  the same scope, or a scope nested in it, reads: `from demo.list import go`
+  with `x = list(go())` became `from demo import list` with
+  `list(list.go())`, which calls the module. A name read where the new
+  binding would be visible and bound nowhere in the file (a builtin, or an
+  undefined name) now counts as taken -- including one read inside a string
+  annotation (`def f(x: "list[int]")`) -- so the binding is suffixed
+  (`list_2`) -- or, under an alias rule asking for that name, the file is
+  declined with a `CP003`.
+- `--fix` could leave a read of a rewritten name behind. libCST does not tie a
+  read to an import below it in the same scope, so in `for i in range(2): if
+  i: out.append(dumps(1)) else: from json import dumps` the first `dumps` was
+  never qualified and raised `NameError` once the import was gone. Every read
+  of the name that could see the import -- in its scope, or a nested scope
+  that does not bind the name itself -- must now be one the scope analysis
+  ties to it; otherwise the file is declined with a `CP003`.
+- `--fix` reused an existing binding of a module wherever it was:
+  `from json import dumps` / `x = dumps(1)` / `import json` became
+  `json.dumps(1)` above `import json`, and an `import json` under `if
+  sys.version_info < (3, 0):` was leaned on as if it always ran -- both
+  `NameError`. The same held for a binding the fix itself wrote inside an
+  `if` and then reused for a later line. A binding is now reused only when it
+  sits directly in the body of its module or function (or under `if not
+  TYPE_CHECKING:`) and ends before every read it would serve, or sits
+  earlier in the same block as the line reusing it; otherwise the line gets
+  its own import, aliased if the name is taken. The corpus had real cases,
+  such as Django's `admin_urls.py`, where `if to_field:` reused an import
+  the fix had written under a sibling `if popup:`.
+- `--fix` could bind a module under a name a wildcard import rebinds:
+  `from json import dumps` / `from demo.star import *` became `import json`
+  followed by the star import, and a `json` the star module exports then
+  replaced the module. What a wildcard import brings in is not proven, so a
+  file with one gets no module-level binding from the fix: a module-level
+  rewrite declines the file with a `CP003`, and a rewrite inside a function
+  binds its own import rather than reusing a module-level one.
+
 ## [0.5.0] - 2026-09-29
 
 Breaking under the pre-1.0 policy above:

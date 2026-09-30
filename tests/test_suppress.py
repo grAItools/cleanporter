@@ -587,3 +587,15 @@ def test_json_reports_suppressions(
     unused = findings[1]
     assert (unused["parent"], unused["name"], unused["column"]) == ("", "", 26)
     assert unused["detail"].startswith("no CP001 finding")
+
+
+def test_a_comment_covers_a_plain_import_on_its_line() -> None:
+    tree, found = _collect("import json as j  # cleanporter: ignore[CP006]\nimport os\n")
+    lines: list[list[int]] = []
+
+    class Walk(cst.CSTVisitor):
+        def visit_Import(self, node: cst.Import) -> None:
+            lines.extend([s.line for s in found.covering(node, alias)] for alias in node.names)
+
+    tree.visit(Walk())
+    assert lines == [[1], []]

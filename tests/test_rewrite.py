@@ -1925,3 +1925,162 @@ def test_absolute_imports_keep_their_absolute_spelling():
     result = outcome(src)
     assert result.status == "fixed"
     assert result.source == "from pkg.sub import mod\nx = mod.Thing(), mod.go()\n"
+
+
+# -- a read the scope analysis does not tie to the import -------------------------
+
+_LOOP_MODULE = (
+    "out = []\n"
+    "for i in range(2):\n"
+    "    if i:\n"
+    "        out.append(dumps(1))\n"
+    "    else:\n"
+    "        from json import dumps\n"
+    "print(out, dumps(2))\n"
+)
+_LOOP_FUNCTION = (
+    "def f():\n"
+    "    out = []\n"
+    "    for i in range(2):\n"
+    "        if i:\n"
+    "            out.append(dumps(1))\n"
+    "        else:\n"
+    "            from json import dumps\n"
+    "    return out, dumps(2)\n"
+)
+
+
+def test_a_read_above_the_import_in_a_loop_declines_the_file():
+    # libcst drops a same-scope read that comes before the binding textually,
+    # so it would be left unqualified: `dumps` then raises NameError.
+    for src in (_LOOP_MODULE, _LOOP_FUNCTION):
+        result = outcome(src)
+        assert result.status == "skipped", result.source
+        assert result.source == src
+        assert [f.detail for f in result.blockers] == [
+            (
+                "a read of 'dumps' is not tied to this import by the scope analysis (it "
+                "comes before the import, or resolves elsewhere), so rewriting would leave "
+                "it behind"
+            )
+        ]
+
+
+def test_a_nested_function_reading_a_later_import_is_still_rewritten():
+    result = outcome("def g():\n    return dumps(1)\n\n\nfrom json import dumps\n")
+    assert result.status == "fixed"
+    assert result.source == "def g():\n    return json.dumps(1)\n\n\nimport json\n"
+
+
+# -- reusing an existing binding: only one bound unconditionally, before the reads --
+
+
+def test_a_binding_imported_below_the_reads_is_not_reused():
+    result = outcome("from json import dumps\nx = dumps(1)\nimport json\n")
+    assert result.status == "fixed"
+    assert result.source == "import json as json_2\nx = json_2.dumps(1)\nimport json\n"
+
+
+def test_a_conditionally_imported_binding_is_not_reused():
+    src = (
+        "import sys\nfrom json import dumps\n"
+        "if sys.version_info < (3, 0):\n    import json\nprint(dumps(1))\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "import sys\nimport json as json_2\n"
+        "if sys.version_info < (3, 0):\n    import json\nprint(json_2.dumps(1))\n"
+    )
+
+
+def test_a_binding_written_by_a_conditional_rewrite_is_not_reused():
+    src = (
+        "import sys\n"
+        "if sys.version_info < (3, 0):\n    from json import dumps\n    dumps(1)\n"
+        "from json import loads\nprint(loads('1'))\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "import sys\n"
+        "if sys.version_info < (3, 0):\n    import json\n    json.dumps(1)\n"
+        "import json as json_2\nprint(json_2.loads('1'))\n"
+    )
+
+
+def test_an_unconditional_earlier_binding_is_still_reused():
+    result = outcome("import json\nfrom json import dumps\nx = dumps(1)\n")
+    assert result.status == "fixed"
+    assert result.source == "import json\nx = json.dumps(1)\n"
+
+
+def test_lines_in_one_block_share_the_binding_the_first_writes():
+    src = (
+        "import sys\n"
+        "if sys.version_info >= (3, 0):\n"
+        "    from json import dumps\n    from json import loads\n"
+        "    print(dumps(1), loads('1'))\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "import sys\n"
+        "if sys.version_info >= (3, 0):\n"
+        "    import json\n    print(json.dumps(1), json.loads('1'))\n"
+    )
+
+
+def test_lines_in_sibling_blocks_do_not_share_a_binding():
+    # One `if` may run without the other: sharing the first block's import
+    # would leave the second one's reads with nothing bound.
+    src = (
+        "def f(a, b):\n"
+        "    if a:\n        from json import dumps\n        return dumps(1)\n"
+        "    if b:\n        from json import loads\n        return loads('1')\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "def f(a, b):\n"
+        "    if a:\n        import json\n        return json.dumps(1)\n"
+        "    if b:\n        import json as json_2\n        return json_2.loads('1')\n"
+    )
+
+
+# -- a wildcard import can rebind a module-level name --------------------------------
+
+
+def test_a_wildcard_import_declines_a_module_level_binding():
+    src = "from json import dumps\nfrom pkg import *\nprint(dumps(1))\n"
+    result = outcome(src)
+    assert result.status == "skipped"
+    assert result.source == src
+    assert [f.detail for f in result.blockers] == [
+        (
+            "the file has a wildcard import, which can rebind any module-level name, so a "
+            "module-level binding cannot be shown to hold the module it is rewritten through"
+        )
+    ]
+
+
+def test_a_wildcard_import_leaves_a_function_local_rewrite_alone():
+    src = "from pkg import *\n\n\ndef f():\n    from json import dumps\n    return dumps(1)\n"
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "from pkg import *\n\n\ndef f():\n    import json\n    return json.dumps(1)\n"
+    )
+
+
+def test_a_wildcard_import_stops_a_function_reusing_a_module_level_binding():
+    src = (
+        "import json\nfrom pkg import *\n\n\n"
+        "def f():\n    from json import dumps\n    return dumps(1), json\n"
+    )
+    result = outcome(src)
+    assert result.status == "fixed"
+    assert result.source == (
+        "import json\nfrom pkg import *\n\n\n"
+        "def f():\n    import json as json_2\n    return json_2.dumps(1), json\n"
+    )

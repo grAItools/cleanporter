@@ -57,6 +57,7 @@ Each reported line has the shape
 | `CP003` | `SKIPPED` | Structurally a violation, deliberately not rewritten. Under `--fix` or `--diff` it is the "declined, because…" note explaining why a file, or one import in it, was left alone; a few reasons that belong to the import itself are reported in every mode (below). |
 | `CP004` | `SKIPPED_BY_CONFIG` | Matched a [`skip` rule](configuration.md#skip-rules), so it was never analysed — or an [inline suppression](configuration.md#inline-suppressions) (`# cleanporter: ignore[CP001]`) named the code of its finding, and the message says which code and which comment. Counted in the summary, printed only under `--show-skipped`, and **never** part of the exit code — you asked for it. |
 | `CP005` | `UNUSED_SUPPRESSION` | An [inline suppression](configuration.md#inline-suppressions) names a code that no finding on the imports it covers has — the finding was fixed, or the comment is on the wrong line. Reported at the comment. Like `CP001`, it makes the run exit `1`, and it cannot itself be suppressed: remove the comment, or the code, instead. |
+| `CP006` | `ALIAS_MISMATCH` | A module is bound under a name its [alias convention](configuration.md#alias-rules) does not allow: `import numpy as npy` where a rule (or a ruff `flake8-import-conventions` alias) says `np`. The finding's module and name are the module and the name it is bound under; the message names the expected name and the rule. Like `CP001`, it makes the run exit `1`. Report-only: `--fix` does not rename existing bindings, but every binding it creates follows the convention. |
 
 Examples of each:
 
@@ -66,6 +67,7 @@ src/mypkg/gpu.py:5:0: CP002 could not determine whether 'cupy.ndarray' is a modu
 src/mypkg/api.py:11:0: CP003 file not rewritten: local 'Widget' is rebound in the same scope
 src/mypkg/stencils.py:4:0: CP004 'broadcast' from 'gt4py.next' skipped by configuration: skip rule #1 (decorator='field_operator'): DSL bodies are re-parsed by the frontend
 src/mypkg/compat.py:7:31: CP005 unused suppression: no CP002 finding on the imports this comment covers; remove the comment
+src/mypkg/plot.py:2:0: CP006 module 'numpy' is bound as 'npy': expected 'np' by alias rule #1 (module='numpy')
 ```
 
 `CP002` findings are only produced for imports cleanporter actually looked at:
@@ -119,6 +121,17 @@ An import inside a function there is checked like any other.
     suppression — `# cleanporter: ignore` with no codes, an unknown code, or
     `CP004`/`CP005` in the brackets — is not a finding but a warning naming
     its file and line, and it suppresses nothing.
+
+!!! note "`CP006` findings count toward the failure exit code"
+
+    A binding that breaks a configured alias convention fails the run like a
+    `CP001`. Only a proven module is judged: `import M` always, and `from P
+    import L` when the resolver proves `P.L` is a module — so no `CP006` is
+    ever a guess. `--fix` does not rename the binding (rename it yourself, or
+    suppress it with `# cleanporter: ignore[CP006]`), and it never *creates*
+    one: when the configured name is taken where it would bind the module, it
+    declines the whole file with a `CP003` instead. See
+    [`alias` rules](configuration.md#alias-rules).
 
 ## Exit codes
 
@@ -251,7 +264,7 @@ format:
   under `--show-skipped`, though it is counted either way. A code `--select`
   or `--ignore` left out, or a finding a baseline accepted, is in no format
   and no count.
-- **Severity is the effect on the exit code:** `CP001`, `CP003` and `CP005` are errors;
+- **Severity is the effect on the exit code:** `CP001`, `CP003`, `CP005` and `CP006` are errors;
   `CP002` is a warning, or an error under `--strict`; `CP004` is a note.
 - **Paths**: JSON spells them as the text report does (as found from the path
   you gave). SARIF and GitHub use them relative to the current directory, with
@@ -290,7 +303,7 @@ One JSON object, keys in this order:
 | `mode` | `"check"`, `"diff"` or `"fix"`. |
 | `strict` | Whether `--strict` / `treat_unresolved_as_error` was in effect. |
 | `exit_code` | The process's exit code. |
-| `counts` | `files_checked`, `changed` (files rewritten, or diffed under `--diff`), `violations` (`CP001`), `not_rewritten` (`CP003`), `unresolved` (`CP002`), `skipped_by_config` (`CP004`), `unused_suppressions` (`CP005`) and `errors` (files not processed) — the summary line's numbers, after `--select`, `--ignore` and any baseline. With a baseline applied (`--baseline` or `baseline`), also `baselined` (findings it left out) and `stale_baseline` (its entries that matched no finding); both keys are absent without one. |
+| `counts` | `files_checked`, `changed` (files rewritten, or diffed under `--diff`), `violations` (`CP001`), `not_rewritten` (`CP003`), `unresolved` (`CP002`), `skipped_by_config` (`CP004`), `unused_suppressions` (`CP005`), `alias_mismatches` (`CP006`) and `errors` (files not processed) — the summary line's numbers, after `--select`, `--ignore` and any baseline. With a baseline applied (`--baseline` or `baseline`), also `baselined` (findings it left out) and `stale_baseline` (its entries that matched no finding); both keys are absent without one. |
 | `findings` | One object per finding (below), sorted by path, line, column and code. |
 | `errors` | One object per file that could not be read, decoded, parsed or written: `code` (`CP002`), `path`, `line`, `column`, `message`. Not findings; any of them makes the exit code `2`. |
 | `warnings`, `notes` | Lists of strings, without the `cleanporter: warning:` / `note:` prefix. |
@@ -300,13 +313,13 @@ A finding:
 
 | Key | Value |
 | --- | --- |
-| `code` | `CP001`–`CP005`. |
-| `status` | `violation`, `unresolved`, `skipped`, `skipped-by-config` or `unused-suppression`. |
+| `code` | `CP001`–`CP006`. |
+| `status` | `violation`, `unresolved`, `skipped`, `skipped-by-config`, `unused-suppression` or `alias-mismatch`. |
 | `level` | `error`, `warning` or `note`, as above. |
-| `path`, `line`, `column` | Where the `from` import starts — for `CP005`, where the comment starts; `column` is 0-based. |
-| `parent`, `name` | The `from PARENT import NAME` it is about; empty strings for `CP005`, which is about a comment. |
+| `path`, `line`, `column` | Where the `from` import starts — for `CP006`, the `from` or `import` statement; for `CP005`, where the comment starts; `column` is 0-based. |
+| `parent`, `name` | The `from PARENT import NAME` it is about; for `CP006`, the module and the name it is bound under; empty strings for `CP005`, which is about a comment. |
 | `message` | The text report's message, after the code. For `CP001` it suggests the conventional spelling (`helpers.Widget`) and, for a relative import, the replacement import spelled as `--fix` spells it (`from . import helpers`); `--fix` may write a different one — reusing an existing binding of the module, or a free alias when the name is taken — so read the patch, not the message, for what is written. |
-| `detail` | The bare reason, for `CP002`–`CP005` (empty for `CP001`). |
+| `detail` | The bare reason, for `CP002`–`CP006` (empty for `CP001`). |
 
 ```bash
 $ cleanporter --format json src/ 2>/dev/null | jq '.findings[0]'
@@ -328,7 +341,7 @@ $ cleanporter --format json src/ 2>/dev/null | jq '.findings[0]'
 
 A [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
 log with one run. `tool.driver` names cleanporter and its version and carries
-one rule per finding code, `CP001`–`CP005`, each with a short and full
+one rule per finding code, `CP001`–`CP006`, each with a short and full
 description, `help` (text and Markdown) and a `helpUri` pointing at
 [the finding codes table](#finding-codes) above. Each result has its
 `ruleId`, `level`, message, and a location whose URI is relative to the
@@ -556,8 +569,9 @@ uv run pytest                      # re-run the suite -- see the warning below
 checked 41 file(s), fixed 6: 3 violation(s), 2 not rewritten, 1 unresolved, 0 skipped by config
 ```
 
-Two counts are added to the end only when they apply: `, N unused
-suppression(s)` when there is any `CP005`, and `, N in the baseline` when a
+Three counts are added to the end only when they apply: `, N unused
+suppression(s)` when there is any `CP005`, `, N alias mismatch(es)` when there
+is any `CP006`, and `, N in the baseline` when a
 baseline was applied (check runs only), so a check might end
 `… 0 skipped by config, 1 unused suppression(s), 12 in the baseline`.
 

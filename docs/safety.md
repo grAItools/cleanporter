@@ -30,6 +30,17 @@ import binding being rewritten. Concretely:
   its own binding, tracked independently of any module-level import of the
   same module.
 
+A module the file already imports is reused as the binding — `import json`
+plus `from json import dumps` becomes `json.dumps` — but only when that import
+is certain to have run by the time each rewritten read does: it sits directly
+in the body of its module or function (not under an `if`, `try`, `with`,
+loop or `match`; `if not TYPE_CHECKING:` counts as direct, since it always
+runs) and ends textually before every one of those reads. Otherwise the line
+gets its own import, aliased (`json_2`) if the name is taken. The same holds
+for a binding one rewritten line creates and a later one would share — with
+one more safe case: two lines in the same block (the same `if` body, say)
+share it, since the second only runs after the first.
+
 Formatting survives because libCST is a *concrete* syntax tree: it round-trips
 the source, so what the fixer does not deliberately change is reproduced
 byte-for-byte. The structural changes are the inserted or replaced import
@@ -169,6 +180,26 @@ scope, libCST's scopes are not flow-sensitive: an access lists both the import
 and the assignment as its referents, so there is no safe subset to rewrite.
 The file is declined.
 
+### A read the scope analysis does not tie to the import
+
+Only the reads libCST links to the import are qualified, and it does not link
+a read that comes *before* the import in the same scope: it looks for an
+earlier binding, finds none, and falls back to the enclosing scope. In a loop
+that is working code — `for i in range(2): if i: out.append(dumps(1)) else:
+from json import dumps` — and the read left unqualified would raise
+`NameError` once the import is gone. So every read of the name that could see
+the import (in its scope, or a nested one that does not bind the name itself)
+must be one libCST ties to it; any other declines the file.
+
+### A wildcard import in the file
+
+`from x import *` binds whatever `x` exports, which may be the very name the
+rewrite binds the module under — `from json import dumps` next to a star
+import of a module exporting `json` would have `json.dumps` read that `json`
+instead. What a wildcard import brings in is not proven, so in a file with one
+the fixer creates and reuses no module-level binding: a module-level rewrite
+declines the file, and a rewrite inside a function binds its own import there.
+
 ### `global` / `nonlocal` declarations naming it
 
 Such a declaration keeps the name writable from another scope. Qualifying the
@@ -227,6 +258,20 @@ ones. The coverage of every suppression is recomputed on the output, counting
 each import separately (the same name imported twice is two imports), and any
 comment whose coverage changes — other than losing the names the rewrite takes
 away — declines the file.
+
+### A configured alias is taken in the scope
+
+When an [`alias` rule](configuration.md#alias-rules) applies to the module a
+rewrite would bind, the new binding must have the configured name (or, for
+`as = false`, the module's own leaf). If that name is already taken where the
+binding would go — the same set of names that makes an unconfigured rewrite
+fall back to `helpers_2`, which includes a builtin read there, so `from
+demo.list import go` with `list(go())` becomes `from demo import list as
+list_2` — no other name will do: a suffixed one breaks the
+convention, and `--fix` never introduces a `CP006`. The file is declined, with
+a `CP003` naming the alias, the module and the rule. The same happens when a
+`{leaf}` template renders a name no import can bind (a keyword, or
+`__debug__`) for the module being bound.
 
 ### The file's encoding cannot hold the rewrite unchanged
 

@@ -5,8 +5,9 @@ the flags that override it -- hands the run to `engine.run`, prints what it
 reports, and picks the exit code: 0 clean, 1 anything left to fix, 2
 operational error. The run itself -- fixing, writing, re-analysing, counting --
 is the engine's; this module is only its shell. A file the fixer declined
-(`CP003`) and an unused suppression (`CP005`) count toward the 1 -- a declined
-violation and a stale comment, not notes -- while `CP002` counts only under
+(`CP003`), an unused suppression (`CP005`) and a broken alias convention
+(`CP006`) count toward the 1 -- a declined violation, a stale comment and a
+misnamed module, not notes -- while `CP002` counts only under
 ``--strict``.
 
 Stream contract: when a patch goes to stdout (``--diff``, ``--fix``) stdout
@@ -503,6 +504,7 @@ def _summary(result: engine.RunResult) -> str:
             if result.unused_suppressions
             else ""
         )
+        + (f", {result.alias_mismatches} alias mismatch(es)" if result.alias_mismatches else "")
         + (f", {result.baselined} in the baseline" if result.baselined is not None else "")
     )
 

@@ -56,6 +56,15 @@ def import_ids(tree: cst.Module) -> set[int]:
     return ids
 
 
+def body_always_runs(node: cst.If, tree: cst.Module) -> bool:
+    """Whether *node*'s body runs whenever *node* does: ``if not TYPE_CHECKING:``.
+
+    The one guard `import_ids` treats as ordinary runtime code; any other
+    ``if`` may or may not run its body.
+    """
+    return _is_negated_type_checking(node.test, _type_checking_aliases(tree))
+
+
 def _type_checking_aliases(tree: cst.Module) -> set[str]:
     """Local names bound to ``typing.TYPE_CHECKING``, including its own.
 

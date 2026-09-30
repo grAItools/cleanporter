@@ -93,6 +93,7 @@ def test_every_finding_code_is_documented() -> None:
         "CP003": model.Status.SKIPPED,
         "CP004": model.Status.SKIPPED_BY_CONFIG,
         "CP005": model.Status.UNUSED_SUPPRESSION,
+        "CP006": model.Status.ALIAS_MISMATCH,
     }
     missing = sorted(c for c in codes if c not in text)
     assert missing == [], f"undocumented finding codes in {USAGE.name}: {missing}"

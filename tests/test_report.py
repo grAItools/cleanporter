@@ -88,6 +88,7 @@ def test_json_is_one_document_with_every_field(project, capsys):
         "unresolved": 1,
         "skipped_by_config": 0,
         "unused_suppressions": 0,
+        "alias_mismatches": 0,
         "errors": 0,
     }
     assert document["findings"] == [
@@ -238,7 +239,7 @@ def test_sarif_has_the_required_structure(project, capsys):
     assert driver["version"] == cleanporter.__version__
     assert driver["informationUri"] == "https://graitools.github.io/cleanporter/"
     rules = driver["rules"]
-    assert [r["id"] for r in rules] == ["CP001", "CP002", "CP003", "CP004", "CP005"]
+    assert [r["id"] for r in rules] == ["CP001", "CP002", "CP003", "CP004", "CP005", "CP006"]
     for rule in rules:
         assert rule["shortDescription"]["text"]
         assert rule["fullDescription"]["text"]

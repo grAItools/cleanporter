@@ -18,7 +18,7 @@ import re
 import tomllib
 from collections.abc import Sequence
 
-from cleanporter import model
+from cleanporter import aliases, model
 from cleanporter import skip as skip_lib
 
 # Modules whose members may be imported directly by name.
@@ -29,10 +29,10 @@ DEFAULT_EXEMPT_MODULES: frozenset[str] = frozenset(
 _VALID_SCOPES = ("all", "first-party")
 
 _LIST_KEYS = ("exclude", "source_roots", "exempt_modules", "exempt_names")
-_BOOL_KEYS = ("treat_unresolved_as_error",)
+_BOOL_KEYS = ("treat_unresolved_as_error", "ruff_aliases")
 _CODE_KEYS = ("select", "ignore")
 _KNOWN_KEYS = frozenset(
-    _LIST_KEYS + _BOOL_KEYS + _CODE_KEYS + ("scope", "python", "skip", "baseline")
+    _LIST_KEYS + _BOOL_KEYS + _CODE_KEYS + ("scope", "python", "skip", "baseline", "alias")
 )
 
 
@@ -103,6 +103,19 @@ class Config:
     #: read by the command line, which a library caller applies itself. A
     #: relative path read from pyproject.toml arrives joined to ``root``.
     baseline: pathlib.Path | None = None
+    #: Alias conventions, in precedence order: every ``[[tool.cleanporter.alias]]``
+    #: rule, then -- unless `ruff_aliases` is off -- ruff's
+    #: ``flake8-import-conventions`` aliases from the same pyproject.toml.
+    #: See `cleanporter.aliases`.
+    alias: tuple[aliases.Rule, ...] = ()
+    #: Whether ruff's ``flake8-import-conventions`` aliases were read into
+    #: `alias` when the configuration was loaded.
+    ruff_aliases: bool = True
+
+    @property
+    def conventions(self) -> aliases.Conventions:
+        """`alias` as the one function `analyze` and `rewrite` both ask."""
+        return aliases.Conventions(self.alias)
 
     def reports(self, code: str) -> bool:
         """Whether a finding with *code* is reported and counted (`select`, `ignore`)."""
@@ -291,7 +304,23 @@ def _bool(table: dict[str, object], key: str) -> bool:
     return value
 
 
-def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
+def _alias_rules(
+    table: dict[str, object], ruff: object, *, ruff_aliases: bool
+) -> tuple[aliases.Rule, ...]:
+    """The ``alias`` rules, then ruff's aliases unless *ruff_aliases* is off.
+
+    *ruff* is the ``[tool.ruff]`` table of the same pyproject.toml, or
+    ``None``. A malformed ruff table is an error only while it is read: with
+    ``ruff_aliases = false`` it is ruff's business alone.
+    """
+    try:
+        own = aliases.parse_rules(table["alias"]) if "alias" in table else ()
+        return own + (aliases.ruff_rules(ruff) if ruff_aliases else ())
+    except aliases.AliasConfigError as exc:
+        raise ConfigError(str(exc)) from exc
+
+
+def _parse_table(table: dict[str, object], root: pathlib.Path, ruff: object = None) -> Config:
     """Build a Config from a validated ``[tool.cleanporter]`` table.
 
     Every field is passed by name. Collecting them into a ``dict[str, object]``
@@ -299,6 +328,9 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
     ``object`` -- so the constructor call has to be silenced, and with it any
     genuine mistake in what this function assigns. A parser whose whole job is
     to reject wrongly typed input should not be the one place that is unchecked.
+
+    *ruff* is the ``[tool.ruff]`` table of the same file, read for its
+    ``flake8-import-conventions`` aliases (`cleanporter.aliases`).
 
     Defaults are read back off ``Config`` rather than repeated here, so a
     changed default cannot diverge from what an absent key produces. Keys are
@@ -334,6 +366,8 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
     # them has to be applied by name below; `test_every_known_key_reaches_the
     # _config` is what stops a new key being validated and then dropped.
     flags = {key: _bool(table, key) for key in _BOOL_KEYS if key in table}
+    ruff_aliases = flags.get("ruff_aliases", defaults.ruff_aliases)
+    alias = _alias_rules(table, ruff, ruff_aliases=ruff_aliases)
     return Config(
         root=root,
         exclude=exclude,
@@ -349,6 +383,8 @@ def _parse_table(table: dict[str, object], root: pathlib.Path) -> Config:
         select=select,
         ignore=ignore,
         baseline=baseline,
+        alias=alias,
+        ruff_aliases=ruff_aliases,
     )
 
 
@@ -383,10 +419,11 @@ def load_config(start: pathlib.Path) -> Config:
     if pyproject is None:
         return Config(root=anchor if anchor.is_dir() else anchor.parent)
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    table = data.get("tool", {}).get("cleanporter", {})
+    tool = data.get("tool", {})
+    table = tool.get("cleanporter", {})
     if not isinstance(table, dict):
         raise ConfigError("[tool.cleanporter] must be a TOML table")
-    return _parse_table(table, pyproject.parent)
+    return _parse_table(table, pyproject.parent, tool.get("ruff"))
 
 
 def mismatch_warning(paths: Sequence[pathlib.Path], *, resolve: bool = True) -> str | None:

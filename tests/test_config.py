@@ -246,6 +246,8 @@ _SAMPLES = {
     "select": ["CP001"],
     "ignore": ["CP002"],
     "baseline": "cleanporter-baseline.json",
+    "alias": [{"module": "numpy", "as": "np"}],
+    "ruff_aliases": False,
 }
 
 

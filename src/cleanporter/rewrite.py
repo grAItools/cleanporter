@@ -38,6 +38,15 @@ because a mechanical rewrite could change runtime behaviour):
 Multiple object names sharing one module reuse a single new binding; compliant
 names in a mixed statement are kept in place.
 
+A *new* binding is named by the project's alias conventions when one applies
+(`cleanporter.aliases`): ``from numpy import array`` becomes ``import numpy as
+np`` under a rule saying so. A configured name that is taken in the scope
+declines the whole file rather than falling back to ``np_2``, which would be a
+``CP006`` of the fixer's own making; without a rule the leaf is used, suffixed
+when taken, exactly as before. An existing binding is reused whatever it is
+called -- renaming one is not this fixer's business, and a non-conforming one
+is already reported.
+
 A relative import is rewritten to a relative import: ``from .sub.mod import C``
 becomes ``from .sub import mod``. Its absolute name is still what the resolver
 classifies, but that name is only as good as the import root inferred for the
@@ -81,9 +90,21 @@ import re
 import libcst as cst
 from libcst import metadata
 
-from cleanporter import analyze, config, model, resolver, skip, suppress
+from cleanporter import aliases, analyze, config, model, resolver, skip, suppress
 
 from . import _annotations, _imports, _nodes, _source, _type_checking, guards
+
+
+@dataclasses.dataclass(frozen=True)
+class _Site:
+    """The import line being rewritten: where it is, and the reads it will qualify."""
+
+    #: Its line number, for a blocker.
+    line: int
+    #: The statement, which is where a new module import is written.
+    stmt: cst.SimpleStatementLine
+    #: Every read of a name it binds that the rewrite qualifies.
+    reads: tuple[metadata.Access, ...]
 
 
 @dataclasses.dataclass
@@ -105,7 +126,11 @@ def _module_import_stmt(spelling: tuple[str, str], bind: str) -> cst.SimpleState
 
 
 class _Fixer(cst.CSTTransformer):
-    METADATA_DEPENDENCIES = (metadata.ScopeProvider, metadata.PositionProvider)
+    METADATA_DEPENDENCIES = (
+        metadata.ScopeProvider,
+        metadata.PositionProvider,
+        metadata.ParentNodeProvider,
+    )
 
     def __init__(
         self, rec: analyze.FileRecord, resolver: resolver.Resolver, config: config.Config
@@ -120,6 +145,10 @@ class _Fixer(cst.CSTTransformer):
         self._module_binding: dict[tuple[metadata.Scope, str, bool], str] = {}
         #: (already-imported module, spelled relative) -> the name it is bound to.
         self._existing: dict[tuple[str, bool], str] = {}
+        #: The same key -> the statement that binds it, for `_holds_before`.
+        self._existing_at: dict[tuple[str, bool], cst.CSTNode] = {}
+        #: `_module_binding` key -> the statement whose binding it memoizes.
+        self._module_binding_at: dict[tuple[metadata.Scope, str, bool], cst.CSTNode] = {}
         #: Names bound at module scope. Kept *live*: grows as `_binding_for`
         #: allocates new module-level tokens, so a later function scope's
         #: collision check sees them (fix-round-1 Critical 2).
@@ -157,9 +186,24 @@ class _Fixer(cst.CSTTransformer):
         #: ``id`` of every `libcst.ImportAlias` planned for a rewrite, so
         #: `_suppression_moved` knows which names the output no longer imports.
         self.rewritten_aliases: set[int] = set()
+        #: ``(scope, name)`` for every read that resolves to a builtin or to
+        #: nothing; see `_free_names_below`. Built on first use. ``None`` for
+        #: a read whose names cannot be read off its node.
+        self._free_reads: list[tuple[metadata.Scope, str | None]] | None = None
+        #: Whether the file has a wildcard import, which can rebind any
+        #: module-level name (`_spelling_or_blocker`, `_binding_for`).
+        self._has_star = False
+        #: The module being fixed (`visit_Module`), the owner of its global scope.
+        self._module_node = cst.Module(body=[])
+        #: Every scope in the file (`_scopes`). Built on first use.
+        self._all_scopes: list[metadata.Scope] | None = None
+        #: The alias conventions every new binding follows (`_allocate_token`).
+        self._conventions = config.conventions
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
+        self._module_node = node
+        self._has_star = any(_imports.is_star(imp) for imp in _nodes.import_froms(node))
         self._tc_ids = _type_checking.import_ids(node)
         self._del_names = _nodes.deleted_names(node)
         # Names already bound at module scope, seen from *any* scope's
@@ -344,6 +388,7 @@ class _Fixer(cst.CSTTransformer):
             for name, asname, _alias in _imports.imported_names(imp):
                 if self._resolver.is_module(parent, name) is True:
                     self._existing[f"{parent}.{name}", relative] = asname or name
+                    self._existing_at[f"{parent}.{name}", relative] = imp
         # plain ``import a`` / ``import a as z`` (top-level modules only)
         for plain in _nodes.plain_imports(node):
             scope = self.get_metadata(metadata.ScopeProvider, plain, None)
@@ -363,8 +408,10 @@ class _Fixer(cst.CSTTransformer):
                 bound = as_node.value if isinstance(as_node, cst.Name) else None
                 if bound is not None:
                     self._existing[mod, False] = bound
+                    self._existing_at[mod, False] = plain
                 elif "." not in mod:
                     self._existing[mod, False] = mod
+                    self._existing_at[mod, False] = plain
 
     def _import_lines(
         self, node: cst.Module
@@ -472,39 +519,10 @@ class _Fixer(cst.CSTTransformer):
         extra_avoid: set[str] = set()
         for name, asname in fix:
             bound = asname or name
-            if bound in self._del_names:
-                # `del bound` reads as an access, not an assignment, so the
-                # `others` check below cannot see it (see `_nodes.deleted_names`).
-                self.blockers.append(
-                    (
-                        self._line_of(imp),
-                        (
-                            f"local '{bound}' is unbound with `del`; qualifying it would "
-                            "delete an attribute of the imported module"
-                        ),
-                    )
-                )
-                continue
             ours = [a for a in scope[bound] if getattr(a, "node", None) is imp]
-            # No BuiltinAssignment filter needed here: libcst only ever puts
-            # BuiltinAssignment objects in a BuiltinScope's own assignments,
-            # never in a GlobalScope's or a LocalScope's (FunctionScope /
-            # ClassScope, now that non-module scopes are fixed too).
-            # GlobalScope.__getitem__ and LocalScope's (via
-            # LocalScope._resolve_scope_for_access) both return the scope's
-            # own assignments directly whenever the name is present there at
-            # all, and `ours` being non-empty means `bound` is already
-            # present in *this* scope's own assignments -- so a builtin can
-            # never show up alongside our import, regardless of whether
-            # `scope` is global, a function, or a class body.
-            others = [a for a in scope[bound] if getattr(a, "node", None) is not imp]
-            if ours and others:
-                # libcst's scopes are not flow-sensitive, so accesses of a
-                # rebound name list both the import and the assignment as
-                # referents. There is no safe subset to rewrite.
-                self.blockers.append(
-                    (self._line_of(imp), f"local '{bound}' is rebound in the same scope")
-                )
+            reason = self._name_blocker(imp, bound, scope, ours)
+            if reason is not None:
+                self.blockers.append((self._line_of(imp), reason))
                 continue
             rewrites.append((name, bound, ours))
             for assignment in ours:
@@ -515,8 +533,13 @@ class _Fixer(cst.CSTTransformer):
 
         # new statements: one module import per (deduped) parent, plus kept names
         new_lines: list[cst.BaseStatement] = []
+        site = _Site(
+            self._line_of(imp),
+            line,
+            tuple(ref for _n, _b, ours in rewrites for a in ours for ref in a.references),
+        )
         bind, need_new_line = self._binding_for(
-            scope, (parent, spelling[0].startswith(".")), extra_avoid
+            scope, (parent, spelling[0].startswith(".")), extra_avoid, site
         )
         if need_new_line:
             new_lines.append(_module_import_stmt(spelling, bind))
@@ -606,6 +629,14 @@ class _Fixer(cst.CSTTransformer):
                 "TYPE_CHECKING-gated import; rewriting it without "
                 "`from __future__ import annotations` risks NameError"
             )
+        if self._has_star and isinstance(
+            self.get_metadata(metadata.ScopeProvider, imp, None), metadata.GlobalScope
+        ):
+            # `from x import *` binds whatever `x` exports, which may be the
+            # very name a module-level binding here is given -- before it
+            # or after it, the reads would then see the wrong object. What a
+            # star exports is not proven here, so no module-level binding is.
+            return _STAR_REASON
         # `analyze.Decider` keeps every name on a line with no spelling, so a
         # line that reaches here always has one. Should the two ever disagree,
         # the file is declined rather than written with a guessed name.
@@ -617,6 +648,79 @@ class _Fixer(cst.CSTTransformer):
                 imp, parent, root_hint=self._rec.root_hint, own_init=self._decider.own_init(parent)
             )
         return spelling
+
+    def _name_blocker(
+        self,
+        imp: cst.ImportFrom,
+        bound: str,
+        scope: metadata.Scope,
+        ours: list[metadata.BaseAssignment],
+    ) -> str | None:
+        """Why the local *bound*, which *imp* binds in *scope* as *ours*, cannot be qualified."""
+        if bound in self._del_names:
+            # `del bound` reads as an access, not an assignment, so the
+            # `others` check below cannot see it (see `_nodes.deleted_names`).
+            return (
+                f"local '{bound}' is unbound with `del`; qualifying it would "
+                "delete an attribute of the imported module"
+            )
+        # No BuiltinAssignment filter needed here: libcst only ever puts
+        # BuiltinAssignment objects in a BuiltinScope's own assignments,
+        # never in a GlobalScope's or a LocalScope's (FunctionScope /
+        # ClassScope, now that non-module scopes are fixed too).
+        # GlobalScope.__getitem__ and LocalScope's (via
+        # LocalScope._resolve_scope_for_access) both return the scope's
+        # own assignments directly whenever the name is present there at
+        # all, and `ours` being non-empty means `bound` is already
+        # present in *this* scope's own assignments -- so a builtin can
+        # never show up alongside our import, regardless of whether
+        # `scope` is global, a function, or a class body.
+        others = [a for a in scope[bound] if getattr(a, "node", None) is not imp]
+        if ours and others:
+            # libcst's scopes are not flow-sensitive, so accesses of a
+            # rebound name list both the import and the assignment as
+            # referents. There is no safe subset to rewrite.
+            return f"local '{bound}' is rebound in the same scope"
+        if self._unlinked_read(bound, scope, ours):
+            return _unlinked_reason(bound)
+        return None
+
+    def _unlinked_read(
+        self, name: str, scope: metadata.Scope, ours: list[metadata.BaseAssignment]
+    ) -> bool:
+        """Whether a read of *name* that sees the binding in *scope* is not one of *ours*'.
+
+        Only the reads in ``assignment.references`` are rewritten, and libcst
+        leaves a read out of them when it sits in the binding's own scope
+        textually *before* the binding: its `libcst.metadata.Access` looks for
+        an earlier assignment and, finding none, falls back to the enclosing
+        scope. In a loop that is working code -- ``for i in range(2): if i:
+        out.append(dumps(1)) else: from json import dumps`` -- and the read
+        left behind raises ``NameError`` once the import is gone. So every
+        read of *name* in *scope*, or in a scope nested in it that does not
+        bind *name* itself (`_reads_through`), must be one of the binding's
+        references; otherwise the file is declined. A read the scope analysis
+        ties to some other binding is caught the same way.
+        """
+        linked = {id(ref) for assignment in ours for ref in assignment.references}
+        for each in self._scopes():
+            if not _reads_through(each, scope, name):
+                continue
+            if any(id(access) not in linked for access in each.accesses[name]):
+                return True
+        return False
+
+    def _scopes(self) -> list[metadata.Scope]:
+        """Every scope in the file, once."""
+        if self._all_scopes is None:
+            self._all_scopes = list(
+                {
+                    s
+                    for s in self.metadata[metadata.ScopeProvider].values()
+                    if isinstance(s, metadata.Scope)
+                }
+            )
+        return self._all_scopes
 
     def _local_names(self, scope: metadata.Scope) -> set[str]:
         """Names assigned directly in *scope*, ignoring enclosing scopes.
@@ -685,7 +789,7 @@ class _Fixer(cst.CSTTransformer):
         return names
 
     def _binding_for(
-        self, scope: metadata.Scope, module: tuple[str, bool], extra_avoid: set[str]
+        self, scope: metadata.Scope, module: tuple[str, bool], extra_avoid: set[str], site: _Site
     ) -> tuple[str, bool]:
         """Token to qualify *this line's* references through.
 
@@ -719,17 +823,30 @@ class _Fixer(cst.CSTTransformer):
         when the line is relative, except for a top-level package's ``from .
         import C`` under a declared root, spelled ``import pkg``. Only a
         binding spelled the same way is reused -- see `_build_existing`.
+
+        *site* is the line being rewritten: where it sits, for the blocker
+        `_allocate_token` raises when a configured alias is taken, and the
+        reads it qualifies. A binding is reused only where it is bound when
+        each of those reads runs (`_holds_before`): an import below them, or
+        one under an ``if``, would turn working code into a ``NameError``.
         """
         parent, relative = module
         key = (scope, parent, relative)
         memoized = self._module_binding.get(key)
         if memoized is not None:
-            if memoized not in extra_avoid:
+            if memoized not in extra_avoid and self._holds_before(
+                self._module_binding_at[key], self._owner(scope), site
+            ):
                 return memoized, False
-            return self._allocate_token(scope, parent, extra_avoid), True
+            return self._allocate_token(scope, parent, extra_avoid, site.line), True
 
         existing = self._existing.get(module)
-        if existing is not None:
+        # A wildcard import can rebind a module-level name (`_STAR_REASON`).
+        if (
+            existing is not None
+            and not self._has_star
+            and self._holds_before(self._existing_at[module], self._module_node, site)
+        ):
             # A module-level import is visible from nested scopes unless
             # *this* scope or an enclosing function/class scope assigns
             # that name itself -- a closure variable shadows it just as
@@ -765,11 +882,134 @@ class _Fixer(cst.CSTTransformer):
             )
             if not shadowed:
                 self._module_binding[key] = existing
+                self._module_binding_at[key] = self._existing_at[module]
                 return existing, False
 
-        bind = self._allocate_token(scope, parent, extra_avoid)
+        bind = self._allocate_token(scope, parent, extra_avoid, site.line)
         self._module_binding[key] = bind
+        self._module_binding_at[key] = site.stmt
         return bind, True
+
+    def _parent(self, node: cst.CSTNode) -> cst.CSTNode | None:
+        parent = self.get_metadata(metadata.ParentNodeProvider, node, None)
+        return parent if isinstance(parent, cst.CSTNode) else None
+
+    def _owner(self, scope: metadata.Scope) -> cst.CSTNode:
+        """The node whose body *scope* binds in: a function, a class, or the module."""
+        return (
+            scope.node
+            if isinstance(scope, (metadata.FunctionScope, metadata.ClassScope))
+            else self._module_node
+        )
+
+    def _holds_before(self, stmt: cst.CSTNode, owner: cst.CSTNode, site: _Site) -> bool:
+        """Whether the binding *stmt* makes is in place whenever one of *site*'s reads runs.
+
+        Proven for two shapes that need no flow analysis. Either *stmt* is
+        *site*'s own line, or sits earlier in the same block: then it has run
+        whenever *site*'s import has, and a read of what *site* imports only
+        ever ran after that. Or *stmt* sits directly in the body of *owner* --
+        the module, or the function or class whose scope it binds in -- so
+        nothing (``if``, ``try``, ``with``, a loop, ``match``) decides whether
+        it runs, and it ends textually before every read. A read in a function defined above the
+        import could still run after it, but that is exactly what cannot be
+        shown without following calls, so it counts as before. Anything
+        else is not reused: ``from json import dumps`` / ``x = dumps(1)`` /
+        ``import json`` must not become ``json.dumps(1)`` above ``import
+        json``, and an ``import json`` under ``if sys.version_info < (3,
+        0):`` binds nothing.
+        """
+        line = stmt if isinstance(stmt, cst.SimpleStatementLine) else self._parent(stmt)
+        if line is None:
+            return False
+        if line is site.stmt or self._earlier_in_block(line, site.stmt):
+            return True
+        anchor: cst.CSTNode = line
+        container = self._parent(anchor)
+        # `if not TYPE_CHECKING:` always runs its body (`_type_checking`).
+        guard = self._parent(container) if container is not None else None
+        while (
+            isinstance(guard, cst.If)
+            and guard.body is container
+            and _type_checking.body_always_runs(guard, self._module_node)
+        ):
+            anchor, container = guard, self._parent(guard)
+            guard = self._parent(container) if container is not None else None
+        if isinstance(owner, cst.Module):
+            direct = container is owner
+        else:
+            direct = isinstance(container, cst.IndentedBlock) and self._parent(container) is owner
+        if not direct:
+            return False
+        span = self.get_metadata(metadata.PositionProvider, line, None)
+        if span is None:
+            return False
+        end = span.end
+        for read in site.reads:
+            start = self.get_metadata(metadata.PositionProvider, read.node, None)
+            if start is None or (start.start.line, start.start.column) < (end.line, end.column):
+                return False
+        return True
+
+    def _earlier_in_block(self, first: cst.CSTNode, then: cst.CSTNode) -> bool:
+        """Whether *first* and *then* are statements of one block, *first* above *then*."""
+        block = self._parent(first)
+        if block is None or block is not self._parent(then):
+            return False
+        a = self.get_metadata(metadata.PositionProvider, first, None)
+        b = self.get_metadata(metadata.PositionProvider, then, None)
+        return a is not None and b is not None and a.end.line <= b.start.line
+
+    def _free_names_below(self, scope: metadata.Scope) -> tuple[set[str], bool]:
+        """Names read in *scope*, or a scope nested in it, that no assignment in the file binds.
+
+        A read of ``str`` or ``list`` resolves to the builtin -- or, for a
+        name nothing binds, to nothing -- and a new binding of that name in
+        *scope* would capture it: ``from demo.list import go`` rewritten to
+        ``from demo import list`` turned ``list(go())`` into
+        ``list(list.go())``. `_names_in_scope` sees only assignments, and
+        builtins are deliberately not assignments there (avoiding every
+        builtin would alias needlessly), so the names actually *read* where
+        the binding would be visible are collected here instead. A read in a
+        nested class body counts too, which only ever over-avoids.
+
+        A read inside a string annotation (``def f(x: "list[int]")``) is an
+        access too, but its node is the string, not a `libcst.Name`: its
+        names are its builtin referents' plus every name the string's content
+        could reference (`guards.string_references`) -- which over-avoids,
+        the safe direction, and is what recovers a name nothing binds, whose
+        access has no referent to read it from. The second value is True when
+        such a read's content cannot be read at all; the caller then declines
+        rather than guess what it names.
+        """
+        if self._free_reads is None:
+            scopes = {
+                s
+                for s in self.metadata[metadata.ScopeProvider].values()
+                if isinstance(s, metadata.Scope)
+            }
+            self._free_reads = [
+                (access.scope, name)
+                for each in scopes
+                for access in each.accesses
+                if all(isinstance(r, metadata.BuiltinAssignment) for r in access.referents)
+                for name in _read_names(access)
+            ]
+        found: set[str] = set()
+        opaque = False
+        for where, name in self._free_reads:
+            current: metadata.Scope | None = where
+            while current is not None:
+                if current is scope:
+                    if name is None:
+                        opaque = True
+                    else:
+                        found.add(name)
+                    break
+                if isinstance(current, metadata.GlobalScope):
+                    break
+                current = current.parent
+        return found, opaque
 
     def _submodule_slots(self, parent: str) -> set[str]:
         """Names a module-scope binding of *parent* must not occupy.
@@ -816,7 +1056,9 @@ class _Fixer(cst.CSTTransformer):
         """
         return len(list(scope.globals[name])) > 1
 
-    def _allocate_token(self, scope: metadata.Scope, parent: str, extra_avoid: set[str]) -> str:
+    def _allocate_token(
+        self, scope: metadata.Scope, parent: str, extra_avoid: set[str], line: int
+    ) -> str:
         """Pick a fresh, collision-free token for a new import of *parent* in *scope*.
 
         Records the choice in the live name set(s) `_names_in_scope` reads
@@ -847,21 +1089,64 @@ class _Fixer(cst.CSTTransformer):
         and never rewritten, so no module-scope token is allocated in an
         ``__init__`` any more. It is kept, and documented, so that the rule
         cannot silently lose this protection if that decision ever changes.
+
+        When an alias convention applies to *parent* in this file
+        (`cleanporter.aliases`), the token is the name it asks for -- the
+        configured one, or the leaf for ``as = false`` -- and nothing else.
+        If that name is in the same *taken* set, the file is declined with a
+        blocker at *line*: ``np_2`` would be a ``CP006`` the fixer wrote. With
+        no rule the leaf is suffixed as it always has been.
         """
         token = parent.rsplit(".", 1)[-1]
-        taken = self._names_in_scope(scope) | extra_avoid
+        free, opaque = self._free_names_below(scope)
+        taken = self._names_in_scope(scope) | extra_avoid | free
+        if opaque:
+            self.blockers.append(
+                (
+                    line,
+                    "a string read where the new import would be visible cannot be read",
+                )
+            )
         if isinstance(scope, metadata.GlobalScope):
             taken = taken | self._submodule_slots(parent)
-        bind = token
-        counter = 2
-        while bind in taken:
-            bind = f"{token}_{counter}"
-            counter += 1
+        expectation = self._expectation(parent)
+        if expectation is not None and not expectation.usable:
+            # The token is only a placeholder that parses: the blocker
+            # discards the plan before anything is written.
+            bind = token
+            reason = (
+                f"{expectation.rule.describe()} renders its template "
+                f"{expectation.rule.alias!r} as '{expectation.binding}' for {parent}, "
+                "which no import can bind"
+            )
+            self.blockers.append((line, reason))
+        elif expectation is not None:
+            bind = expectation.binding
+            if bind in taken:
+                reason = (
+                    f"configured alias '{bind}' for {parent} is taken in this scope "
+                    f"({expectation.rule.describe()}); a different name would break the "
+                    "convention"
+                )
+                self.blockers.append((line, reason))
+        else:
+            bind = token
+            counter = 2
+            while bind in taken:
+                bind = f"{token}_{counter}"
+                counter += 1
         if isinstance(scope, metadata.GlobalScope):
             self._global_names.add(bind)
         else:
             self._local_names(scope).add(bind)
         return bind
+
+    def _expectation(self, parent: str) -> aliases.Expectation | None:
+        """What this file's alias conventions say a binding of *parent* is called."""
+        if not self._conventions:
+            return None
+        path = skip.file_candidates(self._rec.path, self._rec.root)[0]
+        return self._conventions.expected(parent, self._rec.qualname, path)
 
     # -- application -------------------------------------------------------
     def leave_SimpleStatementLine(
@@ -888,6 +1173,56 @@ class _Fixer(cst.CSTTransformer):
         # All-or-nothing. libcst hands us the pristine original tree, so
         # returning it discards every edit made to the children.
         return original_node if self.blockers else updated_node
+
+
+#: Why a file with a wildcard import gets no module-level binding.
+_STAR_REASON = (
+    "the file has a wildcard import, which can rebind any module-level name, so a "
+    "module-level binding cannot be shown to hold the module it is rewritten through"
+)
+
+
+def _unlinked_reason(name: str) -> str:
+    return (
+        f"a read of '{name}' is not tied to this import by the scope analysis (it comes "
+        "before the import, or resolves elsewhere), so rewriting would leave it behind"
+    )
+
+
+def _reads_through(inner: metadata.Scope, scope: metadata.Scope, name: str) -> bool:
+    """Whether a read of *name* in *inner* could reach a binding of it in *scope*.
+
+    True when *inner* is *scope*, or nested in it with no scope on the way
+    binding *name* for itself. A class body only hides its names from reads
+    in that body, not from the functions nested in it -- the rule
+    `_Fixer._targets_visible_from` follows too.
+    """
+    current: metadata.Scope | None = inner
+    own = True
+    while current is not None and current is not scope:
+        if isinstance(current, metadata.GlobalScope):
+            return False
+        if (own or not isinstance(current, metadata.ClassScope)) and current.assignments[name]:
+            return False
+        own = False
+        current = current.parent
+    return current is scope
+
+
+def _read_names(access: metadata.Access) -> list[str | None]:
+    """The names *access* reads, for `_Fixer._free_names_below`; ``[None]`` if unreadable."""
+    node = access.node
+    if isinstance(node, cst.Name):
+        return [node.value]
+    names: list[str | None] = [r.name for r in access.referents]
+    content = (
+        node.evaluated_value
+        if isinstance(node, (cst.SimpleString, cst.ConcatenatedString))
+        else None
+    )
+    if not isinstance(content, str):
+        return [None]
+    return [*names, *sorted(guards.string_references(content))]
 
 
 @dataclasses.dataclass
@@ -1108,6 +1443,13 @@ def _coverage(
     rewritten would compare equal before and after while the comment moved
     onto the first ``mystery``. Relative parents resolve the same way on both
     sides, since the file's package does not change.
+
+    Plain ``import`` statements are not counted, though a comment can cover
+    one for its `CP006`. The only plain import a rewrite writes is a module
+    import that follows every alias convention, so a comment carried onto it
+    has no `CP006` to start suppressing -- and counting it would decline a
+    rewrite (``from json import dumps  # ...`` to ``import json  # ...``)
+    that has always gone ahead, leaving a `CP005` behind.
     """
     covered: dict[suppress.Suppression, collections.Counter[tuple[str, str, str | None]]] = {
         s: collections.Counter() for s in rec.suppressions.comments

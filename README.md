@@ -135,6 +135,7 @@ reported. See
 | `CP003` | `SKIPPED` | structurally a violation that cannot be rewritten safely; like `CP001`, it fails the run. A wildcard import, an explicit or load-bearing re-export, a re-export another file names by its dotted path (`monkeypatch.setattr("pkg.mod.name", ...)`, an entry point), an unprovable replacement and a top-level `from . import X` (unless its import root is declared) are reported in every mode; the rest are the fixer explaining a decision, so they appear under `--fix`/`--diff` |
 | `CP004` | `SKIPPED_BY_CONFIG` | matched a [`skip` rule](https://graitools.github.io/cleanporter/configuration/#skip-rules), or an [inline suppression](https://graitools.github.io/cleanporter/configuration/#inline-suppressions) (`# cleanporter: ignore[CP001]`) named its code (the import is analysed, and the finding is replaced) — never rewritten, counted in the summary, printed only under `--show-skipped`, and never part of the exit code |
 | `CP005` | `UNUSED_SUPPRESSION` | an inline suppression that suppressed nothing — the finding it named is gone, or the comment is on the wrong line; like `CP001`, it fails the run. Not itself suppressible |
+| `CP006` | `ALIAS_MISMATCH` | a module bound under a name its [alias convention](https://graitools.github.io/cleanporter/configuration/#alias-rules) does not allow (`import numpy as npy` where the project says `np`); like `CP001`, it fails the run. Report-only, but every binding `--fix` creates follows the convention |
 
 ## Dogfooding
 

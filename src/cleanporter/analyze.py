@@ -35,7 +35,7 @@ from collections.abc import Iterator, Mapping
 import libcst as cst
 from libcst import metadata
 
-from cleanporter import config, firstparty, model
+from cleanporter import aliases, config, firstparty, model
 from cleanporter import resolver as resolver_lib
 from cleanporter import skip as skip_lib
 from cleanporter import suppress as suppress_lib
@@ -93,6 +93,9 @@ class FileRecord:
     _import_starts: Mapping[cst.ImportFrom, tuple[int, int]] | None = dataclasses.field(
         default=None, repr=False, compare=False
     )
+    _plain_import_starts: Mapping[cst.Import, tuple[int, int]] | None = dataclasses.field(
+        default=None, repr=False, compare=False
+    )
     _skipped: skip_lib.Skipped | None = dataclasses.field(default=None, repr=False, compare=False)
     _suppressions: suppress_lib.Suppressions | None = dataclasses.field(
         default=None, repr=False, compare=False
@@ -129,20 +132,35 @@ class FileRecord:
         libcst's either way.
         """
         if self._import_starts is None:
-            nodes = self.facts.import_froms
-            starts = (
-                _import_from_starts(self.source, self.tree, nodes)
-                if self._positions is None and not self.skip_rules
-                else None
-            )
-            if starts is None:
-                positions = self.positions
-                starts = {
-                    node: (positions[node].start.line, positions[node].start.column)
-                    for node in nodes
-                }
-            self._import_starts = starts
+            self._import_starts = self._starts(self.facts.import_froms, ast.ImportFrom, "from")
         return self._import_starts
+
+    @property
+    def plain_import_starts(self) -> Mapping[cst.Import, tuple[int, int]]:
+        """`import_starts` for every plain ``import`` statement. Computed once.
+
+        Only the alias check (`CP006`) needs these, so a run with no alias
+        rule never computes them.
+        """
+        if self._plain_import_starts is None:
+            self._plain_import_starts = self._starts(self.facts.plain_imports, ast.Import, "import")
+        return self._plain_import_starts
+
+    def _starts[N: (cst.Import, cst.ImportFrom)](
+        self, nodes: tuple[N, ...], kind: type[ast.stmt], keyword: str
+    ) -> Mapping[N, tuple[int, int]]:
+        """Where each of *nodes* starts: see `import_starts`."""
+        starts = (
+            _statement_starts(self.source, self.tree, nodes, kind, keyword)
+            if self._positions is None and not self.skip_rules
+            else None
+        )
+        if starts is None:
+            positions = self.positions
+            starts = {
+                node: (positions[node].start.line, positions[node].start.column) for node in nodes
+            }
+        return starts
 
     @property
     def skipped(self) -> skip_lib.Skipped:
@@ -194,7 +212,18 @@ class FileRecord:
 def _import_from_starts(
     source: str, tree: cst.Module, nodes: tuple[cst.ImportFrom, ...]
 ) -> dict[cst.ImportFrom, tuple[int, int]] | None:
+    """Where each of *nodes*, every ``ImportFrom`` of *tree*, starts: `_statement_starts`."""
+    return _statement_starts(source, tree, nodes, ast.ImportFrom, "from")
+
+
+def _statement_starts[N: (cst.Import, cst.ImportFrom)](
+    source: str, tree: cst.Module, nodes: tuple[N, ...], kind: type[ast.stmt], keyword: str
+) -> dict[N, tuple[int, int]] | None:
     r"""Where each of *nodes* starts, read off an ``ast`` parse; ``None`` if unsure.
+
+    Written for ``ImportFrom`` (*kind* `ast.ImportFrom`, *keyword* ``from``),
+    and equally true of a plain ``Import`` (`ast.Import`, ``import``): the
+    reasoning below is about the statement's first keyword, whichever it is.
 
     *nodes* are every ``ImportFrom`` of *tree*, the libcst tree parsed from
     *source*, in source order. libcst's ``PositionProvider`` puts such a
@@ -237,21 +266,19 @@ def _import_from_starts(
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return None
     found = sorted(
-        (node.lineno, node.col_offset)
-        for node in ast.walk(parsed)
-        if isinstance(node, ast.ImportFrom)
+        (node.lineno, node.col_offset) for node in ast.walk(parsed) if isinstance(node, kind)
     )
     if len(found) != len(nodes):
         return None
     lines = source.split("\n")
-    starts: dict[cst.ImportFrom, tuple[int, int]] = {}
+    starts: dict[N, tuple[int, int]] = {}
     for node, (lineno, offset) in zip(nodes, found, strict=True):
         text = lines[lineno - 1]
         try:
             column = len(text.encode("utf-8")[:offset].decode("utf-8"))
         except UnicodeError:
             return None
-        if not text.startswith("from", column):
+        if not text.startswith(keyword, column):
             return None
         starts[node] = (lineno, column)
     return starts
@@ -314,11 +341,19 @@ class FileFacts:
     #: attributes all the same. A package ``__init__``'s module-level imports
     #: are its public surface (`Decider.public_surface`).
     nested_import_froms: frozenset[cst.ImportFrom] = frozenset()
+    #: Every plain ``import`` statement inside a ``def`` or a ``class`` body:
+    #: `nested_import_froms` for the other kind of statement.
+    nested_plain_imports: frozenset[cst.Import] = frozenset()
 
     @property
     def import_froms(self) -> tuple[cst.ImportFrom, ...]:
         """Every ``from ... import`` statement, in source order."""
         return tuple(node for node in self.imports if isinstance(node, cst.ImportFrom))
+
+    @property
+    def plain_imports(self) -> tuple[cst.Import, ...]:
+        """Every plain ``import`` statement, in source order."""
+        return tuple(node for node in self.imports if isinstance(node, cst.Import))
 
     def absolute_import_heads(self) -> set[str]:
         """See the module-level `absolute_import_heads`."""
@@ -426,6 +461,8 @@ class _FactCollector(cst.CSTVisitor):
         self._string_parts: set[int] = set()
         #: Every ``from`` import inside a ``def`` or ``class`` body.
         self.nested_import_froms: set[cst.ImportFrom] = set()
+        #: Every plain ``import`` inside a ``def`` or ``class`` body.
+        self.nested_plain_imports: set[cst.Import] = set()
         #: How many ``def``/``class`` bodies the walk is inside.
         self._depth = 0
 
@@ -481,6 +518,8 @@ class _FactCollector(cst.CSTVisitor):
 
     def visit_Import(self, node: cst.Import) -> None:
         self.imports.append(node)
+        if self._depth:
+            self.nested_plain_imports.add(node)
 
     def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
         self.imports.append(node)
@@ -506,6 +545,7 @@ def collect_facts(tree: cst.Module) -> FileFacts:
         frozenset(collector.attribute_reads),
         tuple(collector.path_strings),
         frozenset(collector.nested_import_froms),
+        frozenset(collector.nested_plain_imports),
     )
 
 
@@ -882,7 +922,7 @@ def analyze_record(
     for unit in rec.units:
         line, column = starts[unit.node]
         decision = decider.decide(unit, line, unread)
-        _mark_used(rec, unit, decision, used)
+        _mark_used(rec, unit.node, unit.alias, decision, used)
         if decision.unread:
             on_unread.update(rec.suppressions.covering(unit.node, unit.alias))
         if decision.status is None:
@@ -899,13 +939,15 @@ def analyze_record(
                 _module_import(rec, unit) if decision.rewrite else "",
             )
         )
+    findings.extend(_alias_findings(rec, resolver, config, used))
     findings.extend(_unused_suppressions(rec, used, on_unread))
     return findings
 
 
 def _mark_used(
     rec: FileRecord,
-    unit: ImportUnit,
+    node: cst.Import | cst.ImportFrom,
+    alias: cst.ImportAlias | None,
     decision: Decision,
     used: set[tuple[suppress_lib.Suppression, str]],
 ) -> None:
@@ -919,8 +961,169 @@ def _mark_used(
     if decision.hit is not None:
         used.update((s, decision.hit.code) for s in decision.hit.by)
     elif decision.status is model.Status.SKIPPED_BY_CONFIG:
-        for suppression in rec.suppressions.covering(unit.node, unit.alias):
+        for suppression in rec.suppressions.covering(node, alias):
             used.update((suppression, code) for code in suppression.codes)
+
+
+@dataclasses.dataclass(frozen=True)
+class ModuleBinding:
+    """One name an import statement binds to a module: what the alias check weighs."""
+
+    node: cst.Import | cst.ImportFrom
+    alias: cst.ImportAlias
+    #: The absolute dotted module bound.
+    module: str
+    #: The name it is bound under -- for a `chain`, the dotted chain itself.
+    bound: str
+    #: ``import a.b.c`` with no ``as``: nothing is bound to ``a.b.c`` but the
+    #: attribute chain ``a.b.c`` reached through ``a`` (bound separately).
+    chain: bool = False
+
+
+def bound_modules(
+    rec: FileRecord, resolver: resolver_lib.Resolver, config: config.Config
+) -> Iterator[ModuleBinding]:
+    """Every binding of a *proven* module in *rec* that an alias convention can judge.
+
+    ``import M as N`` binds ``N`` to ``M``, and ``import M`` binds ``M``'s
+    top-level package under its own name -- and, when ``M`` is dotted, the
+    `ModuleBinding.chain` ``M`` through it. The syntax proves each of those
+    names a module. ``from P import L [as N]`` binds a module only when the
+    resolver proves ``P.L`` is one (`resolver.Resolver.is_module`); a name
+    it calls an object or cannot classify is `CP001`'s or `CP002`'s
+    business, never a guessed `CP006`. A relative import is judged by the
+    absolute name it resolves to.
+
+    Left out, as `Decider` leaves them out: a package ``__init__``'s
+    module-level imports, its public surface (`Decider.public_surface`); a
+    module outside the configured ``scope`` (`in_scope`), which is not
+    classified at all; ``__future__`` and wildcard imports, which bind no
+    module.
+    """
+    public = rec.path.name == "__init__.py"
+    for node in rec.facts.imports:
+        if isinstance(node, cst.Import):
+            if not public or node in rec.facts.nested_plain_imports:
+                yield from _plain_bindings(node, resolver, config)
+        elif not public or node in rec.facts.nested_import_froms:
+            yield from _from_bindings(node, rec.base_pkg, resolver, config)
+
+
+def _plain_bindings(
+    node: cst.Import, resolver: resolver_lib.Resolver, config: config.Config
+) -> Iterator[ModuleBinding]:
+    for alias in node.names:
+        dotted = _imports.dotted(alias.name)
+        if not in_scope(dotted, resolver, config):
+            continue
+        as_node = alias.asname.name if alias.asname is not None else None
+        if isinstance(as_node, cst.Name):
+            yield ModuleBinding(node, alias, dotted, as_node.value)
+            continue
+        head = dotted.partition(".")[0]
+        yield ModuleBinding(node, alias, head, head)
+        if head != dotted:
+            yield ModuleBinding(node, alias, dotted, dotted, chain=True)
+
+
+def _from_bindings(
+    node: cst.ImportFrom, base_pkg: str, resolver: resolver_lib.Resolver, config: config.Config
+) -> Iterator[ModuleBinding]:
+    if _imports.is_star(node):
+        return
+    parent = _imports.resolve_parent(node, base_pkg)
+    if parent is None or parent == "__future__" or not in_scope(parent, resolver, config):
+        return
+    for name, asname, alias in _imports.imported_names(node):
+        if resolver.is_module(parent, name) is True:
+            yield ModuleBinding(node, alias, f"{parent}.{name}", asname or name)
+
+
+def _alias_findings(
+    rec: FileRecord,
+    resolver: resolver_lib.Resolver,
+    config: config.Config,
+    used: set[tuple[suppress_lib.Suppression, str]],
+) -> list[model.Finding]:
+    """A `CP006` per binding that breaks its alias convention (`cleanporter.aliases`).
+
+    Replaced by a `CP004` exactly as `Decider` replaces a `CP001`: when a
+    skip rule covers the line or pins the bound name, or an inline comment
+    names ``CP006``. Nothing is walked for a run with no alias rule.
+    """
+    conventions = config.conventions
+    if not conventions:
+        return []
+    path = skip_lib.file_candidates(rec.path, rec.root)[0]
+    findings: list[model.Finding] = []
+    for binding in bound_modules(rec, resolver, config):
+        expectation = conventions.expected(binding.module, rec.qualname, path)
+        detail = _alias_mismatch(binding, expectation) if expectation is not None else None
+        if detail is None:
+            continue
+        if isinstance(binding.node, cst.Import):
+            line, column = rec.plain_import_starts[binding.node]
+        else:
+            line, column = rec.import_starts[binding.node]
+        decision = _alias_decision(rec, binding, line, detail)
+        _mark_used(rec, binding.node, binding.alias, decision, used)
+        if decision.status is not None:
+            findings.append(
+                model.Finding(
+                    rec.path,
+                    line,
+                    column,
+                    binding.module,
+                    binding.bound,
+                    decision.status,
+                    decision.detail,
+                )
+            )
+    return findings
+
+
+def _alias_mismatch(binding: ModuleBinding, expectation: aliases.Expectation) -> str | None:
+    """Why *binding* breaks *expectation*, or ``None`` when it keeps it."""
+    if not expectation.usable:
+        template = expectation.rule.alias
+        return (
+            f"{expectation.rule.describe()} renders its template {template!r} as "
+            f"'{expectation.binding}' for this module, which no import can bind; "
+            "no binding can satisfy it, so fix the rule"
+        )
+    wanted = (
+        f"its own name '{expectation.binding}'"
+        if expectation.own_name
+        else f"'{expectation.binding}'"
+    )
+    by = f"expected {wanted} by {expectation.rule.describe()}"
+    if binding.chain:
+        # ``import a.b.c`` is the own-name spelling of a submodule, and no
+        # other: an identifier convention asks for an ``as``.
+        if expectation.own_name:
+            return None
+        head = binding.module.partition(".")[0]
+        return f"`import {binding.module}` binds it only as a chain through '{head}'; {by}"
+    if binding.bound == expectation.binding:
+        return None
+    return by
+
+
+def _alias_decision(rec: FileRecord, binding: ModuleBinding, line: int, detail: str) -> Decision:
+    """The `CP006` for *binding*, or the `CP004` a skip rule or a comment makes of it."""
+    rule = rec.skipped.covers(line) or rec.skipped.pin(binding.bound.partition(".")[0])
+    if rule is not None:
+        return Decision(model.Status.SKIPPED_BY_CONFIG, rule.describe())
+    code = suppress_lib.CODES[model.Status.ALIAS_MISMATCH]
+    hit = rec.suppressions.match(binding.node, binding.alias, code)
+    if hit is not None:
+        where = ", ".join(str(s.line) for s in hit.by)
+        return Decision(
+            model.Status.SKIPPED_BY_CONFIG,
+            f"{code} suppressed by the inline comment on line {where}",
+            hit=hit,
+        )
+    return Decision(model.Status.ALIAS_MISMATCH, detail)
 
 
 def _unused_suppressions(
