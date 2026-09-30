@@ -608,14 +608,22 @@ as     = "gtx"
 Two things follow from a rule:
 
 1. **Checking.** A binding of the module under any other name is reported as
-   `CP006`, and fails the run like a `CP001`. It is report-only: `--fix` does
-   not rename a binding you wrote.
-2. **Fixing.** Every binding `--fix` *creates* is named by the rule:
-   `from numpy import array` becomes `import numpy as np`, and `from
-   gt4py.next.ffront import field_operator` becomes `from gt4py.next import
-   ffront as gtx_ffront`. A relative import stays relative (`from . import
-   helpers as h`). An existing binding of the module is reused whatever it is
-   called — it is already reported, if it breaks the rule.
+   `CP006`, and fails the run like a `CP001`.
+2. **Fixing.** `--fix` renames a `CP006` binding to the name the rule asks
+   for, in its import statement and at every reference: `import numpy as npy`
+   becomes `import numpy as np`, `import numpy` becomes `import numpy as np`,
+   and `from gt4py.next import ffront as ff` becomes `from gt4py.next import
+   ffront as gtx_ffront` (or `from P import L` when the rule asks for the own
+   name). Only the one alias changes; the rest of the statement, its comments
+   and a relative spelling stay as written. A rename that cannot be proven
+   safe declines the whole file with a `CP003` — see
+   [Renaming a binding](safety.md#renaming-a-binding-cp006) for the guards.
+   Every binding `--fix` *creates* is named by the rule too: `from numpy
+   import array` becomes `import numpy as np`, and `from gt4py.next.ffront
+   import field_operator` becomes `from gt4py.next import ffront as
+   gtx_ffront`. A relative import stays relative (`from . import helpers as
+   h`). An existing module-level binding of the module is reused, under the
+   name it is renamed to.
 
 ### Keys
 

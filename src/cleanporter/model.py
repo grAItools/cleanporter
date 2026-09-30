@@ -49,9 +49,9 @@ class Status(enum.Enum):
     UNUSED_SUPPRESSION = "unused-suppression"
     #: A module bound under a name its alias convention does not allow
     #: (``[[tool.cleanporter.alias]]``; see `cleanporter.aliases`). Counts
-    #: toward the failure exit code. Report-only: ``--fix`` never renames an
-    #: existing binding, though every binding it *creates* follows the
-    #: convention.
+    #: toward the failure exit code. ``--fix`` renames the binding to its
+    #: convention when every guard passes (`rewrite._Fixer._plan_rename`), and
+    #: every binding it *creates* follows the convention.
     ALIAS_MISMATCH = "alias-mismatch"
 
 

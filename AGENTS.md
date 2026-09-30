@@ -33,7 +33,9 @@ Findings: `CP001` violation, `CP002` unresolved, `CP003` skipped-on-purpose,
 `# cleanporter: ignore[CODE]` comment (`suppress.py`), `CP005` an inline
 suppression that suppressed nothing, `CP006` a module bound under a name its
 `[[tool.cleanporter.alias]]` convention (or ruff's import-conventions table)
-forbids (`aliases.py`). Exit codes: `0` clean, `1` violations, `2` operational
+forbids (`aliases.py`), which `--fix` fixes by renaming the binding in its
+import and at every reference -- under the same all-or-nothing contract, with
+its own guards (`rewrite._Fixer._plan_rename`). Exit codes: `0` clean, `1` violations, `2` operational
 error. `RunResult.exit_code` (which `cli.run` returns) folds `CP003`, `CP005`
 and `CP006` into the failure count -- a declined violation, a stale
 suppression and a broken convention, not notes -- while `CP002` counts only under
@@ -64,6 +66,7 @@ uv run prek run --all-files               # every blocking hook: the above six
 uv run --group docs zensical build        # docs build (`serve` for a live preview)
 uv run corpus/run.py                      # rewrite real packages, run them; --skip-install
                                           #   reuses an installed corpus (~30-45 min)
+uv run corpus/run.py --alias-rules        # the same, with conventions that force CP006 renames
 uv run corpus/run.py --update             # repin corpus/packages.txt to the latest, then stop
 uv run corpus/gt4py_check.py PATH         # rewrite a gt4py checkout, re-run its tests
 ```

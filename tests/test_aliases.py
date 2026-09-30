@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import pathlib
 
+import libcst as cst
 import pytest
+from libcst import metadata
 
-from cleanporter import aliases, cli, engine, model
+from cleanporter import aliases, cli, engine, model, rewrite
 from cleanporter import config as config_lib
 
 HELPERS = "THING = 42\n\n\ndef go():\n    return 1\n\n\nclass Widget:\n    pass\n"
@@ -623,11 +625,11 @@ def test_a_function_local_alias_is_taken_in_its_scope(project: pathlib.Path) -> 
     assert "CP003" in codes
 
 
-def test_an_existing_nonconforming_binding_is_reused(project: pathlib.Path) -> None:
+def test_an_existing_nonconforming_binding_is_renamed_and_reused(project: pathlib.Path) -> None:
     _configure(project, JSON_JS)
     text, codes = _fix(project, "import json as j\nfrom json import dumps\n\ndumps(j)\n")
-    assert text == "import json as j\n\nj.dumps(j)\n"
-    assert codes == ["CP006"], "the existing binding is reported, not renamed"
+    assert text == "import json as js\n\njs.dumps(js)\n"
+    assert codes == []
 
 
 def test_rules_for_other_modules_leave_the_output_unchanged(project: pathlib.Path) -> None:
@@ -826,3 +828,571 @@ def test_with_a_rule_a_builtin_in_a_string_annotation_declines(project: pathlib.
     text, codes = _fix(project, source)
     assert text == source
     assert "CP003" in codes
+
+
+# -- renaming a non-conforming binding (--fix on a CP006) ---------------------------
+
+SUB_MOD = '[[tool.cleanporter.alias]]\nmodule = "demo.sub.mod"\nas = "sm"\n'
+OWN_JSON = '[[tool.cleanporter.alias]]\nmodule = "json"\nas = false\n'
+OWN_MOD = '[[tool.cleanporter.alias]]\nmodule = "demo.sub.mod"\nas = false\n'
+
+
+def _fixed_clean(project: pathlib.Path, source: str, name: str = "consumer.py") -> str:
+    """*source* fixed; asserts the fix left no finding and a re-check agrees."""
+    text, codes = _fix(project, source, name)
+    assert codes == [], text
+    assert _run(project).findings == ()
+    return text
+
+
+@pytest.mark.parametrize(
+    ("rules", "source", "expected"),
+    [
+        (JSON_JS, "import json as j\n\nj.dumps(1)\n", "import json as js\n\njs.dumps(1)\n"),
+        (OWN_JSON, "import json as j\n\nj.dumps(1)\n", "import json\n\njson.dumps(1)\n"),
+        (JSON_JS, "import json\n\njson.dumps(1)\n", "import json as js\n\njs.dumps(1)\n"),
+        (
+            SUB_MOD,
+            "from demo.sub import mod as m\n\nm.go()\n",
+            "from demo.sub import mod as sm\n\nsm.go()\n",
+        ),
+        (
+            SUB_MOD,
+            "from demo.sub import mod\n\nmod.go()\n",
+            "from demo.sub import mod as sm\n\nsm.go()\n",
+        ),
+        (
+            OWN_MOD,
+            "from demo.sub import mod as m\n\nm.go()\n",
+            "from demo.sub import mod\n\nmod.go()\n",
+        ),
+        (
+            SUB_MOD,
+            "from .sub import mod as m\n\nm.go()\n",
+            "from .sub import mod as sm\n\nsm.go()\n",
+        ),
+        (
+            '[[tool.cleanporter.alias]]\nmodule = "os.path"\nas = "osp"\n',
+            "import os.path as p\n\np.join('a')\n",
+            "import os.path as osp\n\nosp.join('a')\n",
+        ),
+        (
+            '[[tool.cleanporter.alias]]\nmodule = "os.path"\nas = false\n',
+            "import os.path as p\n\np.join('a')\n",
+            "import os.path as path\n\npath.join('a')\n",
+        ),
+    ],
+    ids=[
+        "import_as",
+        "import_as_to_own_name",
+        "import",
+        "from_import_as",
+        "from_import",
+        "from_import_as_to_own_name",
+        "relative",
+        "dotted_import_as",
+        "dotted_import_as_to_own_leaf",
+    ],
+)
+def test_each_statement_form_is_renamed(
+    project: pathlib.Path, rules: str, source: str, expected: str
+) -> None:
+    _configure(project, rules)
+    assert _fixed_clean(project, source) == expected
+
+
+def _declined(project: pathlib.Path, source: str, name: str = "consumer.py") -> list[str]:
+    """*source* under ``--fix``: asserts it is byte-identical; the CP003 reasons."""
+    target = _write(project, source, name)
+    before = target.read_bytes()
+    result = _run(project, engine.Mode.FIX)
+    assert target.read_bytes() == before, target.read_text(encoding="utf-8")
+    return [f.detail for f in result.findings if f.code == "CP003"]
+
+
+def test_a_dotted_import_without_as_is_declined(project: pathlib.Path) -> None:
+    _configure(project, '[[tool.cleanporter.alias]]\nmodule = "os"\nas = "osm"\n')
+    (reason,) = _declined(project, "import os.path\nfrom json import dumps\n\ndumps(os.sep)\n")
+    assert "`import os.path` binds 'os', which every other 'os.*' use" in reason
+
+
+def test_only_the_one_alias_of_a_multi_name_statement_changes(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    source = "import os, json as j, sys  # keep me\n\nj.dumps(os.sep, sys.argv)\n"
+    assert _fixed_clean(project, source) == (
+        "import os, json as js, sys  # keep me\n\njs.dumps(os.sep, sys.argv)\n"
+    )
+
+
+def test_a_parenthesised_from_import_keeps_its_comments(project: pathlib.Path) -> None:
+    _configure(project, '[[tool.cleanporter.alias]]\nmodule = "demo.helpers"\nas = "hp"\n')
+    source = (
+        "from demo import (  # the modules\n"
+        "    sub,  # one\n"
+        "    helpers as h,  # two\n"
+        ")\n\nsub, h.go()\n"
+    )
+    assert _fixed_clean(project, source) == source.replace("helpers as h", "helpers as hp").replace(
+        "h.go", "hp.go"
+    )
+
+
+def test_dropping_an_as_across_a_line_break_is_declined(project: pathlib.Path) -> None:
+    _configure(project, OWN_MOD)
+    source = "from demo.sub import (\n    mod\n    as m,\n)\n\nm.go()\n"
+    (reason,) = _declined(project, source)
+    assert "dropping `as m`" in reason
+
+
+def test_references_in_every_nested_scope_are_renamed(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    source = (
+        "import json as j\n\n\n"
+        "def outer():\n"
+        "    def inner():\n"
+        "        return j.dumps(1)\n"
+        "    return inner, lambda: j\n\n\n"
+        "class C:\n"
+        "    x = j.dumps(2)\n\n"
+        "    def m(self):\n"
+        "        return [j.loads(s) for s in ()], {k: j for k in ()}\n\n\n"
+        "y = f'{j.dumps(3)}'\n"
+    )
+    assert _fixed_clean(project, source) == source.replace("j.", "js.").replace(
+        "import json as j\n", "import json as js\n"
+    ).replace(": j\n", ": js\n").replace(": j for", ": js for")
+
+
+def test_a_function_local_binding_and_its_closure_are_renamed(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    source = (
+        "def f():\n"
+        "    import json as j\n\n"
+        "    def g():\n"
+        "        return j.dumps(1)\n\n"
+        "    return g\n"
+    )
+    assert _fixed_clean(project, source) == source.replace(" j\n", " js\n").replace(" j.", " js.")
+
+
+def test_an_unread_function_local_binding_is_renamed(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    source = "def f():\n    import json as j\n"
+    assert _fixed_clean(project, source) == "def f():\n    import json as js\n"
+
+
+def test_string_annotations_are_renamed_under_future_annotations(
+    project: pathlib.Path,
+) -> None:
+    _configure(project, JSON_JS)
+    source = (
+        "from __future__ import annotations\n\nimport json as j\n\n\n"
+        'def f(x: "j.JSONDecoder", y: "list[j.JSONEncoder]") -> j.JSONEncoder:\n'
+        "    return j.JSONEncoder()\n"
+    )
+    assert _fixed_clean(project, source) == (
+        "from __future__ import annotations\n\nimport json as js\n\n\n"
+        'def f(x: "js.JSONDecoder", y: "list[js.JSONEncoder]") -> js.JSONEncoder:\n'
+        "    return js.JSONEncoder()\n"
+    )
+
+
+def test_a_string_annotation_without_future_annotations_is_declined(
+    project: pathlib.Path,
+) -> None:
+    _configure(project, JSON_JS)
+    source = 'import json as j\n\n\ndef f(x: "j.JSONDecoder"):\n    return j.dumps(x)\n'
+    (reason,) = _declined(project, source)
+    assert reason == "name 'j' appears in a string literal"
+
+
+def test_a_string_annotation_seeing_a_different_binding_is_left_alone(
+    project: pathlib.Path,
+) -> None:
+    # The annotation in `g`'s body reads g's own `j`, not the import: renaming
+    # it would point it at the wrong binding. Left alone, the guard declines.
+    _configure(project, JSON_JS)
+    source = (
+        "from __future__ import annotations\n\nimport json as j\n\n\n"
+        'def g(j: int):\n    x: "j" = j\n    return x\n\n\ny: "j.JSONDecoder" = j.dumps(1)\n'
+    )
+    (reason,) = _declined(project, source)
+    assert reason == "name 'j' appears in a string literal"
+
+
+TC_SOURCE = (
+    "from typing import TYPE_CHECKING\n\n"
+    "if TYPE_CHECKING:\n    import json as j\n\n\n"
+    "def f(x: j.JSONDecoder) -> None:\n    return None\n"
+)
+
+
+def test_a_type_checking_binding_is_renamed_under_future_annotations(
+    project: pathlib.Path,
+) -> None:
+    _configure(project, JSON_JS)
+    source = "from __future__ import annotations\n\n" + TC_SOURCE
+    assert _fixed_clean(project, source) == source.replace(" j\n", " js\n").replace(" j.", " js.")
+
+
+def test_a_type_checking_binding_without_future_annotations_is_declined(
+    project: pathlib.Path,
+) -> None:
+    _configure(project, JSON_JS)
+    (reason,) = _declined(project, TC_SOURCE)
+    assert reason.startswith("TYPE_CHECKING-gated import")
+
+
+def test_a_suppressed_cp006_is_kept_and_other_renames_go_ahead(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS + SUB_MOD)
+    source = (
+        "import json as j  # cleanporter: ignore[CP006]\n"
+        "from demo.sub import mod as m\n\nj.dumps(m.go())\n"
+    )
+    text, codes = _fix(project, source)
+    assert text == (
+        "import json as j  # cleanporter: ignore[CP006]\n"
+        "from demo.sub import mod as sm\n\nj.dumps(sm.go())\n"
+    )
+    assert codes == ["CP004"]
+
+
+def test_a_suppression_on_the_renamed_statement_keeps_its_coverage(
+    project: pathlib.Path,
+) -> None:
+    _configure(project, SUB_MOD)
+    (project / "src" / "demo" / "sub" / "__init__.py").write_text(
+        "THING = 1\n", encoding="utf-8", newline="\n"
+    )
+    source = "from demo.sub import mod as m, THING  # cleanporter: ignore[CP001]\n\nm.go(), THING\n"
+    text, codes = _fix(project, source)
+    assert text == (
+        "from demo.sub import mod as sm, THING  # cleanporter: ignore[CP001]\n\nsm.go(), THING\n"
+    )
+    assert codes == ["CP004"]
+
+
+def test_a_skip_rule_pinning_the_name_leaves_it_and_other_renames_go_ahead(
+    project: pathlib.Path,
+) -> None:
+    _configure(project, JSON_JS + SUB_MOD + '\n[[tool.cleanporter.skip]]\nfunction = "keep"\n')
+    source = (
+        "import json as j\nfrom demo.sub import mod as m\n\n\n"
+        "def keep():\n    return j.dumps(1)\n\n\nm.go()\n"
+    )
+    text, codes = _fix(project, source)
+    assert text == source.replace("mod as m", "mod as sm").replace("m.go", "sm.go")
+    assert codes == ["CP004"]
+
+
+# The interaction with the from-import fixer.
+
+
+def test_a_renamed_binding_is_reused_by_a_rewritten_from_import(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    source = "import json as j\nfrom json import dumps, loads\n\nj.JSONDecoder, dumps(loads('1'))\n"
+    assert _fixed_clean(project, source) == (
+        "import json as js\n\njs.JSONDecoder, js.dumps(js.loads('1'))\n"
+    )
+
+
+def test_a_rewritten_from_import_of_a_submodule_beside_a_rename(project: pathlib.Path) -> None:
+    _configure(project, '[[tool.cleanporter.alias]]\nmodule = "os"\nas = "osm"\n')
+    source = "import os as o\nfrom os.path import join\n\njoin(o.sep)\n"
+    assert _fixed_clean(project, source) == (
+        "import os as osm\nfrom os import path\n\npath.join(osm.sep)\n"
+    )
+
+
+def test_a_rename_and_a_rewrite_on_one_line(project: pathlib.Path) -> None:
+    _configure(project, SUB_MOD)
+    (project / "src" / "demo" / "sub" / "__init__.py").write_text(
+        "THING = 1\n", encoding="utf-8", newline="\n"
+    )
+    source = "from demo.sub import mod as m, THING\n\nm.go(), THING\n"
+    assert _fixed_clean(project, source) == (
+        "from demo import sub\nfrom demo.sub import mod as sm\n\nsm.go(), sub.THING\n"
+    )
+
+
+def test_a_new_binding_does_not_take_a_name_a_rename_claimed(project: pathlib.Path) -> None:
+    # The rename claims `helpers`; the rewritten from-import's leaf would be
+    # `helpers` too, and has to be suffixed rather than collide.
+    _configure(project, '[[tool.cleanporter.alias]]\nmodule = "json"\nas = "helpers"\n')
+    source = "import json as j\nfrom demo.helpers import go\n\nj.dumps(go())\n"
+    assert _fixed_clean(project, source) == (
+        "import json as helpers\nfrom demo import helpers as helpers_2\n\n"
+        "helpers.dumps(helpers_2.go())\n"
+    )
+
+
+def test_a_function_local_rename_beside_a_rewrite_in_its_scope_declines(
+    project: pathlib.Path,
+) -> None:
+    # Only a module-level binding is reused by a rewritten from-import. In a
+    # function the rewrite would bind a new `js`, the name the rename claims.
+    _configure(project, JSON_JS)
+    source = "def f():\n    import json as j\n    from json import dumps\n    return j, dumps\n"
+    (reason,) = _declined(project, source)
+    assert "configured alias 'js' for json is taken" in reason
+
+
+def test_two_renames_to_one_name_decline(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    source = "import json as a\n\n\ndef f():\n    import json as b\n    return a, b\n"
+    (reason,) = _declined(project, source)
+    assert "configured alias 'js' for json is taken" in reason
+
+
+# Each guard, with the counterexample that declines the whole file.
+
+GUARD_CASES = {
+    "taken_same_scope": ("import json as j\n\njs = 1\nj.dumps(js)\n", "'j' cannot be renamed"),
+    "taken_module_for_function": (
+        "js = 1\n\n\ndef f():\n    import json as j\n    return j, js\n",
+        "'j' cannot be renamed",
+    ),
+    "taken_enclosing_function": (
+        (
+            "def f():\n    js = 1\n\n    def g():\n        import json as j\n        return j\n\n"
+            "    return g, js\n"
+        ),
+        "'j' cannot be renamed",
+    ),
+    "taken_below": (
+        "import json as j\n\n\ndef f():\n    js = 2\n    return j.dumps(js)\n",
+        "'j' cannot be renamed",
+    ),
+    "free_read_below": (
+        "import json as j\n\n\ndef f():\n    return js, j\n",
+        "'j' cannot be renamed",
+    ),
+    "rebound": ("import json as j\n\nj = j.dumps(1)\n", "rebound in the same scope"),
+    "augmented": ("import json as j\n\nj += 1\n", "rebound in the same scope"),
+    "loop_target": ("import json as j\n\nfor j in ():\n    pass\nj\n", "rebound in the same scope"),
+    "with_target": (
+        "import json as j\n\nwith open(j) as j:\n    pass\n",
+        "rebound in the same scope",
+    ),
+    "except_target": (
+        "import json as j\n\ntry:\n    pass\nexcept ValueError as j:\n    pass\nj\n",
+        "rebound in the same scope",
+    ),
+    "walrus": ("import json as j\n\nif (j := 1):\n    pass\n", "rebound in the same scope"),
+    "del": ("import json as j\n\nj.dumps(1)\ndel j\n", "unbound with `del`"),
+    "global": (
+        "import json as j\n\n\ndef f():\n    global j\n    return j\n\n\nj.dumps(1)\n",
+        "declared global",
+    ),
+    "nonlocal": (
+        (
+            "def f():\n    import json as j\n\n"
+            "    def g():\n        nonlocal j\n        return j\n\n    return g\n"
+        ),
+        "declared nonlocal",
+    ),
+    "dunder_all": ('import json as j\n\n__all__ = ["j"]\nj.dumps(1)\n', "string literal"),
+    "getattr_string": (
+        'import json as j\nimport sys\n\nj.dumps(getattr(sys.modules[__name__], "j"))\n',
+        "string literal",
+    ),
+    "doctest": (
+        'import json as j\n\n\ndef f():\n    """>>> j.loads(s)"""\n    return j\n',
+        "string literal",
+    ),
+    "unread_module_level": ("import json as j\n", "never read in this file"),
+    "class_body": ("class C:\n    import json as j\n\n    x = j.dumps(1)\n", "class attribute"),
+    "match_capture": (
+        "import json as j\n\nmatch 1:\n    case j:\n        pass\n",
+        "match capture pattern",
+    ),
+}
+
+
+@pytest.mark.parametrize(("source", "reason"), GUARD_CASES.values(), ids=list(GUARD_CASES.keys()))
+def test_a_guard_hit_declines_the_whole_file(
+    project: pathlib.Path, source: str, reason: str
+) -> None:
+    _configure(project, JSON_JS)
+    # A from-import the file would otherwise have rewritten proves the decline
+    # is whole-file.
+    reasons = _declined(project, "from demo.helpers import go\n" + source + "go()\n")
+    assert any(reason in r for r in reasons), reasons
+
+
+def test_a_binding_another_file_imports_is_declined(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    _write(project, "from demo.consumer import j\n\nj.dumps(1)\n", "other.py")
+    reasons = _declined(project, "import json as j\n\nj.dumps(1)\n")
+    assert any("another file imports 'j' from 'demo.consumer'" in r for r in reasons), reasons
+
+
+def test_a_binding_named_by_a_dotted_string_elsewhere_is_declined(
+    project: pathlib.Path,
+) -> None:
+    _configure(project, JSON_JS)
+    _write(project, 'TARGET = "demo.consumer.j"\n', "other.py")
+    reasons = _declined(project, "import json as j\n\nj.dumps(1)\n")
+    assert any("is named by the string 'demo.consumer.j'" in r for r in reasons), reasons
+
+
+def test_an_unusable_expectation_declines(project: pathlib.Path) -> None:
+    _configure(project, TEMPLATE_IF)
+    _f_module(project)
+    reasons = _declined(project, "from demo import f as g\n\ng.go()\n")
+    assert any("renders its template 'i{leaf}' as 'if'" in r for r in reasons), reasons
+
+
+def test_an_ambiguous_read_is_detected() -> None:
+    # libcst gives such a read only alongside a second assignment in the
+    # binding's own scope, which the rename refuses first, so the read is built
+    # by hand: two module-level assignments and a read from a function.
+    scope = metadata.GlobalScope()
+    ours = metadata.Assignment("j", scope, cst.Name("j"), 0)
+    other = metadata.Assignment("j", scope, cst.Name("j"), 1)
+    function = metadata.FunctionScope(scope, cst.Name("f"))
+    access = metadata.Access(cst.Name("j"), function, is_annotation=False, is_type_hint=False)
+    ours.record_access(access)
+    assert not rewrite._ambiguous_reads(ours)
+    access.record_assignment(ours)
+    access.record_assignment(other)
+    assert rewrite._ambiguous_reads(ours)
+
+
+def test_a_package_init_module_level_binding_is_never_renamed(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    init = project / "src" / "demo" / "sub" / "__init__.py"
+    source = "import json as j\n\nj.dumps(1)\n"
+    init.write_text(source, encoding="utf-8", newline="\n")
+    result = _run(project, engine.Mode.FIX)
+    assert init.read_text(encoding="utf-8") == source
+    assert result.findings == ()
+
+
+# The invariants.
+
+RENAME_CASES = {
+    **FIX_CASES,
+    "import_as": "import json as j\n\nj.dumps(1)\n",
+    "import_plain": "import json\n\njson.dumps(1)\n",
+    "from_module": "from demo.sub import mod as m\n\nm.go()\n",
+    "relative_module": "from .sub import mod\n\nmod.go()\n",
+    "with_rewrite": "import json as j\nfrom json import dumps\nfrom demo.sub.mod import go\n\n"
+    "j.loads(dumps(go()))\n",
+    "function_rename": "def f():\n    import json as j\n    return j.dumps(1)\n",
+}
+
+
+@pytest.mark.parametrize("source", RENAME_CASES.values(), ids=RENAME_CASES.keys())
+def test_a_renaming_fix_leaves_nothing_behind(project: pathlib.Path, source: str) -> None:
+    _configure(project, RULES)
+    name = "sub/consumer.py" if "..helpers" in source else "consumer.py"
+    target = _write(project, source, name)
+    before = _run(project)
+    fixed = _run(project, engine.Mode.FIX)
+    assert fixed.changed == 1, target.read_text(encoding="utf-8")
+    assert fixed.findings == ()
+    # A fresh check of what was written agrees, and reports nothing the
+    # original did not.
+    after = _run(project)
+    assert after.findings == ()
+    assert before.findings or source in FIX_CASES.values()
+
+
+@pytest.mark.parametrize("source", RENAME_CASES.values(), ids=RENAME_CASES.keys())
+def test_without_rules_nothing_is_renamed(project: pathlib.Path, source: str) -> None:
+    # Byte-identical to the output of the fixer before renaming existed: no
+    # CP006 exists without a rule, so the rename path contributes nothing.
+    _configure(project, "")
+    name = "sub/consumer.py" if "..helpers" in source else "consumer.py"
+    target = _write(project, source, name)
+    _run(project, engine.Mode.FIX)
+    text = target.read_text(encoding="utf-8")
+    for binding in ("js", "sm", "d_", "sub_"):
+        assert f" as {binding}" not in text
+
+
+# The from-import fixer's ordering, conditionality and wildcard guards, on the
+# rename path.
+
+UNLINKED = "is not tied to this import by the scope analysis"
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "def f():\n    out = []\n    for i in range(2):\n        if i:\n"
+            "            out.append(j.dumps(1))\n        else:\n            import json as j\n"
+            "    return out\n"
+        ),
+        (
+            "out = []\nfor i in range(2):\n    if i:\n        out.append(j.dumps(1))\n"
+            "    else:\n        import json as j\nprint(out, j.dumps(2))\n"
+        ),
+        (
+            "def f():\n    i = 0\n    while True:\n        if i:\n            return j.dumps(1)\n"
+            "        import json as j\n        i = 1\n"
+        ),
+        "def f():\n    x = j\n    import json as j\n    return x, j\n\n\nj = 3\n",
+    ],
+    ids=["loop_in_function", "loop_at_module_level", "while_in_function", "read_before_local"],
+)
+def test_a_read_the_scope_analysis_does_not_tie_to_the_binding_declines(
+    project: pathlib.Path, source: str
+) -> None:
+    _configure(project, JSON_JS)
+    reasons = _declined(project, source)
+    assert any(f"a read of 'j' {UNLINKED}" in r for r in reasons), reasons
+
+
+def test_a_later_read_in_a_nested_function_is_still_renamed(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    source = "def g():\n    return j.dumps(1)\n\n\nimport json as j\n\nprint(g())\n"
+    assert _fixed_clean(project, source) == source.replace("j", "js").replace("jsson", "json")
+
+
+def test_a_renamed_binding_below_the_reads_is_not_reused(project: pathlib.Path) -> None:
+    # Reusing it would put `js.dumps(1)` above `import json as js`; binding a
+    # fresh one needs the name the rename claims, so the file is declined.
+    _configure(project, JSON_JS)
+    reasons = _declined(
+        project, 'from json import dumps\nx = dumps(1)\nimport json as j\nprint(x, j.loads("2"))\n'
+    )
+    assert any("configured alias 'js' for json is taken" in r for r in reasons), reasons
+
+
+def test_a_conditional_binding_is_renamed_but_not_reused(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    reasons = _declined(
+        project,
+        "import sys\nfrom json import dumps\n"
+        "if sys.version_info < (3, 0):\n    import json as j\n    j.dumps(0)\nprint(dumps(1))\n",
+    )
+    assert any("configured alias 'js' for json is taken" in r for r in reasons), reasons
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import json as j\nfrom demo.helpers import *\n\nprint(j.dumps(1))\n",
+        "from demo.helpers import *\nimport json as j\n\nprint(j.dumps(1))\n",
+    ],
+    ids=["star_after", "star_before"],
+)
+def test_a_wildcard_import_declines_a_module_level_rename(
+    project: pathlib.Path, source: str
+) -> None:
+    _configure(project, JSON_JS)
+    reasons = _declined(project, source)
+    assert any(r.startswith("the file has a wildcard import") for r in reasons), reasons
+
+
+def test_a_wildcard_import_leaves_a_function_local_rename_alone(project: pathlib.Path) -> None:
+    _configure(project, JSON_JS)
+    source = (
+        "from demo.helpers import *\n\n\ndef f():\n    import json as j\n    return j.dumps(1)\n"
+    )
+    text, codes = _fix(project, source)
+    assert text == source.replace("as j\n", "as js\n").replace("j.dumps", "js.dumps")
+    assert "CP006" not in codes

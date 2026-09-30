@@ -222,8 +222,13 @@ def _rewrite_type_expr(
         target = targets.get(expr.value)
         if target is None:
             return expr, False
+        # ``token.name`` qualifies a rewritten from-import; a bare name is a
+        # renamed module binding (`rewrite._Fixer._plan_rename`).
         bind, _dot, symbol = target.partition(".")
-        return cst.Attribute(value=cst.Name(bind), attr=cst.Name(symbol)), True
+        renamed: cst.BaseExpression = (
+            cst.Attribute(value=cst.Name(bind), attr=cst.Name(symbol)) if symbol else cst.Name(bind)
+        )
+        return renamed, True
 
     if isinstance(expr, cst.Attribute):
         new_value, changed = _rewrite_type_expr(expr.value, targets)

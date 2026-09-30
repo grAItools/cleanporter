@@ -273,6 +273,54 @@ a `CP003` naming the alias, the module and the rule. The same happens when a
 `{leaf}` template renders a name no import can bind (a keyword, or
 `__debug__`) for the module being bound.
 
+### Renaming a binding (`CP006`)
+
+`--fix` renames a binding the alias check reports as `CP006` — and only
+those: one a suppression or a `skip` rule turned into a `CP004`, and every
+module-level import of a package `__init__.py`, is left alone. The import
+statement is edited in place (only the one alias of a multi-name statement
+changes, and its comments stay where they are), and every access libCST
+resolves to the binding is renamed, in nested functions, classes, lambdas and
+comprehensions and f-strings, and in lazy string annotations under `from
+__future__ import annotations`. Any one of these declines the whole file:
+
+- **The name is taken.** The expected name is bound in the binding's scope,
+  an enclosing function or class, or the module; bound by a scope between a
+  renamed reference and the binding; or read, unbound, where the binding is
+  visible (a builtin, say). The same set a new binding must avoid, and it
+  includes a name another rename in the file has claimed.
+- **The old name is not one binding.** It is assigned again in the same scope
+  (a rebinding, an augmented assignment, a `for`, `with` or `except` target, a
+  walrus, a `match` capture), deleted with `del`, or declared `global` or
+  `nonlocal` anywhere in the file; or a read of it could resolve to another
+  binding too, or is not tied to the binding at all (a read above the import
+  in its own scope, as in a loop — see
+  [above](#a-read-the-scope-analysis-does-not-tie-to-the-import)).
+- **The file has a wildcard import** and the binding is at module level: the
+  star import could bind the new name (see
+  [above](#a-wildcard-import-in-the-file)).
+- **Something may read it that the rename cannot reach.** A string naming it
+  (`__all__`, `getattr(module, "npy")`, a doctest, a string annotation that
+  is not lazy or cannot be re-rendered) — the string guard above. For a
+  module-level binding, also: nothing in the file reads it (so something
+  outside may), another analysed file imports it, or a string elsewhere names
+  its dotted path. A binding in a class body is a class attribute, read
+  through the class or an instance where no scope analysis can see, and is
+  always declined.
+- **The statement cannot carry it.** `import a.b.c` with no `as` binds `a`,
+  shared with every other `a.*` use; a binding under `if TYPE_CHECKING:`
+  without `from __future__ import annotations`; dropping an `as` clause that
+  holds a comment or a line break; or a `{leaf}` template that renders a name
+  no import can bind.
+
+A rename and a from-import rewrite are planned together: a rewritten
+`from numpy.linalg import norm` reuses a module-level `import numpy as npy`
+under the name it is renamed to (when that import is bound before the reads,
+as for any reuse), and a new binding avoids every name a rename
+claims. A function-local binding is not reused by a rewrite in the same
+function, so a rewrite there that would bind the expected name declines the
+file.
+
 ### The file's encoding cannot hold the rewrite unchanged
 
 The rewrite is written back in the encoding the file was read in. If the file

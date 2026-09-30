@@ -57,7 +57,7 @@ Each reported line has the shape
 | `CP003` | `SKIPPED` | Structurally a violation, deliberately not rewritten. Under `--fix` or `--diff` it is the "declined, because…" note explaining why a file, or one import in it, was left alone; a few reasons that belong to the import itself are reported in every mode (below). |
 | `CP004` | `SKIPPED_BY_CONFIG` | Matched a [`skip` rule](configuration.md#skip-rules), so it was never analysed — or an [inline suppression](configuration.md#inline-suppressions) (`# cleanporter: ignore[CP001]`) named the code of its finding, and the message says which code and which comment. Counted in the summary, printed only under `--show-skipped`, and **never** part of the exit code — you asked for it. |
 | `CP005` | `UNUSED_SUPPRESSION` | An [inline suppression](configuration.md#inline-suppressions) names a code that no finding on the imports it covers has — the finding was fixed, or the comment is on the wrong line. Reported at the comment. Like `CP001`, it makes the run exit `1`, and it cannot itself be suppressed: remove the comment, or the code, instead. |
-| `CP006` | `ALIAS_MISMATCH` | A module is bound under a name its [alias convention](configuration.md#alias-rules) does not allow: `import numpy as npy` where a rule (or a ruff `flake8-import-conventions` alias) says `np`. The finding's module and name are the module and the name it is bound under; the message names the expected name and the rule. Like `CP001`, it makes the run exit `1`. Report-only: `--fix` does not rename existing bindings, but every binding it creates follows the convention. |
+| `CP006` | `ALIAS_MISMATCH` | A module is bound under a name its [alias convention](configuration.md#alias-rules) does not allow: `import numpy as npy` where a rule (or a ruff `flake8-import-conventions` alias) says `np`. The finding's module and name are the module and the name it is bound under; the message names the expected name and the rule. Like `CP001`, it makes the run exit `1`. `--fix` renames the binding and its references to the expected name when that is provably safe, and declines the file with a `CP003` when it is not; every binding it creates follows the convention too. |
 
 Examples of each:
 
@@ -127,11 +127,14 @@ An import inside a function there is checked like any other.
     A binding that breaks a configured alias convention fails the run like a
     `CP001`. Only a proven module is judged: `import M` always, and `from P
     import L` when the resolver proves `P.L` is a module — so no `CP006` is
-    ever a guess. `--fix` does not rename the binding (rename it yourself, or
-    suppress it with `# cleanporter: ignore[CP006]`), and it never *creates*
-    one: when the configured name is taken where it would bind the module, it
-    declines the whole file with a `CP003` instead. See
-    [`alias` rules](configuration.md#alias-rules).
+    ever a guess. `--fix` renames the binding, in its import statement and at
+    every reference, when every guard passes (see
+    [Renaming a binding](safety.md#renaming-a-binding-cp006)); otherwise it
+    declines the whole file with a `CP003` and the reason. A suppressed
+    `CP006` (`# cleanporter: ignore[CP006]`) or one a `skip` rule covers is a
+    `CP004` and is left alone. `--fix` never *creates* a `CP006` either: when
+    the configured name is taken where it would bind the module, it declines
+    the whole file instead. See [`alias` rules](configuration.md#alias-rules).
 
 ## Exit codes
 
