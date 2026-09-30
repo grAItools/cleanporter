@@ -577,4 +577,5 @@ def test_the_corpus_harness_keeps_the_probe_in_process():
     """Its corpus is importable only through the cwd, so detection must not move it."""
     harness = pathlib.Path(__file__).resolve().parents[1] / "corpus" / "run.py"
     text = harness.read_text(encoding="utf-8")
-    assert '"-m", "cleanporter", "--fix", "--python", "self", "."' in text
+    assert '"-m", "cleanporter", *extra, "--python", "self", "."' in text
+    assert '_run_cleanporter(rewritten, "--fix"' in text

@@ -128,8 +128,9 @@ _RULES: tuple[_Rule, ...] = (
         "A module is bound under a name its alias convention does not allow; it fails the run.",
         "An alias rule in [[tool.cleanporter.alias]] (or a ruff flake8-import-conventions "
         "alias read as a default) says which name this module must be bound under in this "
-        "file, and the import binds it under another. Report-only: --fix does not rename "
-        "existing bindings, though every binding it creates follows the convention.",
+        "file, and the import binds it under another. --fix renames the binding and its "
+        "references when that is provably safe, and every binding it creates follows the "
+        "convention.",
         "error",
     ),
 )

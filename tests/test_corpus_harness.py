@@ -17,6 +17,8 @@ import sys
 
 import pytest
 
+from cleanporter import config
+
 _RUN = pathlib.Path(__file__).parent.parent / "corpus" / "run.py"
 
 
@@ -259,3 +261,29 @@ def test_fix_still_announces_each_rewritten_file_on_stderr(tmp_path):
     )
     assert proc.returncode in (0, 1), proc.stderr
     assert [ln for ln in proc.stderr.splitlines() if ln.startswith("fixed: ")], proc.stderr
+
+
+# -- --alias-rules ------------------------------------------------------------
+
+
+def test_the_alias_rules_are_a_valid_configuration(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(harness.ALIAS_RULES, encoding="utf-8", newline="\n")
+    rules = config.load_config(tmp_path).alias
+    assert {"re", "os", "os.path", "json", "collections", "functools", "itertools", "numpy"} <= {
+        rule.module for rule in rules
+    }
+    assert any("**" in rule.module and "{leaf}" in (rule.alias or "") for rule in rules)
+
+
+def test_alias_rules_report_the_renames_and_leave_no_configuration_behind(tmp_path, capsys):
+    (tmp_path / "user.py").write_text(
+        "import json as j\nimport re\n\nj.dumps(re.escape('x'))\n", encoding="utf-8", newline="\n"
+    )
+    assert harness._fix_copy(tmp_path, alias_rules=True)
+    out = capsys.readouterr().out
+    assert "corpus: rewrote 1 file(s)" in out
+    assert "corpus: CP006 2 before the fix, 0 after: 2 binding(s) renamed" in out
+    assert (tmp_path / "user.py").read_text(encoding="utf-8") == (
+        "import json as js\nimport re as rx\n\njs.dumps(rx.escape('x'))\n"
+    )
+    assert not (tmp_path / "pyproject.toml").exists()

@@ -41,8 +41,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   becomes `from P import L as E` (relative imports stay relative). When the
   configured name is taken in the scope the whole file is declined with a
   `CP003` rather than written with a suffixed name, so `--fix` never
-  introduces a `CP006`. Existing bindings are reused as before, whatever they
-  are called. With no rules the output is unchanged.
+  introduces a `CP006`. With no rules the output is unchanged.
+- **`--fix` renames a `CP006` binding to its convention.** `import numpy as
+  npy` becomes `import numpy as np`, `import json` becomes `import json as
+  js`, and `from P import L [as N]` becomes `from P import L as E` (or `from P
+  import L` for the own name), with every reference libCST resolves to the
+  binding renamed -- in nested scopes, f-strings, and lazy string annotations
+  under `from __future__ import annotations`. Only the one alias of a
+  multi-name statement changes, in place, so its comments and a relative
+  spelling stay. Exactly the reported `CP006` findings are renamed: a
+  suppressed one, one a skip rule covers, and a package `__init__`'s
+  module-level imports are left alone. Anything not provably safe declines
+  the whole file with a `CP003`: the expected name taken (in the scope, an
+  enclosing one, the module, a scope between a reference and the binding, or
+  read unbound below); the old name rebound, deleted, declared
+  `global`/`nonlocal`, captured by `match`, or named by a string; a
+  module-level binding nothing in the file reads, another file imports, or a
+  string elsewhere names; a class-body binding; `import a.b.c` without `as`;
+  a `TYPE_CHECKING` import without future annotations; an `as` clause holding
+  a comment or line break that would be dropped; a read of the old name the
+  scope analysis does not tie to the binding (one above the import in its
+  scope, as in a loop); a module-level binding in a file with a wildcard
+  import. A rewritten from-import
+  reuses a renamed module-level binding under its new name
+  (`import numpy as npy` + `from numpy import array` becomes `import numpy as
+  np` + `np.array`).
 - **Ruff's `flake8-import-conventions` aliases as defaults.** `aliases` and
   `extend-aliases` from `[tool.ruff.lint.flake8-import-conventions]` (or the
   legacy `[tool.ruff.flake8-import-conventions]`) in the same

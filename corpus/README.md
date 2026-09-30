@@ -7,6 +7,7 @@ the rewritten code then imported and executed to check that nothing moved.
 uv run corpus/run.py                 # install, fix, check  (~30-45 min)
 uv run corpus/run.py --keep          # leave both trees for inspection
 uv run corpus/run.py --skip-install  # reuse an already-installed corpus
+uv run corpus/run.py --alias-rules   # also rename bindings to forced conventions
 uv run corpus/run.py --update        # repin packages.txt to the latest, then stop
 ```
 
@@ -48,6 +49,25 @@ unchanged.
    wheel. The strongest signal by a distance, because it actually executes the
    rewritten code — check 1 cannot see a failure that only happens when a
    function is called.
+
+## Renaming bindings: `--alias-rules`
+
+The corpus has no configuration of its own, so a default run never exercises
+the part of `--fix` that renames an existing binding to its alias convention
+(`CP006`). `--alias-rules` writes the rules in `ALIAS_RULES` in `run.py` into
+the copy's `pyproject.toml` before the fix -- conventions chosen to *disagree*
+with how the corpus binds the modules it imports: `re` as `rx`, `os` as
+`osm`, `os.path` as `osp`, `json` as `js`, `collections` as `coll`,
+`functools` as `ft`, `itertools` as `it2`, `numpy` as `np`, `libcst` as
+`lcst` (hundreds of `import libcst as cst` in libCST's own test suite, which
+then runs), and a pattern rule, `_pytest.**` as `pt_{leaf}`. The file is
+removed again before the probes run, so they see the same tree layout as the
+default run.
+
+The run reports the number of `CP006` findings before and after the fix: the
+difference is the bindings it renamed. Everything else is judged exactly as in
+the default run -- no new import failures, no new undefined names, bundled
+suites the same. The default run (no flag) is unchanged.
 
 ## The manifest
 

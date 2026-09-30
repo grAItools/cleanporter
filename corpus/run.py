@@ -38,6 +38,7 @@ unchanged.
     uv run corpus/run.py                 # install, fix, check
     uv run corpus/run.py --keep          # leave the trees for inspection
     uv run corpus/run.py --skip-install  # reuse an existing --work directory
+    uv run corpus/run.py --alias-rules   # also force CP006 renames (ALIAS_RULES)
     uv run corpus/run.py --update        # repin packages.txt to the latest, then stop
 
 Exits 0 when the rewritten corpus behaves exactly like the original, 1 on a
@@ -71,6 +72,55 @@ BUNDLED_SUITES: dict[str, tuple[str, ...]] = {
 }
 
 EXIT_OK, EXIT_REGRESSION, EXIT_ERROR = 0, 1, 2
+
+#: What ``--alias-rules`` configures: conventions for modules the corpus really
+#: imports, chosen to *disagree* with how it binds them, so that ``--fix``
+#: renames existing bindings (``CP006``) and names new ones by a rule. The
+#: rename path is otherwise never run against real code: the corpus has no
+#: configuration of its own.
+ALIAS_RULES = """\
+[tool.cleanporter]
+
+[[tool.cleanporter.alias]]
+module = "re"
+as = "rx"
+
+[[tool.cleanporter.alias]]
+module = "os.path"
+as = "osp"
+
+[[tool.cleanporter.alias]]
+module = "os"
+as = "osm"
+
+[[tool.cleanporter.alias]]
+module = "json"
+as = "js"
+
+[[tool.cleanporter.alias]]
+module = "collections"
+as = "coll"
+
+[[tool.cleanporter.alias]]
+module = "functools"
+as = "ft"
+
+[[tool.cleanporter.alias]]
+module = "itertools"
+as = "it2"
+
+[[tool.cleanporter.alias]]
+module = "numpy"
+as = "np"
+
+[[tool.cleanporter.alias]]
+module = "libcst"
+as = "lcst"
+
+[[tool.cleanporter.alias]]
+module = "_pytest.**"
+as = "pt_{leaf}"
+"""
 
 #: Marks a bundled suite that produced no pass/fail tally at all.
 _NO_RESULT = "NO RESULT"
@@ -464,12 +514,90 @@ class _Tee:
         self._file.close()
 
 
+def _alias_mismatches(tree: pathlib.Path, output: str) -> int | None:
+    """``counts.alias_mismatches`` of a ``--format json`` run's *output*, if it has one."""
+    try:
+        document = json.loads(output)
+    except ValueError:
+        print(f"corpus: unreadable cleanporter JSON for {tree}", file=sys.stderr)
+        return None
+    counts = document.get("counts", {}) if isinstance(document, dict) else {}
+    value = counts.get("alias_mismatches") if isinstance(counts, dict) else None
+    return value if isinstance(value, int) else None
+
+
+def _run_cleanporter(tree: pathlib.Path, *extra: str) -> subprocess.CompletedProcess[str]:
+    # `--python self`: the corpus is importable only from this cwd (`-m` puts
+    # it on sys.path), so the probe must stay in this process. Left to detect,
+    # an activated or `.venv` interpreter would be probed in a subprocess that
+    # cannot see the corpus, and every import would quietly go CP002.
+    return subprocess.run(
+        [sys.executable, "-m", "cleanporter", *extra, "--python", "self", "."],
+        cwd=tree,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _fix_copy(rewritten: pathlib.Path, *, alias_rules: bool) -> bool:
+    """Run ``cleanporter --fix`` over *rewritten* and say what it did; False if it failed.
+
+    Under *alias_rules* the fix runs with `ALIAS_RULES` configured, and the
+    ``CP006`` count before and after it is reported: the difference is the
+    bindings the fix renamed.
+    """
+    config = rewritten / "pyproject.toml"
+    mismatches_before: int | None = None
+    if alias_rules:
+        # The copy is a `--target` install with no pyproject.toml of its own,
+        # so this is the configuration the fix finds. It is removed again
+        # before probing: pytest would otherwise take it as its rootdir.
+        config.write_text(ALIAS_RULES, encoding="utf-8", newline="\n")
+        print("counting CP006 under the alias rules ...", flush=True)
+        check = _run_cleanporter(rewritten, "--format", "json")
+        mismatches_before = _alias_mismatches(rewritten, check.stdout)
+
+    print("running cleanporter --fix over the copy ...", flush=True)
+    fix = _run_cleanporter(rewritten, "--fix", *(("--format", "json") if alias_rules else ()))
+    if alias_rules:
+        config.unlink()
+    # 0 = clean, 1 = findings remain (expected: third-party code is full of
+    # them). Anything else is the tool failing to run at all.
+    if fix.returncode not in (0, 1):
+        print(
+            f"corpus: cleanporter failed (exit {fix.returncode}):\n{fix.stderr[-4000:]}",
+            file=sys.stderr,
+        )
+        return False
+    changed = sum(1 for ln in fix.stderr.splitlines() if ln.startswith("fixed: "))
+    print(f"corpus: rewrote {changed} file(s)")
+    if alias_rules:
+        after = _alias_mismatches(rewritten, fix.stdout)
+        if mismatches_before is None or after is None:
+            print("corpus: could not count CP006 findings", file=sys.stderr)
+            return False
+        print(
+            f"corpus: CP006 {mismatches_before} before the fix, {after} after: "
+            f"{mismatches_before - after} binding(s) renamed"
+        )
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--work", default=".corpus", help="scratch directory (default: .corpus)")
     parser.add_argument("--keep", action="store_true", help="do not delete the trees afterwards")
     parser.add_argument(
         "--skip-install", action="store_true", help="reuse the packages already in --work"
+    )
+    parser.add_argument(
+        "--alias-rules",
+        action="store_true",
+        help=(
+            "configure the alias conventions in ALIAS_RULES for the fix, so existing "
+            "bindings are renamed (CP006) as well as imports rewritten"
+        ),
     )
     parser.add_argument(
         "--update",
@@ -516,28 +644,8 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(rewritten)
     shutil.copytree(original, rewritten)
 
-    print("running cleanporter --fix over the copy ...", flush=True)
-    # `--python self`: the corpus is importable only from this cwd (`-m` puts
-    # it on sys.path), so the probe must stay in this process. Left to detect,
-    # an activated or `.venv` interpreter would be probed in a subprocess that
-    # cannot see the corpus, and every import would quietly go CP002.
-    fix = subprocess.run(
-        [sys.executable, "-m", "cleanporter", "--fix", "--python", "self", "."],
-        cwd=rewritten,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # 0 = clean, 1 = findings remain (expected: third-party code is full of
-    # them). Anything else is the tool failing to run at all.
-    if fix.returncode not in (0, 1):
-        print(
-            f"corpus: cleanporter failed (exit {fix.returncode}):\n{fix.stderr[-4000:]}",
-            file=sys.stderr,
-        )
+    if not _fix_copy(rewritten, alias_rules=args.alias_rules):
         return EXIT_ERROR
-    changed = sum(1 for ln in fix.stderr.splitlines() if ln.startswith("fixed: "))
-    print(f"corpus: rewrote {changed} file(s)")
 
     try:
         ok = _report(_probe(original, "original"), _probe(rewritten, "rewritten"))

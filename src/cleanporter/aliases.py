@@ -44,7 +44,8 @@ taken gets a ``_2`` suffix, which is harmless: nothing asked for a particular
 name. With a rule, a suffixed name is a ``CP006`` the fixer itself wrote.
 `rewrite` therefore declines the whole file (``CP003``) when the configured
 name is taken, keeping both halves of the contract: the fix is all-or-nothing,
-and ``--fix`` never introduces a finding.
+and ``--fix`` never introduces a finding. The same holds when ``--fix``
+renames an existing ``CP006`` binding: the configured name or nothing.
 
 **Why only proven modules.** A ``from P import L`` binds a module only when
 the resolver proves ``P.L`` is one; anything else is ``CP001``'s or

@@ -43,9 +43,19 @@ A *new* binding is named by the project's alias conventions when one applies
 np`` under a rule saying so. A configured name that is taken in the scope
 declines the whole file rather than falling back to ``np_2``, which would be a
 ``CP006`` of the fixer's own making; without a rule the leaf is used, suffixed
-when taken, exactly as before. An existing binding is reused whatever it is
-called -- renaming one is not this fixer's business, and a non-conforming one
-is already reported.
+when taken, exactly as before.
+
+An existing binding that breaks its convention -- a ``CP006``, exactly the
+verdicts ``check`` reports (`analyze.alias_verdicts`) -- is renamed: the one
+alias in its statement is edited in place, and every access libcst resolves to
+it is renamed with it (`_Fixer._plan_rename`). Renames are planned before any
+from-import line, so a rewritten line reuses a module-level binding under its
+new name and a new binding avoids every name a rename claims. The guards are
+the fixer's own, applied to the old name (the string, ``global``/``nonlocal``
+and ``match`` guards, via `_fixed_locals`) and to the new one (the collision
+set `_allocate_token` uses, with no suffix to fall back to), plus what only a
+rename needs: a module-level name nothing here reads or that another file
+reads, a class attribute, ``import a.b.c``'s shared ``a``.
 
 A relative import is rewritten to a relative import: ``from .sub.mod import C``
 becomes ``from .sub import mod``. Its absolute name is still what the resolver
@@ -86,6 +96,7 @@ import ast
 import collections
 import dataclasses
 import re
+from collections.abc import Mapping
 
 import libcst as cst
 from libcst import metadata
@@ -112,6 +123,9 @@ class _Plan:
     line_repl: dict[int, list[cst.BaseStatement]] = dataclasses.field(default_factory=dict)
     name_repl: dict[int, cst.BaseExpression] = dataclasses.field(default_factory=dict)
     string_repl: dict[int, str] = dataclasses.field(default_factory=dict)
+    #: ``id`` of an `libcst.ImportAlias` -> the ``as`` name it gets (``None``:
+    #: drop the ``as``), for a binding renamed to its convention.
+    alias_repl: dict[int, str | None] = dataclasses.field(default_factory=dict)
     fixed: int = 0
 
 
@@ -199,6 +213,14 @@ class _Fixer(cst.CSTTransformer):
         self._all_scopes: list[metadata.Scope] | None = None
         #: The alias conventions every new binding follows (`_allocate_token`).
         self._conventions = config.conventions
+        self._config = config
+        #: ``id`` of a renamed `libcst.ImportAlias` -> the name it binds after
+        #: the rename (`_plan_rename`), for `_build_existing` and `_partition`.
+        self._renamed: dict[int, str] = {}
+        #: ``id`` of a string annotation that reads a renamed binding -> ``{old:
+        #: new}``. Keyed by the string, not by scope: libcst says which strings
+        #: read the binding, and only those are renamed inside.
+        self._rename_strings: dict[int, dict[str, str]] = {}
 
     # -- planning ----------------------------------------------------------
     def visit_Module(self, node: cst.Module) -> None:
@@ -216,12 +238,16 @@ class _Fixer(cst.CSTTransformer):
             if scope is not None:
                 self._global_names = {a.name for a in scope.globals.assignments}
                 break
-        self._build_existing(node)
         self._future_annotations = any(
             _imports.resolve_parent(imp, self._rec.base_pkg) == "__future__"
             and any(n == "annotations" for n, _a, _x in _imports.imported_names(imp))
             for _line, imp in self._import_lines(node)
         )
+        # Renames first: `_build_existing` must record a renamed binding
+        # under its new name, and a token `_allocate_token` picks later must
+        # see every new name a rename claims.
+        self._plan_renames()
+        self._build_existing(node)
         # Runtime (non-TYPE_CHECKING) lines are planned before TYPE_CHECKING
         # ones, regardless of their textual order in the file. `_binding_for`
         # memoizes one token per (scope, parent) and happily reuses it for a
@@ -299,7 +325,7 @@ class _Fixer(cst.CSTTransformer):
         class of bugs: a string that fails to parse is never guessed at --
         it is left for the ordinary string-mention guard to block.
         """
-        if not (self._future_annotations and self._string_targets):
+        if not (self._future_annotations and (self._string_targets or self._rename_strings)):
             return frozenset()
         for ident, string_node in _annotations.annotation_strings(node).items():
             if self._skipped.covers(self._line_of(string_node)) is not None:
@@ -320,6 +346,7 @@ class _Fixer(cst.CSTTransformer):
             targets = self._targets_visible_from(
                 self.get_metadata(metadata.ScopeProvider, string_node, None)
             )
+            targets.update(self._rename_strings.get(ident, {}))
             if not targets:
                 continue
             # This is the one call site allowed to swallow
@@ -385,9 +412,11 @@ class _Fixer(cst.CSTTransformer):
             if parent is None or not self._decider.in_scope(parent):
                 continue
             relative = _imports.relative_level(imp) > 0
-            for name, asname, _alias in _imports.imported_names(imp):
+            for name, asname, alias in _imports.imported_names(imp):
                 if self._resolver.is_module(parent, name) is True:
-                    self._existing[f"{parent}.{name}", relative] = asname or name
+                    self._existing[f"{parent}.{name}", relative] = self._renamed.get(
+                        id(alias), asname or name
+                    )
                     self._existing_at[f"{parent}.{name}", relative] = imp
         # plain ``import a`` / ``import a as z`` (top-level modules only)
         for plain in _nodes.plain_imports(node):
@@ -407,10 +436,10 @@ class _Fixer(cst.CSTTransformer):
                 as_node = alias.asname.name if alias.asname else None
                 bound = as_node.value if isinstance(as_node, cst.Name) else None
                 if bound is not None:
-                    self._existing[mod, False] = bound
+                    self._existing[mod, False] = self._renamed.get(id(alias), bound)
                     self._existing_at[mod, False] = plain
                 elif "." not in mod:
-                    self._existing[mod, False] = mod
+                    self._existing[mod, False] = self._renamed.get(id(alias), mod)
                     self._existing_at[mod, False] = plain
 
     def _import_lines(
@@ -463,7 +492,9 @@ class _Fixer(cst.CSTTransformer):
                 fix.append((name, asname))
                 self.rewritten_aliases.add(id(alias))
             else:
-                keep.append(_render_alias(name, asname))
+                # A kept name is re-rendered from text, so a rename planned
+                # for it (`_plan_rename`) has to be rendered here too.
+                keep.append(_render_alias(name, self.plan.alias_repl.get(id(alias), asname)))
         return keep, fix
 
     def _unread_names(self, imp: cst.ImportFrom, scope: metadata.Scope) -> frozenset[str]:
@@ -1148,6 +1179,238 @@ class _Fixer(cst.CSTTransformer):
         path = skip.file_candidates(self._rec.path, self._rec.root)[0]
         return self._conventions.expected(parent, self._rec.qualname, path)
 
+    # -- renaming a binding to its convention (CP006) ---------------------------
+    def _plan_renames(self) -> None:
+        """Plan a rename for every binding the alias check reports as a `CP006`.
+
+        The same verdicts ``check`` reports from (`analyze.alias_verdicts`), so
+        the fixer renames exactly the `CP006` findings: a binding a skip rule
+        or an inline comment turned into a `CP004` is left alone, as is every
+        binding with no convention. A rename that cannot be proven safe is a
+        blocker, which declines the whole file.
+        """
+        for verdict in analyze.alias_verdicts(self._rec, self._resolver, self._config):
+            if verdict.decision.status is not model.Status.ALIAS_MISMATCH:
+                continue
+            reason = self._plan_rename(verdict)
+            if reason is not None:
+                self.blockers.append((verdict.line, reason))
+
+    def _plan_rename(self, verdict: analyze.AliasVerdict) -> str | None:
+        """Plan renaming *verdict*'s binding to the name its convention expects.
+
+        Returns why it cannot be renamed instead, which declines the file.
+        The import statement is edited in place -- only the one alias, its
+        whitespace and comments untouched -- and every access libcst
+        resolves to the binding becomes the new name: a `libcst.Name`
+        directly, a lazy string annotation through `_plan_annotation_strings`.
+        The old name joins `_fixed_locals`, so every string guard that
+        protects a rewritten from-import protects it too.
+        """
+        binding = verdict.binding
+        reason = self._statement_blocker(verdict)
+        if reason is not None:
+            return reason
+        scope = self.get_metadata(metadata.ScopeProvider, binding.node, None)
+        if scope is None:
+            return f"no scope information for '{binding.bound}'; its references cannot be found"
+        if isinstance(scope, metadata.ClassScope):
+            return (
+                f"'{binding.bound}' is a class attribute; a read through the class or an "
+                "instance cannot be seen, so renaming it could break one"
+            )
+        if self._has_star and isinstance(scope, metadata.GlobalScope):
+            return _STAR_REASON
+        found = self._sole_assignment(binding, scope)
+        if isinstance(found, str):
+            return found
+        if self._unlinked_read(binding.bound, scope, [found]):
+            return _unlinked_reason(binding.bound)
+        reason = self._outside_reader(binding, scope, found)
+        if reason is not None:
+            return reason
+        if _ambiguous_reads(found):
+            return f"a read of '{binding.bound}' may resolve to another binding too"
+        names, strings, extra_avoid, reason = self._rename_references(binding.bound, scope, found)
+        if reason is not None:
+            return reason
+        new = verdict.expectation.binding
+        reason = self._rename_target_taken(verdict, scope, extra_avoid)
+        if reason is not None:
+            return reason
+        # Planned: nothing below can fail.
+        written = _imports.dotted(binding.alias.name)
+        self.plan.alias_repl[id(binding.alias)] = None if new == written else new
+        self._renamed[id(binding.alias)] = new
+        for name_node in names:
+            self.plan.name_repl[id(name_node)] = cst.Name(new)
+        for ident in strings:
+            self._rename_strings.setdefault(ident, {})[binding.bound] = new
+        self._fixed_locals.add(binding.bound)
+        if isinstance(scope, metadata.GlobalScope):
+            self._global_names.add(new)
+        else:
+            self._local_names(scope).add(new)
+        self.plan.fixed += 1
+        return None
+
+    def _statement_blocker(self, verdict: analyze.AliasVerdict) -> str | None:
+        """Why the import statement itself cannot carry *verdict*'s rename, or None."""
+        binding, expectation = verdict.binding, verdict.expectation
+        if not expectation.usable:
+            return (
+                f"{expectation.rule.describe()} renders its template "
+                f"{expectation.rule.alias!r} as '{expectation.binding}' for "
+                f"{binding.module}, which no import can bind"
+            )
+        written = _imports.dotted(binding.alias.name)
+        if isinstance(binding.node, cst.Import) and binding.alias.asname is None and "." in written:
+            head = written.partition(".")[0]
+            return (
+                f"`import {written}` binds '{head}', which every other '{head}.*' use in "
+                "this file shares; renaming it would rename them all"
+            )
+        if id(binding.node) in self._tc_ids and not self._future_annotations:
+            return (
+                "TYPE_CHECKING-gated import; renaming it without "
+                "`from __future__ import annotations` risks NameError"
+            )
+        asname = binding.alias.asname
+        if asname is not None and expectation.binding == written:
+            # Dropping ``as N`` removes its whitespace too: a comment in it
+            # would be lost, and a line break would move the lines below it.
+            text = cst.Module(body=[]).code_for_node(asname)
+            if _nodes.interior_comments(asname) or "\n" in text or "\r" in text:
+                return (
+                    f"dropping `as {binding.bound}` would discard a comment or a line "
+                    "break inside the import"
+                )
+        return None
+
+    def _sole_assignment(
+        self, binding: analyze.ModuleBinding, scope: metadata.Scope
+    ) -> metadata.BaseAssignment | str:
+        """The one assignment *binding* makes in *scope*, or why there is not exactly one.
+
+        The ``ours and others`` test of `_plan_line`: libcst's scopes are not
+        flow-sensitive, so with a second assignment of the name in the scope
+        -- a rebinding, a loop or ``with`` target, an augmented assignment,
+        a walrus -- every access lists both, and no subset is provably the
+        import's. ``del`` reads as an access (`_nodes.deleted_names`) and is
+        refused on its own.
+        """
+        old = binding.bound
+        ours = [a for a in scope[old] if getattr(a, "node", None) is binding.node]
+        others = [a for a in scope[old] if getattr(a, "node", None) is not binding.node]
+        if others:
+            return f"local '{old}' is rebound in the same scope"
+        if len(ours) != 1:
+            return f"'{old}' is not bound exactly once by its import"
+        if old in self._del_names:
+            return f"'{old}' is unbound with `del`; renaming the binding would unbind nothing"
+        return ours[0]
+
+    def _outside_reader(
+        self,
+        binding: analyze.ModuleBinding,
+        scope: metadata.Scope,
+        assignment: metadata.BaseAssignment,
+    ) -> str | None:
+        """Why a module-level *binding* may be read from outside this file, or None.
+
+        A module-level name is an attribute of the module, and renaming it
+        deletes that attribute. Evidence that somebody reads it declines the
+        rename, as it declines a rewritten from-import (`analyze.Decider`):
+        another analysed file importing it, a string naming its dotted path
+        (`resolver.Resolver.named_by`) -- and nothing in this file reading it
+        at all, which leaves an outside reader as the only reason for it to
+        exist (`_unread_names`). A binding in a function is nobody's attribute.
+        """
+        if not isinstance(scope, metadata.GlobalScope):
+            return None
+        old = binding.bound
+        if not assignment.references:
+            return (
+                f"'{old}' is never read in this file, so renaming it would only remove "
+                "the binding -- and something outside this file may be reading it"
+            )
+        qualname = self._rec.qualname
+        if not qualname:
+            return None
+        if self._resolver.is_load_bearing(qualname, old):
+            return (
+                f"another file imports '{old}' from '{qualname}'; renaming this "
+                "binding would remove that attribute"
+            )
+        named = self._resolver.named_by(qualname, old, outside=self._rec.path)
+        if named is not None:
+            return (
+                f"'{qualname}.{old}' is named by the string '{named.text}' at "
+                f"{named.where()}; renaming this binding would remove that attribute"
+            )
+        return None
+
+    def _rename_references(
+        self, old: str, scope: metadata.Scope, assignment: metadata.BaseAssignment
+    ) -> tuple[list[cst.Name], list[int], set[str], str | None]:
+        """The accesses of *assignment* to rename, split by kind.
+
+        Returns the `libcst.Name` nodes, the ids of the string annotations
+        that read the binding, the names a scope between an access and
+        *scope* assigns (`_shadow_names_between`: the new name must not be
+        one), and why the accesses cannot be renamed, if they cannot.
+        """
+        names: list[cst.Name] = []
+        strings: list[int] = []
+        extra_avoid: set[str] = set()
+        for ref in assignment.references:
+            node = ref.node
+            if isinstance(node, cst.Name):
+                names.append(node)
+            elif isinstance(node, (cst.SimpleString, cst.ConcatenatedString)):
+                # Renamed inside only if it is a lazy annotation the parse
+                # can re-render; otherwise the string guard blocks on it.
+                strings.append(id(node))
+            else:
+                return (
+                    names,
+                    strings,
+                    extra_avoid,
+                    f"a read of '{old}' is not a plain name and cannot be renamed",
+                )
+            if ref.scope is not scope:
+                extra_avoid |= self._shadow_names_between(ref.scope, scope)
+        return names, strings, extra_avoid, None
+
+    def _rename_target_taken(
+        self, verdict: analyze.AliasVerdict, scope: metadata.Scope, extra_avoid: set[str]
+    ) -> str | None:
+        """Why the expected name cannot be bound in *scope*, or None.
+
+        The collision set `_allocate_token` uses for a new binding, with no
+        suffix to fall back to: names bound in *scope*, an enclosing
+        function or class, or the module (`_names_in_scope`, live, so it
+        includes every name an earlier rename claimed); names a scope below
+        assigns between a renamed read and *scope* (*extra_avoid*); names
+        read there that nothing binds, a builtin among them
+        (`_free_names_below`); and in a package ``__init__``, a submodule's
+        slot (`_submodule_slots`).
+        """
+        new = verdict.expectation.binding
+        free, opaque = self._free_names_below(scope)
+        if opaque:
+            return "a string read where the renamed binding would be visible cannot be read"
+        taken = self._names_in_scope(scope) | extra_avoid | free
+        if isinstance(scope, metadata.GlobalScope):
+            taken |= self._submodule_slots(verdict.binding.module)
+        if new in taken:
+            return (
+                f"configured alias '{new}' for {verdict.binding.module} is taken in this "
+                f"scope ({verdict.expectation.rule.describe()}); '{verdict.binding.bound}' "
+                "cannot be renamed to it"
+            )
+        return None
+
     # -- application -------------------------------------------------------
     def leave_SimpleStatementLine(
         self,
@@ -1158,6 +1421,20 @@ class _Fixer(cst.CSTTransformer):
         if repl is not None:
             return cst.FlattenSentinel(repl) if repl else cst.RemovalSentinel.REMOVE
         return updated_node
+
+    def leave_ImportAlias(
+        self, original_node: cst.ImportAlias, updated_node: cst.ImportAlias
+    ) -> cst.ImportAlias:
+        if id(original_node) not in self.plan.alias_repl:
+            return updated_node
+        new = self.plan.alias_repl[id(original_node)]
+        if new is None:
+            return updated_node.with_changes(asname=None)
+        if updated_node.asname is None:
+            return updated_node.with_changes(asname=cst.AsName(name=cst.Name(new)))
+        return updated_node.with_changes(
+            asname=updated_node.asname.with_changes(name=cst.Name(new))
+        )
 
     def leave_Name(self, original_node: cst.Name, updated_node: cst.Name) -> cst.BaseExpression:
         repl = self.plan.name_repl.get(id(original_node))
@@ -1173,6 +1450,18 @@ class _Fixer(cst.CSTTransformer):
         # All-or-nothing. libcst hands us the pristine original tree, so
         # returning it discards every edit made to the children.
         return original_node if self.blockers else updated_node
+
+
+def _ambiguous_reads(assignment: metadata.BaseAssignment) -> bool:
+    """Whether a read of *assignment* also resolves to some other binding.
+
+    Such a read reaches this binding only sometimes, so there is no telling
+    which name it should read after a rename. `_Fixer._sole_assignment`
+    already refuses a second assignment in the binding's own scope, which is
+    how libcst produces one today; this is asked anyway, of every read,
+    because it is the property the rename actually depends on.
+    """
+    return any(len(ref.referents) > 1 for ref in assignment.references)
 
 
 #: Why a file with a wildcard import gets no module-level binding.
@@ -1299,7 +1588,7 @@ def fix_record(
         )
 
     stale = _region_the_rewrite_created(rec, new_source, config) or _suppression_moved(
-        rec, new_source, fixer.rewritten_aliases
+        rec, new_source, fixer.rewritten_aliases, fixer.plan.alias_repl
     )
     if stale is not None:
         return FixOutcome("skipped", rec.source, [stale], unread=frozenset(fixer.unread))
@@ -1343,7 +1632,10 @@ def _has_candidates(
     """
     starts = rec.import_starts
     decider = analyze.Decider(rec, resolver, config)
-    return any(decider.decide(unit, starts[unit.node][0]).rewrite for unit in rec.units)
+    return any(decider.decide(unit, starts[unit.node][0]).rewrite for unit in rec.units) or any(
+        verdict.decision.status is model.Status.ALIAS_MISMATCH
+        for verdict in analyze.alias_verdicts(rec, resolver, config)
+    )
 
 
 def _unwritable(rec: analyze.FileRecord, new_source: str) -> model.Finding | None:
@@ -1385,7 +1677,10 @@ def _unwritable(rec: analyze.FileRecord, new_source: str) -> model.Finding | Non
 
 
 def _suppression_moved(
-    rec: analyze.FileRecord, new_source: str, rewritten: set[int]
+    rec: analyze.FileRecord,
+    new_source: str,
+    rewritten: set[int],
+    renamed: Mapping[int, str | None],
 ) -> model.Finding | None:
     r"""A suppression comment the rewrite would move onto other imports, or None.
 
@@ -1410,8 +1705,8 @@ def _suppression_moved(
     after = analyze.FileRecord(
         rec.path, new_source, cst.parse_module(new_source), rec.base_pkg, qualname=rec.qualname
     )
-    before = _coverage(rec, rewritten)
-    now = _coverage(after, set())
+    before = _coverage(rec, rewritten, renamed)
+    now = _coverage(after, set(), {})
     if before == now:
         return None
     moved = next(
@@ -1433,7 +1728,7 @@ def _suppression_moved(
 
 
 def _coverage(
-    rec: analyze.FileRecord, rewritten: set[int]
+    rec: analyze.FileRecord, rewritten: set[int], renamed: Mapping[int, str | None]
 ) -> list[collections.Counter[tuple[str, str, str | None]]]:
     """Per suppression comment in *rec*, the imports it covers that are not in *rewritten*.
 
@@ -1457,8 +1752,13 @@ def _coverage(
     for unit in rec.units:
         if unit.alias is not None and id(unit.alias) in rewritten:
             continue
+        # A renamed binding stays on its line under its new ``as`` name, so the
+        # input is counted as the rename will leave it.
+        asname = unit.asname
+        if unit.alias is not None and id(unit.alias) in renamed:
+            asname = renamed[id(unit.alias)]
         for s in rec.suppressions.covering(unit.node, unit.alias):
-            covered[s][unit.parent or "?", unit.name, unit.asname] += 1
+            covered[s][unit.parent or "?", unit.name, asname] += 1
     return [covered[s] for s in rec.suppressions.comments]
 
 

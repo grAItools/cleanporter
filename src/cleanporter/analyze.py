@@ -1039,40 +1039,65 @@ def _from_bindings(
             yield ModuleBinding(node, alias, f"{parent}.{name}", asname or name)
 
 
-def _alias_findings(
-    rec: FileRecord,
-    resolver: resolver_lib.Resolver,
-    config: config.Config,
-    used: set[tuple[suppress_lib.Suppression, str]],
-) -> list[model.Finding]:
-    """A `CP006` per binding that breaks its alias convention (`cleanporter.aliases`).
+@dataclasses.dataclass(frozen=True)
+class AliasVerdict:
+    """What the alias check decided about one `ModuleBinding` that breaks its convention."""
 
-    Replaced by a `CP004` exactly as `Decider` replaces a `CP001`: when a
-    skip rule covers the line or pins the bound name, or an inline comment
-    names ``CP006``. Nothing is walked for a run with no alias rule.
+    binding: ModuleBinding
+    expectation: aliases.Expectation
+    line: int
+    column: int
+    #: A `CP006`, or the `CP004` a skip rule or an inline comment made of it.
+    decision: Decision
+
+
+def alias_verdicts(
+    rec: FileRecord, resolver: resolver_lib.Resolver, config: config.Config
+) -> Iterator[AliasVerdict]:
+    """A verdict per binding in *rec* that breaks its alias convention (`cleanporter.aliases`).
+
+    The one statement of the alias check, shared by `analyze_record` -- which
+    reports each verdict -- and `rewrite._Fixer`, which renames exactly the
+    bindings whose verdict is a `CP006`. A binding is a `CP004` instead,
+    exactly as `Decider` replaces a `CP001`, when a skip rule covers its line
+    or pins the bound name or an inline comment names ``CP006`` -- so the
+    fixer leaves it as ``check`` does. Nothing is walked for a run with no
+    alias rule.
     """
     conventions = config.conventions
     if not conventions:
-        return []
+        return
     path = skip_lib.file_candidates(rec.path, rec.root)[0]
-    findings: list[model.Finding] = []
     for binding in bound_modules(rec, resolver, config):
         expectation = conventions.expected(binding.module, rec.qualname, path)
         detail = _alias_mismatch(binding, expectation) if expectation is not None else None
-        if detail is None:
+        if expectation is None or detail is None:
             continue
         if isinstance(binding.node, cst.Import):
             line, column = rec.plain_import_starts[binding.node]
         else:
             line, column = rec.import_starts[binding.node]
         decision = _alias_decision(rec, binding, line, detail)
+        yield AliasVerdict(binding, expectation, line, column, decision)
+
+
+def _alias_findings(
+    rec: FileRecord,
+    resolver: resolver_lib.Resolver,
+    config: config.Config,
+    used: set[tuple[suppress_lib.Suppression, str]],
+) -> list[model.Finding]:
+    """A `CP006` (or `CP004`) finding per verdict of `alias_verdicts`."""
+    findings: list[model.Finding] = []
+    for verdict in alias_verdicts(rec, resolver, config):
+        binding, decision = verdict.binding, verdict.decision
         _mark_used(rec, binding.node, binding.alias, decision, used)
         if decision.status is not None:
             findings.append(
                 model.Finding(
                     rec.path,
-                    line,
-                    column,
+                    verdict.line,
+                    verdict.column,
                     binding.module,
                     binding.bound,
                     decision.status,
