@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+Breaking under the pre-1.0 policy above:
+
+- `CP006` is a new finding, and like `CP001` it makes the run exit `1`.
+  Ruff's `flake8-import-conventions` aliases are read as conventions by
+  default (`ruff_aliases` is on unless set to `false`), so a project whose
+  `pyproject.toml` already has that ruff table and no `[tool.cleanporter]`
+  alias rules can start exiting `1` with no other change: an `import numpy`
+  where ruff's table says `np` is now a `CP006`. Under `--fix`, the same table
+  also names the bindings the fix writes and renames those `CP006` bindings.
+  `ruff_aliases = false` restores the old behaviour.
+
 ### Added
 
 - **Module alias conventions (`[[tool.cleanporter.alias]]`) and `CP006`.** An
@@ -114,6 +127,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file with one gets no module-level binding from the fix: a module-level
   rewrite declines the file with a `CP003`, and a rewrite inside a function
   binds its own import rather than reusing a module-level one.
+- A PEP 695 type alias (`type Kind = int`, Python 3.12+) was invisible to the
+  first-party resolver: the binder read `def`, `class` and assignments but had
+  no `ast.TypeAlias` case, so a module binding only type aliases looked like
+  it bound nothing at all. Every `from that.module import Kind` — including a
+  package `__init__.py`'s own re-export of one — was reported `CP002` ("could
+  not determine whether ... is a module or an object") instead of the `CP001`
+  an import of an object is. A `type` statement now binds its name as an
+  object exactly as a `class` of that name does: at run time it holds a
+  `typing.TypeAliasType` instance, never a module. It counts wherever a
+  `class` counts — inside `if` / `try` / `for` / `while` / `with` / `match`
+  bodies — and not where one does not (a function-local alias binds a local);
+  a name that is both a type alias in `PARENT/__init__.py` and a submodule on
+  disk stays ambiguous, the settled rule for any shadowing binding.
 
 ## [0.5.0] - 2026-09-29
 
@@ -1201,7 +1227,8 @@ never-guess design, and the rewriter gained its all-or-nothing safety model.
   the annotation rewrite.
 - An existing binding that is rebound or deleted is never reused for a rewrite.
 
-[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/grAItools/cleanporter/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/grAItools/cleanporter/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/grAItools/cleanporter/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/grAItools/cleanporter/releases/tag/v0.3.0

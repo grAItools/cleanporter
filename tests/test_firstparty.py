@@ -69,6 +69,20 @@ def test_submodule_shadowed_by_an_init_binding_is_ambiguous(tmp_path):
     assert mm.classify("amb", "mod") is model.Kind.AMBIGUOUS
 
 
+@pytest.mark.parametrize("binding", ["class mod: ...", "type mod = int"])
+def test_a_class_or_type_alias_shadowing_a_submodule_is_ambiguous(tmp_path, binding):
+    """A PEP 695 ``type`` statement shadows exactly as the ``class`` beside it does.
+
+    Neither is guessed: the binding wins the attribute lookup a
+    ``from amb import mod`` falls back from, so the pair stays ambiguous
+    whatever kind of object the binding holds.
+    """
+    root = _pkg(tmp_path)
+    (root / "amb" / "__init__.py").write_text(f"{binding}\n", encoding="utf-8", newline="\n")
+    mm = firstparty.ModuleMap([root])
+    assert mm.classify("amb", "mod") is model.Kind.AMBIGUOUS
+
+
 def test_init_importing_its_own_submodule_is_not_ambiguous(tmp_path):
     root = _pkg(tmp_path)
     (root / "amb" / "__init__.py").write_text("from . import mod\n", encoding="utf-8", newline="\n")
@@ -601,6 +615,46 @@ def test_a_definition_in_the_parent_is_an_object(tmp_path: pathlib.Path) -> None
     assert mm.unresolved_reason("amb", "speed") == ""
 
 
+def test_a_type_alias_in_the_parent_is_an_object(tmp_path: pathlib.Path) -> None:
+    """A PEP 695 ``type`` statement binds its name to a ``typing.TypeAliasType``."""
+    mm = _map(
+        tmp_path,
+        {
+            "amb/__init__.py": "type speed = int\n",
+            "amb/plain.py": "type Kind = int | str\n",
+        },
+    )
+    assert mm.classify("amb", "speed") is model.Kind.OBJECT
+    assert mm.classify("amb.plain", "Kind") is model.Kind.OBJECT
+
+
+@pytest.mark.parametrize(
+    "init",
+    [
+        "if sys.version_info >= (3, 12):\n    type speed = int\n",
+        "try:\n    import _speed\n    type speed = int\nexcept ImportError:\n    pass\n",
+        "try:\n    import _speed\nexcept ImportError:\n    type speed = int\n",
+    ],
+    ids=["if", "try", "except"],
+)
+def test_a_type_alias_under_a_conditional_is_an_object(tmp_path: pathlib.Path, init: str) -> None:
+    """The descent into ``if`` / ``try`` bodies counts a ``type`` statement too."""
+    mm = _map(tmp_path, {"amb/__init__.py": init})
+    assert mm.classify("amb", "speed") is model.Kind.OBJECT
+
+
+@pytest.mark.parametrize("statement", ["class inner: ...", "type inner = int"])
+def test_a_function_local_definition_binds_nothing_at_module_level(
+    tmp_path: pathlib.Path, statement: str
+) -> None:
+    """A ``type`` statement inside a ``def`` binds a local, as a local ``class`` does."""
+    mm = _map(tmp_path, {"amb/__init__.py": f"def f():\n    {statement}\n"})
+    assert mm.classify("amb", "inner") is model.Kind.UNDETERMINED
+    assert mm.unresolved_reason("amb", "inner") == (
+        "'amb.inner' is neither on disk under this run's import roots nor bound in 'amb'"
+    )
+
+
 # -- following a ``from M import X`` to where X comes from ---------------------
 
 
@@ -631,6 +685,14 @@ def test_a_reexported_first_party_object_is_an_object(tmp_path: pathlib.Path) ->
         {"amb/__init__.py": "from .core import Widget\n", "amb/core.py": "class Widget: ...\n"},
     )
     assert mm.classify("amb", "Widget") is model.Kind.OBJECT
+
+
+def test_a_reexported_type_alias_is_an_object(tmp_path: pathlib.Path) -> None:
+    mm = _map(
+        tmp_path,
+        {"amb/__init__.py": "from .core import Kind\n", "amb/core.py": "type Kind = int\n"},
+    )
+    assert mm.classify("amb", "Kind") is model.Kind.OBJECT
 
 
 def test_a_reexport_chain_is_followed_to_the_end(tmp_path: pathlib.Path) -> None:

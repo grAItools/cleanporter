@@ -22,6 +22,20 @@ import pathlib
 from collections.abc import Iterator, Mapping
 
 
+def _declared_name(
+    stmt: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.TypeAlias,
+) -> str:
+    """The name *stmt* declares itself under: ``def``, ``class`` and PEP 695 ``type``.
+
+    All three bind that name at run time to an object -- a function, the
+    class, a ``typing.TypeAliasType`` -- which is why they are read alike
+    here. The ``def``/``class`` grammar carries the name as a ``str``;
+    ``ast.TypeAlias`` carries it as a plain ``ast.Name``, the only target
+    its grammar allows.
+    """
+    return stmt.name.id if isinstance(stmt, ast.TypeAlias) else stmt.name
+
+
 def _collect(
     body: list[ast.stmt],
     defined: set[str],
@@ -32,15 +46,15 @@ def _collect(
     """Absorb *body*'s top-level bindings, split by *how* each one was bound.
 
     ``defined`` gets names a statement creates here (a ``def``, a ``class``,
-    an assignment); ``imported`` gets names an ``import`` brings in. The two
-    are collected separately rather than derived from one another because a
-    name can be both -- ``try: from x import y`` with a fallback ``def y`` in
-    the ``except`` is bound either way, so it survives a rewrite of the import
-    and is not a re-export.
+    a PEP 695 ``type`` alias, an assignment); ``imported`` gets names an
+    ``import`` brings in. The two are collected separately rather than derived
+    from one another because a name can be both -- ``try: from x import y``
+    with a fallback ``def y`` in the ``except`` is bound either way, so it
+    survives a rewrite of the import and is not a re-export.
     """
     for stmt in body:
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            defined.add(stmt.name)
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.TypeAlias)):
+            defined.add(_declared_name(stmt))
         elif isinstance(stmt, ast.Assign):
             for target in stmt.targets:
                 defined.update(n.id for n in ast.walk(target) if isinstance(n, ast.Name))
@@ -223,8 +237,8 @@ class Namespace:
     f``) appears under each of them.
     """
 
-    #: Names a statement creates here: ``def``, ``class``, an assignment, a
-    #: loop target.
+    #: Names a statement creates here: ``def``, ``class``, a PEP 695 ``type``
+    #: alias, an assignment, a loop target.
     defined: frozenset[str]
     #: Names bound by a plain ``import X`` / ``import X as Y``. Such a binding
     #: always holds a *module*.
