@@ -1420,10 +1420,10 @@ def test_a_main_module_is_not_a_package_surface(tmp_path):
 
 #: A package with a submodule that defines only type aliases: a PEP 695
 #: ``type`` statement binds ``Kind`` in ``nodes.py``, and the package
-#: ``__init__`` re-exports it. Before the binder
-#: read ``ast.TypeAlias``, the name was invisible to the first-party layer, so
-#: every import of it -- the ``__init__``'s own re-export included -- was a
-#: `CP002` that could not be decided.
+#: ``__init__`` re-exports it. Before the binder read ``ast.TypeAlias``, the
+#: name was invisible to the first-party layer, so every import of it -- the
+#: ``__init__``'s own re-export included -- was a `CP002` that could not be
+#: decided.
 _TYPEALIAS_LIKE = {
     "pkg/__init__.py": "from .nodes import Kind\n",
     "pkg/nodes.py": "type Kind = int | str\n",

@@ -632,7 +632,7 @@ def test_a_type_alias_in_the_parent_is_an_object(tmp_path: pathlib.Path) -> None
     "init",
     [
         "if sys.version_info >= (3, 12):\n    type speed = int\n",
-        "try:\n    type speed = int\nexcept SyntaxError:\n    pass\n",
+        "try:\n    import _speed\n    type speed = int\nexcept ImportError:\n    pass\n",
         "try:\n    import _speed\nexcept ImportError:\n    type speed = int\n",
     ],
     ids=["if", "try", "except"],
