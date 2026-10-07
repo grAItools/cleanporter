@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Development and Linux Python 3.12 CI now measure branch coverage, enforce a
+  95% minimum, and produce terminal, XML and HTML reports. CI retains
+  the downloadable reports even when tests or the coverage gate fail.
+
 ### Changed
 
 - The logo, wordmark and favicon use the Python blue and yellow instead of

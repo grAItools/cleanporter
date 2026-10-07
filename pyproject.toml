@@ -38,6 +38,7 @@ cleanporter = "cleanporter.cli:main"
 
 [dependency-groups]
 dev = [
+    "coverage[toml]>=7.6",
     "pytest>=9.1",
     "ruff>=0.16.4",
     "mypy>=2.3",
@@ -59,6 +60,17 @@ packages = ["src/cleanporter"]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "--strict-config"]
 xfail_strict = true
+
+[tool.coverage.run]
+source = ["src/cleanporter"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+precision = 2
+# Initial Linux Python 3.12 combined statement/branch baseline: 96.18%.
+# The chosen gate is 95%; never lower it to accommodate a change.
+fail_under = 95
 
 # ---------------------------------------------------------------------------
 # Ruff is the only linter and formatter in this project. Everything it can

@@ -56,6 +56,10 @@ Everything runs through `uv`. `uv.lock` is committed; Python floor is 3.12.
 uv sync                                   # dev group
 uv run prek install                       # local git hooks (.pre-commit-config.yaml)
 uv run pytest                             # tests
+uv run coverage run -m pytest             # tests with branch coverage (CI: Linux 3.12)
+uv run coverage xml --fail-under=0         # coverage.xml, even below the gate
+uv run coverage html --fail-under=0        # htmlcov/index.html, even below the gate
+uv run coverage report                    # missing lines and baseline gate
 uv run ruff check                         # lint (the only linter)
 uv run ruff format                        # format (the only formatter, 100 cols)
 uv run mypy --strict                      # type check, src/ + header utility
@@ -72,6 +76,14 @@ uv run corpus/run.py --alias-rules        # the same, with conventions that forc
 uv run corpus/run.py --update             # repin corpus/packages.txt to the latest, then stop
 uv run corpus/gt4py_check.py PATH         # rewrite a gt4py checkout, re-run its tests
 ```
+
+Coverage uses coverage.py directly, with a 95% combined statement/branch threshold
+in `[tool.coverage.report]` (initial full-suite Python 3.12 baseline: 96.18%).
+Never lower the gate to land a change. Generate reports even after
+pytest fails; CI retains XML and HTML for 14 days on failures too. Only
+`src/cleanporter` is measured, including unexecuted modules; subprocess execution
+is not automatically captured. Do not inject coverage into target interpreters
+or change the stdlib-only probe for measurement. Corpus checks remain necessary.
 
 No type checker takes a path: each reads its scope from `pyproject.toml`, so
 every invocation checks the same thing. `--all-files` is not optional either:
