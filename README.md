@@ -177,6 +177,4 @@ coding agents read.
 
 ## License
 
-BSD-3-Clause — see [LICENSE](LICENSE). The license changes from the BSD migration
-commit onward; earlier releases remain under MIT. Existing commits and release
-tags are preserved.
+BSD-3-Clause — see [LICENSE](LICENSE).

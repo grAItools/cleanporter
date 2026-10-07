@@ -83,9 +83,8 @@ and reported with a reason. See [Safety and limitations](safety.md).
 
 ## Installation
 
-The project uses [BSD-3-Clause](https://github.com/grAItools/cleanporter/blob/main/LICENSE)
-from the license migration commit onward; earlier releases remain under MIT.
-Existing commits and release tags are preserved. Contributor header requirements
+The project uses [BSD-3-Clause](https://github.com/grAItools/cleanporter/blob/main/LICENSE).
+Contributor header requirements
 are documented in [CONTRIBUTING.md](https://github.com/grAItools/cleanporter/blob/main/CONTRIBUTING.md#license-headers).
 
 Requires **Python 3.12 or newer**. The only runtime dependency is

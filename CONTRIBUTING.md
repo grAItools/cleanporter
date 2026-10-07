@@ -104,8 +104,18 @@ Header text and year do not vary per file: changes to the template must be
 applied repository-wide. Check exits are `0` for clean, `1` for violations,
 and `2` for operational errors.
 
-The repository uses BSD-3-Clause from the license migration commit onward;
-earlier releases remain MIT. History and release tags are preserved.
+The repository uses BSD-3-Clause.
+
+We evaluated Lucas-C's
+[`insert-license`](https://github.com/Lucas-C/pre-commit-hooks/blob/ad1b27d73581aa16cca06fc4a0761fc563ffe8e8/pre_commit_hooks/insert_license.py)
+hook. It supports templates and automatic insertion, but has no read-only check
+mode. Its matching strips whitespace and accepts the first matching header in a
+configurable prefix, so it does not enforce exact placement, a single copy, or
+the separator. It processes supplied filenames rather than discovering the full
+Git scope. Meeting this repository's policy would still require a custom
+validator and discovery wrapper. We retain the stdlib-only utility so the hook
+checks without writing, while explicit fixes preserve source bytes and refuse
+conflicting notices.
 
 ## Type checking
 

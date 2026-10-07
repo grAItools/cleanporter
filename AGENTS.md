@@ -148,8 +148,7 @@ pass" while unformatted this way.
   shebang and encoding declaration, followed by one blank line. The hook checks
   without writing; the explicit `--fix` command preserves source bytes and only
   normalizes recognized grAItools notices. Never replace a third-party notice.
-  The license is BSD-3-Clause from the migration commit onward; earlier releases
-  remain MIT. Keep existing history and release tags intact.
+  The license is BSD-3-Clause. Keep existing history and release tags intact.
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `test:`, `perf:`,
   `refactor:`, `chore:`). Subject in the imperative, describing the effect.
 - Code follows the Google Python Style Guide; docstrings the Google convention

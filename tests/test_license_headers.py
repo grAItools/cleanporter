@@ -243,7 +243,7 @@ def test_license_metadata_and_readme_agree():
     assert "Neither the name of the copyright holder" in license_text
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "license-BSD--3--Clause" in readme
-    assert "earlier releases remain under MIT" in readme
+    assert "BSD-3-Clause — see [LICENSE](LICENSE)." in readme
     contributing = (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     assert HEADER.splitlines()[0].decode() in contributing
     assert "contributions are licensed under the BSD 3-Clause" in contributing
