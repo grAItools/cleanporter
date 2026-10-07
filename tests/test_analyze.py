@@ -307,15 +307,25 @@ def test_a_reexport_nobody_imports_is_still_fixable(tmp_path: pathlib.Path) -> N
     assert [f.code for f in by_file["tool.py"]] == ["CP001"]
 
 
-def test_a_name_both_imported_and_defined_is_not_protected(tmp_path: pathlib.Path) -> None:
-    """A try/except import with a fallback definition survives a rewrite."""
+@pytest.mark.parametrize(
+    "fallback",
+    ["    def dump():\n        return 0\n", "    type dump = int\n"],
+    ids=["def", "type"],
+)
+def test_a_name_both_imported_and_defined_is_not_protected(
+    tmp_path: pathlib.Path, fallback: str
+) -> None:
+    """A try/except import with a fallback definition survives a rewrite.
+
+    A PEP 695 ``type`` fallback defines the name exactly as a ``def`` does, so
+    the import is not a pure re-export either way.
+    """
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     (pkg / "__init__.py").write_text("", newline="\n")
     (pkg / "display.py").write_text("def dump():\n    return 1\n", newline="\n")
     (pkg / "tool.py").write_text(
-        "try:\n    from pkg.display import dump\nexcept ImportError:\n"
-        "    def dump():\n        return 0\n",
+        f"try:\n    from pkg.display import dump\nexcept ImportError:\n{fallback}",
         newline="\n",
     )
     (pkg / "user.py").write_text("from pkg.tool import dump\nx = dump()\n", newline="\n")
@@ -1408,8 +1418,9 @@ def test_a_main_module_is_not_a_package_surface(tmp_path):
     )
 
 
-#: The array-vectorize shape: a PEP 695 ``type`` statement binds ``Kind`` in
-#: ``nodes.py``, and the package ``__init__`` re-exports it. Before the binder
+#: A package with a submodule that defines only type aliases: a PEP 695
+#: ``type`` statement binds ``Kind`` in ``nodes.py``, and the package
+#: ``__init__`` re-exports it. Before the binder
 #: read ``ast.TypeAlias``, the name was invisible to the first-party layer, so
 #: every import of it -- the ``__init__``'s own re-export included -- was a
 #: `CP002` that could not be decided.

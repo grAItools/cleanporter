@@ -628,12 +628,18 @@ def test_a_type_alias_in_the_parent_is_an_object(tmp_path: pathlib.Path) -> None
     assert mm.classify("amb.plain", "Kind") is model.Kind.OBJECT
 
 
-def test_a_type_alias_under_a_conditional_is_an_object(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize(
+    "init",
+    [
+        "if sys.version_info >= (3, 12):\n    type speed = int\n",
+        "try:\n    type speed = int\nexcept SyntaxError:\n    pass\n",
+        "try:\n    import _speed\nexcept ImportError:\n    type speed = int\n",
+    ],
+    ids=["if", "try", "except"],
+)
+def test_a_type_alias_under_a_conditional_is_an_object(tmp_path: pathlib.Path, init: str) -> None:
     """The descent into ``if`` / ``try`` bodies counts a ``type`` statement too."""
-    mm = _map(
-        tmp_path,
-        {"amb/__init__.py": "if sys.version_info >= (3, 12):\n    type speed = int\n"},
-    )
+    mm = _map(tmp_path, {"amb/__init__.py": init})
     assert mm.classify("amb", "speed") is model.Kind.OBJECT
 
 
