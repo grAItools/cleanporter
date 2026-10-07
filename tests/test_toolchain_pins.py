@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """The two ruff pins must agree.
 
 Ruff is installed twice, on purpose and unavoidably. `uv run ruff check` uses

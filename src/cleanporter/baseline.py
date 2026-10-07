@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 r"""Baselines: the findings a project has accepted for now, and taking them out of a run.
 
 A project adopting cleanporter on an existing codebase has hundreds of

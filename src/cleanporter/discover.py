@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Expand command-line paths into the set of files to analyse.
 
 Directories named on the command line are walked; dot-directories and known

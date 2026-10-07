@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Analysis driver: turn source files into :class:`Finding` objects.
 
 `FileRecord` carries a parsed file and lazily caches what is expensive to

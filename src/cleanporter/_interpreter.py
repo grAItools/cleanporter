@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 r"""Which interpreter the probe asks: a named one, cleanporter's own, or the project's.
 
 cleanporter is usually installed on its own -- ``pipx``, ``uv tool`` -- so the

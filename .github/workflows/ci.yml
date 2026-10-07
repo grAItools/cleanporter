@@ -44,7 +44,7 @@ jobs:
       # One step, and not a re-spelling of the hooks: .pre-commit-config.yaml
       # is the single definition of what lint and type checking mean here, and
       # running anything else would let CI and the git hooks drift in their
-      # options. This covers ruff-check, ruff-format and all four type
+      # options. This covers ruff-check, ruff-format, license headers and all four type
       # checkers -- mypy, pyright, zuban and pyrefly.
       #
       # The ruff hooks run with `--fix`, so on a violation they rewrite the
@@ -54,7 +54,7 @@ jobs:
       #
       # The pyright PyPI wrapper fetches its own Node runtime on first use.
       # That works on GitHub-hosted runners; it just costs a few seconds.
-      - name: prek (ruff, mypy, pyright, zuban, pyrefly)
+      - name: prek (ruff, license headers, mypy, pyright, zuban, pyrefly)
         run: uv run prek run --all-files --show-diff-on-failure
 
   test:

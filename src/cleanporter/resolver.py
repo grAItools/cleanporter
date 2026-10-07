@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Module/object resolution, layered for correctness and safety.
 
 Order of resolution for a ``from PARENT import NAME``:

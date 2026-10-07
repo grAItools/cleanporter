@@ -408,8 +408,9 @@ everything.
 
 ### As a CI gate
 
-Check mode is the gate. Exit `1` on any `CP001`, so no extra scripting is
-needed:
+Check mode is the gate. Reported `CP001`, `CP003`, `CP005` and `CP006`
+findings make it exit `1`; `CP002` does so under `--strict`. No extra scripting
+is needed:
 
 ```yaml
 - name: Enforce Google style guide 2.2 (imports)

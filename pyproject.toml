@@ -8,7 +8,7 @@ version = "0.6.0"
 description = "Check that from-imports follow Google Python Style Guide section 2.2 (import modules only) and auto-fix violations."
 readme = "README.md"
 requires-python = ">=3.12"
-license = "MIT"
+license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [{ name = "grAItools" }]
 maintainers = [{ name = "Enrique González Paredes" }]
@@ -115,9 +115,6 @@ ignore = [
     "TD002",  # missing-todo-author
     "TD003",  # missing-todo-link
     "FIX002", # line-contains-todo
-
-    # No per-file copyright headers in this project; the LICENSE covers it.
-    "CPY001", # missing-copyright-notice
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -149,6 +146,8 @@ ignore = [
 "src/cleanporter/resolver.py" = ["S603", "S607"]
 # A CLI writes to stdout and stderr on purpose.
 "src/cleanporter/cli.py" = ["T201"]
+# Repository operator script: reports violations and invokes Git by name.
+".github/scripts/license_headers.py" = ["T201", "S607"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -188,14 +187,16 @@ docstring-code-format = true
 # They are split by generation, because the two generations disagree about
 # what an unannotated function means:
 #
-#   mypy, pyright     -- `src/cleanporter` only. `mypy --strict` over the test
-#                        suite is 250-odd `no-untyped-def` reports on
+#   mypy, pyright     -- `src/cleanporter`. `mypy --strict` over the test
+#                        suite produces `no-untyped-def` reports on
 #                        unannotated test functions, and pyright without them
 #                        adds little that the newer pair does not already say.
 #   zuban, pyrefly    -- `src/cleanporter` *and* `tests`. They are fast enough
 #                        to cover both, and each is configured below so that
 #                        the test suite is checked without demanding a
 #                        signature on every test function.
+#
+# All four also check the standalone license-header utility.
 #
 # `tests/fixtures` is excluded from both of the wide-scope checkers, for the
 # same reason ruff excludes it: fixtures are input data for the tool --
@@ -206,15 +207,15 @@ docstring-code-format = true
 [tool.mypy]
 # Scope lives here rather than in the hook entry, so `uv run mypy --strict`
 # checks the same thing however it is invoked.
-files = ["src/cleanporter"]
+files = ["src/cleanporter", ".github/scripts/license_headers.py"]
 python_version = "3.12"
 strict = true
 
 [tool.pyright]
-# Source only, like mypy: `tests` is zuban's and pyrefly's job. Scope lives
+# Source and header utility, like mypy: `tests` is zuban's and pyrefly's job. Scope lives
 # here rather than in the hook entry, so `uv run pyright` checks the same
 # thing however it is invoked.
-include = ["src/cleanporter"]
+include = ["src/cleanporter", ".github/scripts/license_headers.py"]
 pythonVersion = "3.12"
 # Not "strict": that mode reports 60+ `reportUnknown*` diagnostics that all
 # originate in libcst's partially-typed surface rather than in this code.
@@ -227,7 +228,7 @@ venv = ".venv"
 # scope to mypy's. It is here precisely so the two can differ: zuban also
 # covers `tests`. Everything mypy needs is repeated rather than inherited --
 # this section replaces `[tool.mypy]` for zuban, it does not extend it.
-files = ["src/cleanporter", "tests"]
+files = ["src/cleanporter", "tests", ".github/scripts/license_headers.py"]
 # A regular expression matched against the path, not a glob: mypy's `exclude`
 # syntax, which zuban implements.
 exclude = ["^tests/fixtures/"]
@@ -235,7 +236,7 @@ python_version = "3.12"
 strict = true
 
 [[tool.zuban.overrides]]
-# `--strict` over the test suite is 250-odd `no-untyped-def` reports demanding
+# `--strict` over the test suite produces `no-untyped-def` reports demanding
 # `-> None` on every test function. Annotating them would add no information:
 # pytest calls them, nothing else does, and their arguments are fixtures. What
 # is worth having over `tests/` is the rest of strict mode -- the bad
@@ -249,8 +250,12 @@ disallow_untyped_calls = false
 disallow_untyped_decorators = false
 
 [tool.pyrefly]
-project-includes = ["src/cleanporter", "tests"]
+project-includes = ["src/cleanporter", "tests", ".github/scripts/license_headers.py"]
 project-excludes = ["tests/fixtures/**"]
+# The scope is explicit: default exclusion heuristics silently drop hidden
+# paths, including our .github utility and tests in hidden agent worktrees.
+# Disabling those heuristics broadens checking to the configured full scope.
+disable-project-excludes-heuristics = true
 python-version = "3.12"
 # No `python-interpreter` here: pyrefly finds the project's `.venv` on its own,
 # and naming an interpreter path would hard-code a POSIX layout.

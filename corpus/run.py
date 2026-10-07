@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Run ``cleanporter --fix`` over real third-party code and check it still works.
 
 The unit suite proves the fixer does what it is told on inputs someone thought

@@ -24,12 +24,22 @@ repos:
 
   - repo: local
     hooks:
+      # Check the entire Git-owned tree, including new files and fixtures.
+      # Template-only changes must also validate every Python header.
+      - id: license-headers
+        name: canonical license headers
+        entry: uv run python .github/scripts/license_headers.py --check
+        language: system
+        pass_filenames: false
+        always_run: true
+
       # Four type checkers, all of them gates. Filenames are not passed: each
       # reads its own scope from pyproject.toml (`[tool.mypy] files`,
       # `[tool.pyright] include`, `[tool.zuban] files`, `[tool.pyrefly]
       # project-includes`), so a per-file invocation would check less than a
       # commit is judged on -- and the scopes differ, mypy and pyright taking
-      # `src/cleanporter` while zuban and pyrefly also take `tests`.
+      # `src/cleanporter` while zuban and pyrefly also take `tests`. All four
+      # additionally check the license-header utility.
       #
       # `types: [python]` keeps them from firing on commits that touch no
       # Python.

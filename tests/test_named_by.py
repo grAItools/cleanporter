@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """The cross-file string guard: a dotted path in another file keeps a re-export.
 
 ``monkeypatch.setattr("pkg.mod.helper", ...)`` in a test, ``mock.patch`` of

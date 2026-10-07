@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Whole-project runs: read the whole tree for evidence, report only the listed files.
 
 `engine.run(..., whole_project=True)` / ``--whole-project`` exist for

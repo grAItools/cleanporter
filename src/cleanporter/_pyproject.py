@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Dotted references in a ``pyproject.toml``: entry points, plugin addresses, and the like.
 
 The cross-file string guard (`resolver.Resolver.named_by`) weighs every string

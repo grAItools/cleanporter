@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Run ``cleanporter --fix`` over a gt4py checkout and re-run gt4py's own tests.
 
 The same idea as ``run.py`` -- rewrite real code, then *execute* it, and count

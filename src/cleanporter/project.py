@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """The run's inputs, built once and in order: files, records, map, evidence, resolver.
 
 A `Project` is everything a check or fix of a set of paths needs to know

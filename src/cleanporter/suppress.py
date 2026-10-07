@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Inline suppressions: ``# cleanporter: ignore[CP001]`` on an import's line.
 
 A `[tool.cleanporter.skip]` rule is the tool for a *class* of code the author

@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Adopt BSD-3-Clause, with existing history and tags preserved.
+- Every repository-owned Python file carries a canonical SPDX header, enforced
+  by a check-only development hook with an explicit header application command.
+- Developer documentation now covers the header policy, all finding codes,
+  current hook and type-checker scopes, and interpreter detection order.
+
 ## [0.6.0] - 2026-10-07
 
 Breaking under the pre-1.0 policy above:
@@ -1104,7 +1112,7 @@ Breaking under the pre-1.0 policy above:
 
 ## [0.3.0] - 2026-08-27
 
-The publication release: MIT-licensed, documented, and gated by a full tooling
+The publication release: licensed, documented, and gated by a full tooling
 stack. The Python floor moves to 3.12, which is why this is a minor bump.
 
 ### Removed
@@ -1116,7 +1124,7 @@ stack. The Python floor moves to 3.12, which is why this is a minor bump.
 
 ### Added
 
-- MIT `LICENSE` file and complete project metadata: homepage, documentation,
+- `LICENSE` file and complete project metadata: homepage, documentation,
   repository, issues and changelog URLs, `grAItools` attribution, keywords, and
   trove classifiers for Python 3.12, 3.13 and 3.14.
 - [pyright](https://github.com/microsoft/pyright) as a second **blocking** type

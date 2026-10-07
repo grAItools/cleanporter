@@ -9,3 +9,11 @@
 # given `newline="\n"`, which every call in tests/ therefore passes
 # (tests/test_portability.py enforces it).
 * text=auto eol=lf
+
+# Empty package markers still end with the canonical header's blank separator.
+# The header hook rejects extra separators; Git's generic blank-at-EOF check
+# would otherwise reject these intentional header-only files.
+tests/__init__.py whitespace=-blank-at-eof
+tests/fixtures/pkg/__init__.py whitespace=-blank-at-eof
+tests/fixtures/pkg/other/__init__.py whitespace=-blank-at-eof
+tests/fixtures/pkg/sub/__init__.py whitespace=-blank-at-eof

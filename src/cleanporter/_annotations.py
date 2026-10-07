@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """String literals the fixer must treat as code: lazy annotations and ``__all__``.
 
 Two jobs, both about strings whose contents name identifiers:

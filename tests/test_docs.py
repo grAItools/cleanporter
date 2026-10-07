@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """The documentation must not drift from the actual CLI surface.
 
 Every flag, config key and finding code is asserted to appear in the page
@@ -88,15 +92,25 @@ def test_every_config_key_is_documented() -> None:
 def test_every_finding_code_is_documented() -> None:
     text = _text(USAGE)
     codes = {
-        "CP001": model.Status.VIOLATION,
-        "CP002": model.Status.UNRESOLVED,
-        "CP003": model.Status.SKIPPED,
-        "CP004": model.Status.SKIPPED_BY_CONFIG,
-        "CP005": model.Status.UNUSED_SUPPRESSION,
-        "CP006": model.Status.ALIAS_MISMATCH,
+        model.Finding(pathlib.Path("example.py"), 1, 0, "pkg", "name", status).code
+        for status in model.Status
     }
     missing = sorted(c for c in codes if c not in text)
     assert missing == [], f"undocumented finding codes in {USAGE.name}: {missing}"
+    contributing = _text(ROOT / "CONTRIBUTING.md")
+    assert f"`{min(codes)}`\N{EN DASH}`{max(codes)}`" in contributing
+
+
+def test_pre_commit_documents_every_finding_that_fails_a_check() -> None:
+    text = _text(DOCS / "pre-commit.md")
+    [row] = [line for line in text.splitlines() if line.startswith("| `cleanporter` |")]
+    for status in model.Status:
+        finding = model.Finding(pathlib.Path("example.py"), 1, 0, "pkg", "name", status)
+        result = engine.RunResult(engine.Mode.CHECK, 1, (finding,), (), (), ())
+        if result.exit_code(strict=True) == 1:
+            assert f"`{finding.code}`" in row
+        if result.exit_code() != result.exit_code(strict=True):
+            assert "`--strict`" in row
 
 
 @pytest.mark.parametrize("page", ALL_PAGES, ids=lambda p: p.name)

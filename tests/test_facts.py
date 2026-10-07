@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """`analyze.FileFacts`: one walk, the same answers as the walks it replaced.
 
 The oracles below are the per-question visitors `analyze` used before the

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 r"""Alias conventions: which name a module must be bound under, and where.
 
 A project that writes ``import numpy as np`` everywhere wants two things from

@@ -43,7 +43,7 @@ suppression and a broken convention, not notes -- while `CP002` counts only unde
 the author's own configuration reporting back, printed only under
 `--show-skipped`.
 
-The code is `src/cleanporter/`; every module opens with a docstring giving its
+The code is `src/cleanporter/`; after the license header every module has a docstring giving its
 role and reasoning, at length in `guards.py`, `firstparty.py`, `resolver.py`,
 `rewrite.py` (with `_annotations.py` and `_type_checking.py`, which it plans
 from) and `_probe.py`. Read it before changing the module.
@@ -58,11 +58,13 @@ uv run prek install                       # local git hooks (.pre-commit-config.
 uv run pytest                             # tests
 uv run ruff check                         # lint (the only linter)
 uv run ruff format                        # format (the only formatter, 100 cols)
-uv run mypy --strict                      # type check, src/
-uv run pyright                            # type check, src/ (fetches Node on first run)
-uv run zuban mypy                         # type check, src/ + tests/
-uv run pyrefly check                      # type check, src/ + tests/
-uv run prek run --all-files               # every blocking hook: the above six
+uv run mypy --strict                      # type check, src/ + header utility
+uv run pyright                            # same scope (fetches Node on first run)
+uv run zuban mypy                         # type check, src/ + tests/ + header utility
+uv run pyrefly check                      # same scope as zuban
+uv run python .github/scripts/license_headers.py --check  # exact canonical headers
+uv run python .github/scripts/license_headers.py --fix    # apply owned headers
+uv run prek run --all-files               # every blocking hook, including headers
 uv run --group docs zensical build        # docs build (`serve` for a live preview)
 uv run corpus/run.py                      # rewrite real packages, run them; --skip-install
                                           #   reuses an installed corpus (~30-45 min)
@@ -73,13 +75,15 @@ uv run corpus/gt4py_check.py PATH         # rewrite a gt4py checkout, re-run its
 
 No type checker takes a path: each reads its scope from `pyproject.toml`, so
 every invocation checks the same thing. `--all-files` is not optional either:
-`prek run` otherwise judges only *staged* files, and with nothing staged every
-hook reports "(no files to check) Skipped", which reads exactly like a pass.
+`prek run` otherwise judges only *staged* files, and with nothing staged the
+file-triggered hooks report "(no files to check) Skipped", which reads exactly
+like a pass. The license-header hook always runs against its full Git scope.
 
 **And `--all-files` means every file *git knows about*.** A brand-new module
-you have not `git add`-ed is untracked, so every hook silently skips it while
-still printing six green lines. A change that adds files is therefore not
-checked by the thing that reports it is checked -- `git add` first, or run
+you have not `git add`-ed is untracked, so the ruff hooks silently skip it while
+still printing green lines. The header hook scans untracked, nonignored Python
+files too, but the ruff hooks do not. A change that adds files is therefore not
+fully checked by the thing that reports it is checked -- `git add` first, or run
 `uv run ruff format --check .` and `uv run ruff check` directly, which do walk
 the working tree. Both `skip.py` and `test_skip.py` reached "all six hooks
 pass" while unformatted this way.
@@ -88,10 +92,11 @@ pass" while unformatted this way.
 
 - **All four type checkers stay clean.** `mypy --strict` and `pyright` cover
   `src/cleanporter`; `zuban` and `pyrefly` also cover `tests/` (minus
-  `tests/fixtures/`: input data for the tool, not project code). All four gate,
+  `tests/fixtures/`: input data for the tool, not project code). All four also
+  check `.github/scripts/license_headers.py`. All four gate,
   as git hooks and in CI, so any diagnostic is a regression, not debt. **Never**
   land code behind a `# type: ignore`, a `cast`, an `Any` or a loosened setting:
-  there is no budget and the tree carries no type suppressions at all. Both
+  there is no budget and the checked code carries no type suppressions at all. Both
   precedents went the same way -- the nine errors a budget once covered were
   narrowing failures, and the last `# type: ignore` (`config.py`'s
   `Config(**kwargs)`) hid eight more.
@@ -138,6 +143,12 @@ pass" while unformatted this way.
   there is decided like any other.
 - **`libcst` is the only runtime dependency.** Tooling belongs in a dependency
   group.
+- **Canonical license headers cover every repository-owned Python file**, including
+  committed fixtures and hidden scripts. Use `.license-header.txt`, after any
+  shebang and encoding declaration, followed by one blank line. The hook checks
+  without writing; the explicit `--fix` command preserves source bytes and only
+  normalizes recognized grAItools notices. Never replace a third-party notice.
+  The license is BSD-3-Clause. Keep existing history and release tags intact.
 - **Conventional Commits** (`feat:`, `fix:`, `docs:`, `test:`, `perf:`,
   `refactor:`, `chore:`). Subject in the imperative, describing the effect.
 - Code follows the Google Python Style Guide; docstrings the Google convention
@@ -160,9 +171,8 @@ pass" while unformatted this way.
 - The mccabe/pylint complexity limits in `pyproject.toml` are ratchets set to
   the current worst case (`rewrite.py::_plan_line`, `_bindings.py::_collect`).
   Do not raise them to land code.
-- **pyrefly silently skips includes under a hidden parent directory.** In a
-  checkout whose path has a dot-component (an agent worktree under `~/.paseo/`
-  or `.claude/worktrees/`), `pyrefly check` drops `tests` from
-  `project-includes`, warns once with `WARN Skipping include pattern ...`, and
-  still exits 0 -- passing having checked half of what it claims. Read that line
-  if it appears; a normal clone, CI and zuban are unaffected.
+- **pyrefly's default exclusion heuristics skip hidden paths.** Keep
+  `disable-project-excludes-heuristics = true`: the explicit includes must
+  cover `.github/scripts/license_headers.py` and tests in hidden worktrees.
+  A `WARN Skipping include pattern ...` line still means a passing exit can
+  conceal incomplete checking; verify the full scope if one appears.
