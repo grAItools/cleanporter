@@ -115,6 +115,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewrite declines the file with a `CP003`, and a rewrite inside a function
   binds its own import rather than reusing a module-level one.
 
+## [0.6.0] - 2026-10-07
+
+### Fixed
+
+- A PEP 695 type alias (`type Kind = int`, Python 3.12+) was invisible to the
+  first-party resolver: the binder read `def`, `class` and assignments but had
+  no `ast.TypeAlias` case, so a module binding only type aliases looked like
+  it bound nothing at all. Every `from that.module import Kind` — including a
+  package `__init__.py`'s own re-export of one — was reported `CP002` ("could
+  not determine whether ... is a module or an object") instead of the `CP001`
+  an import of an object is. A `type` statement now binds its name as an
+  object exactly as a `class` of that name does: at run time it holds a
+  `typing.TypeAliasType` instance, never a module. It counts wherever a
+  `class` counts — inside `if` / `try` / `for` / `while` / `with` / `match`
+  bodies — and not where one does not (a function-local alias binds a local);
+  a name that is both a type alias in `PARENT/__init__.py` and a submodule on
+  disk stays ambiguous, the settled rule for any shadowing binding.
+
 ## [0.5.0] - 2026-09-29
 
 Breaking under the pre-1.0 policy above:
@@ -1201,7 +1219,8 @@ never-guess design, and the rewriter gained its all-or-nothing safety model.
   the annotation rewrite.
 - An existing binding that is rebound or deleted is never reused for a rewrite.
 
-[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/grAItools/cleanporter/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/grAItools/cleanporter/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/grAItools/cleanporter/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/grAItools/cleanporter/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/grAItools/cleanporter/releases/tag/v0.3.0

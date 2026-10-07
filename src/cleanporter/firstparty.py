@@ -640,8 +640,8 @@ class ModuleMap:
     def _lookup_in(self, source: pathlib.Path, module: str, name: str) -> tuple[_Evidence, bool]:
         """`_lookup` for one file claiming *module*: every binding of *name* in it.
 
-        * A ``def``, a ``class`` or an assignment binds an object; a plain
-          ``import X as NAME`` binds a module.
+        * A ``def``, a ``class``, a PEP 695 ``type`` alias or an assignment
+          binds an object; a plain ``import X as NAME`` binds a module.
         * ``from M import X as NAME`` binds whatever ``M.X`` is, so it is
           followed there (`_via_from`): a submodule on disk is a module, a
           first-party ``M`` is read the same way, recursively, and a

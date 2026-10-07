@@ -51,7 +51,8 @@ a plain module — read with the same rules as the ambiguity check below
 (conditional bodies included), and each binding is followed to where it
 comes from:
 
-- a `def`, a `class` or an assignment binds an **object**;
+- a `def`, a `class`, a PEP 695 `type` alias or an assignment binds an
+  **object**;
 - a plain `import X as NAME` binds a **module**;
 - `from M import X as NAME` binds whatever `M.X` is, so it is followed
   there. A submodule on disk is a module — `from . import _version as
