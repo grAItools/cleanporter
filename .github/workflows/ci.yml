@@ -78,7 +78,37 @@ jobs:
         run: uv sync --locked
 
       - name: pytest
+        if: matrix.python-version != '3.12'
         run: uv run pytest
+
+      - name: pytest with branch coverage
+        if: matrix.python-version == '3.12'
+        run: uv run coverage run -m pytest
+
+      # Run each report independently so a failed test or coverage gate cannot
+      # prevent the remaining reports from being generated and uploaded.
+      - name: XML coverage report
+        if: always() && matrix.python-version == '3.12' && hashFiles('.coverage') != ''
+        run: uv run coverage xml --fail-under=0
+
+      - name: HTML coverage report
+        if: always() && matrix.python-version == '3.12' && hashFiles('.coverage') != ''
+        run: uv run coverage html --fail-under=0
+
+      - name: Coverage report and baseline gate
+        if: always() && matrix.python-version == '3.12' && hashFiles('.coverage') != ''
+        run: uv run coverage report
+
+      - name: Upload coverage reports
+        if: always() && matrix.python-version == '3.12' && hashFiles('.coverage') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ runner.os }}-python-${{ matrix.python-version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            coverage.xml
+            htmlcov/
+          retention-days: 14
+          if-no-files-found: error
 
   # Only the tests: the lint job's type checkers and ruff read source, not the
   # platform, so running them twice would prove nothing new. What differs on

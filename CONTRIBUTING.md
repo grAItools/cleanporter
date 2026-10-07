@@ -15,7 +15,7 @@ so a sync gives you exactly the environment CI uses.
 ```bash
 git clone https://github.com/grAItools/cleanporter
 cd cleanporter
-uv sync                 # dev group: pytest, ruff, the four type checkers, prek
+uv sync                 # dev group: pytest, coverage, ruff, four type checkers, prek
 uv run prek install     # install the local git hooks
 ```
 
@@ -33,6 +33,10 @@ group pins because it is faster.
 | --- | --- |
 | Run the tests | `uv run pytest` |
 | Run one test file | `uv run pytest tests/test_rewrite.py` |
+| Run tests with branch coverage | `uv run coverage run -m pytest` |
+| Show missing lines and enforce the coverage gate | `uv run coverage report` |
+| Write the XML coverage report | `uv run coverage xml --fail-under=0` |
+| Write the HTML coverage report | `uv run coverage html --fail-under=0` |
 | Lint | `uv run ruff check` |
 | Lint with autofix | `uv run ruff check --fix` |
 | Format | `uv run ruff format` |
@@ -60,6 +64,28 @@ Three notes on running these:
   files, and with nothing staged the file-triggered hooks report
   `(no files to check) Skipped` — which reads just like a pass. The header
   hook always runs against its full Git scope.
+
+## Test coverage
+
+The Linux Python 3.12 CI job measures branch coverage with coverage.py directly,
+then prints missing lines and enforces the combined statement/branch threshold
+in `[tool.coverage.report]`. The chosen threshold is 95%, with an initial
+full-suite baseline of 96.18%; do not lower it to accommodate a change. Other
+matrix jobs run pytest without coverage.
+
+To match CI's interpreter locally, first run `uv sync --locked --python 3.12`.
+Run the coverage test command above, then the XML,
+HTML and terminal report commands even if pytest fails. Open `htmlcov/index.html`
+for annotated source. XML and HTML generation bypass the gate so reports remain
+available below the threshold; `coverage report` enforces it. CI retains both
+reports in a coverage artifact for 14 days, including after test or gate failures.
+
+Coverage includes every Python module in `src/cleanporter`, including modules
+never executed, and excludes tests and repository utilities. It measures the
+pytest process; execution in Python subprocesses is not automatically captured.
+Do not inject coverage into arbitrary target interpreters or change the
+stdlib-only probe to improve the score. Coverage supplements the corpus checks,
+which remain necessary for resolver and fixer safety.
 
 ## Code style
 
