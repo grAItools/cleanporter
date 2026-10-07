@@ -14,6 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+Breaking under the pre-1.0 policy above:
+
+- `CP006` is a new finding, and like `CP001` it makes the run exit `1`.
+  Ruff's `flake8-import-conventions` aliases are read as conventions by
+  default (`ruff_aliases` is on unless set to `false`), so a project whose
+  `pyproject.toml` already has that ruff table and no `[tool.cleanporter]`
+  alias rules can start exiting `1` with no other change: an `import numpy`
+  where ruff's table says `np` is now a `CP006`. Under `--fix`, the same table
+  also names the bindings the fix writes and renames those `CP006` bindings.
+  `ruff_aliases = false` restores the old behaviour.
+
 ### Added
 
 - **Module alias conventions (`[[tool.cleanporter.alias]]`) and `CP006`.** An
@@ -114,11 +127,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file with one gets no module-level binding from the fix: a module-level
   rewrite declines the file with a `CP003`, and a rewrite inside a function
   binds its own import rather than reusing a module-level one.
-
-## [0.6.0] - 2026-10-07
-
-### Fixed
-
 - A PEP 695 type alias (`type Kind = int`, Python 3.12+) was invisible to the
   first-party resolver: the binder read `def`, `class` and assignments but had
   no `ast.TypeAlias` case, so a module binding only type aliases looked like
