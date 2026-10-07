@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """The suite writes the bytes it later compares, on every platform.
 
 `pathlib.Path.write_text` translates ``\\n`` to ``os.linesep`` unless it is

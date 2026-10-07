@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 r"""Machine-readable reports of a finished run: ``--format json|sarif|github``.
 
 Every function here is pure: it takes an `engine.RunResult` and the few

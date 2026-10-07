@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Standalone, stdlib-only classifier for ``from PARENT import NAME``.
 
 This module answers a single question: given a ``from PARENT import NAME``

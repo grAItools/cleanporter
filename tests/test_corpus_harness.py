@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """How the corpus harness decides that a failure is *new*.
 
 `corpus/run.py` is the only check that imports and runs the rewritten code, so

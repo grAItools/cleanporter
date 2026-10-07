@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Top-level name bindings of a module, read with ``ast``.
 
 Two questions are answered here, both by parsing only -- nothing is imported:

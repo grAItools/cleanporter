@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Which interpreter the probe asks: named, cleanporter's own, or the project's, detected."""
 
 from __future__ import annotations

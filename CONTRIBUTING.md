@@ -37,10 +37,12 @@ group pins because it is faster.
 | Lint with autofix | `uv run ruff check --fix` |
 | Format | `uv run ruff format` |
 | Check formatting only | `uv run ruff format --check` |
-| Type check `src/` | `uv run mypy --strict` |
-| Type check `src/` | `uv run pyright` |
-| Type check `src/` + `tests/` | `uv run zuban mypy` |
-| Type check `src/` + `tests/` | `uv run pyrefly check` |
+| Check license headers | `uv run python .github/scripts/license_headers.py --check` |
+| Apply license headers | `uv run python .github/scripts/license_headers.py --fix` |
+| Type check `src/` + header utility | `uv run mypy --strict` |
+| Type check `src/` + header utility | `uv run pyright` |
+| Type check `src/` + `tests/` + header utility | `uv run zuban mypy` |
+| Type check `src/` + `tests/` + header utility | `uv run pyrefly check` |
 | Every blocking hook | `uv run prek run --all-files` |
 | Preview the docs | `uv run --group docs zensical serve` |
 | Build the docs | `uv run --group docs zensical build` |
@@ -55,8 +57,9 @@ Three notes on running these:
   on first invocation. Subsequent runs are fast; if the first one seems to hang,
   it is fetching Node.
 - **`--all-files` is not optional.** `prek run` without it judges only *staged*
-  files, and with nothing staged every hook reports `(no files to check)
-  Skipped` — which reads just like a pass.
+  files, and with nothing staged the file-triggered hooks report
+  `(no files to check) Skipped` — which reads just like a pass. The header
+  hook always runs against its full Git scope.
 
 ## Code style
 
@@ -74,6 +77,35 @@ Three notes on running these:
 - Complexity limits in `[tool.ruff.lint.mccabe]` and `[tool.ruff.lint.pylint]`
   are ratchets set to the current worst case in the tree. Existing code passes;
   new growth has to justify itself. Do not raise them casually.
+
+## License headers
+
+Repository-owned Python files use the exact template in `.license-header.txt`,
+followed by one blank line:
+
+```python
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+```
+
+The check covers package code, tests (including committed fixtures), corpus
+scripts, and hidden GitHub scripts. It includes tracked and untracked,
+nonignored `*.py` files; environments, downloaded corpora, generated artifacts,
+embedded test input strings, and Markdown examples are outside this policy.
+Source symlinks are rejected rather than followed.
+
+The `license-headers` hook checks the whole tree, even on template-only commits,
+and never edits files. Run the apply command above, review the changes, and
+stage them before committing. It preserves shebangs, encoding declarations,
+source encodings, and line endings. It only normalizes recognized grAItools
+notices; conflicting ownership or unrecognized licenses require manual review.
+Header text and year do not vary per file: changes to the template must be
+applied repository-wide. Check exits are `0` for clean, `1` for violations,
+and `2` for operational errors.
+
+The repository uses BSD-3-Clause from the license migration commit onward;
+earlier releases remain MIT. History and release tags are preserved.
 
 ## Type checking
 
@@ -94,7 +126,7 @@ If your change adds an error, the fix is to type your code correctly — not a
 believe you have hit an unavoidable libcst shape, say so explicitly in the PR
 description and expect to be asked to prove it.
 
-There are no type suppressions in the tree at all — no `# type: ignore`, no
+There are no type suppressions in the checked code — no `# type: ignore`, no
 `# pyright: ignore` — so "zero errors" means the checkers looked at everything
 and had nothing to say, rather than that somebody told them not to look. The
 last one lived on `Config(**kwargs)` in `config.py`, where splatting a
@@ -103,7 +135,7 @@ diagnostics and, with them, any mistake the config parser might have made.
 
 Run `uv run mypy --strict`, `uv run pyright`, `uv run zuban mypy` and
 `uv run pyrefly check` directly, or `uv run prek run --all-files` for those plus
-ruff. None of them take a path: scope comes from `pyproject.toml`
+ruff and license headers. None of them take a path: scope comes from `pyproject.toml`
 (`[tool.mypy] files`, `[tool.pyright] include`, `[tool.zuban] files`,
 `[tool.pyrefly] project-includes`), so every invocation checks the same thing.
 
@@ -111,13 +143,13 @@ ruff. None of them take a path: scope comes from `pyproject.toml`
 
 | Checker | Scope | Configured by |
 | --- | --- | --- |
-| `mypy --strict` | `src/cleanporter` | `[tool.mypy]` |
-| `pyright` | `src/cleanporter` | `[tool.pyright]` |
-| `zuban` | `src/cleanporter`, `tests` | `[tool.zuban]` |
-| `pyrefly` | `src/cleanporter`, `tests` | `[tool.pyrefly]` |
+| `mypy --strict` | `src/cleanporter`, license-header utility | `[tool.mypy]` |
+| `pyright` | `src/cleanporter`, license-header utility | `[tool.pyright]` |
+| `zuban` | `src/cleanporter`, `tests`, license-header utility | `[tool.zuban]` |
+| `pyrefly` | `src/cleanporter`, `tests`, license-header utility | `[tool.pyrefly]` |
 
 The split is by generation, and the reason is what a checker does with an
-unannotated function. `mypy --strict` over the test suite is 250-odd
+unannotated function. `mypy --strict` over the test suite produces
 `no-untyped-def` reports demanding `-> None` on every test — annotations that
 would carry no information, because pytest calls those functions and nothing
 else does. So the older pair stays on `src/`, and the newer pair, which is fast
@@ -132,16 +164,20 @@ reason ruff excludes it: fixtures are input data for the tool — arbitrary user
 code it must handle — not project code, and one written to exercise a weird
 shape must not be able to fail the lint job.
 
+The corpus operator scripts are outside these configured scopes.
+`corpus/run.py` retains legacy type suppressions; typing that harness and
+removing them is a separate maintenance task. New code must follow the
+no-suppression rule above.
+
 Three traps worth knowing, all of them the kind that stays green:
 
 - **zuban reads `[tool.mypy]` when `[tool.zuban]` is absent.** That section is
   not a nicety; it is what lets zuban's scope differ from mypy's. Remove it and
   zuban quietly narrows to `src/`.
-- **pyrefly drops include patterns that sit under a hidden directory.** If your
-  checkout lives somewhere with a dot-component in its path (`~/.worktrees/…`,
-  for instance), `pyrefly check` will skip `tests`, say so in a single
-  `WARN Skipping include pattern …` line, and then exit 0. A normal clone and
-  CI are unaffected; if you work out of such a directory, read that line.
+- **pyrefly's default exclusion heuristics drop hidden paths.** Our explicit
+  scope disables those heuristics so the `.github` header utility and tests
+  inside hidden worktrees are checked. Do not remove that setting; any
+  `WARN Skipping include pattern …` line means a passing exit may be incomplete.
 - **A typo in a checker's own config section is green almost everywhere.** An
   unrecognised key in `[tool.mypy]`, `[tool.pyright]` or `[tool.pyrefly]` gets
   a notice — `Unrecognized option`, `Config contains unrecognized setting`,
@@ -171,7 +207,7 @@ The test suite **asserts that the documentation matches the code**. Tests in
 - a CLI flag exists that the documentation does not mention;
 - a `[tool.cleanporter]` config key exists that the documentation does not
   mention;
-- a finding code (`CP001`, `CP002`, `CP003`, `CP004`, `CP005`) is undocumented;
+- a finding code (`CP001`–`CP006`) is undocumented;
 - a name `cleanporter` exports, a field or property of `RunResult`, a field of
   `FilePatch` or `Project`, or a `Listener` method is missing from
   `docs/library.md`.
@@ -262,8 +298,10 @@ Before you open a PR:
 - [ ] `uv run pytest` passes.
 - [ ] `uv run ruff check` is clean.
 - [ ] `uv run ruff format --check` is clean (or you ran `uv run ruff format`).
-- [ ] `uv run prek run --all-files` is clean — that is ruff, ruff format, mypy,
-      pyright, zuban and pyrefly, the same six checks CI runs.
+- [ ] `uv run prek run --all-files` is clean — that is ruff, ruff format,
+      canonical license headers, mypy, pyright, zuban and pyrefly, the same
+      hooks CI runs. Run direct checks on new files before staging them;
+      `--all-files` gives the ruff hooks only files Git already tracks.
 - [ ] New or changed CLI flags, config keys and finding codes are documented in
       `docs/` (the anti-drift tests will tell you if they are not).
 - [ ] New behaviour has a test; a bug fix has a test that fails without the fix.
@@ -415,5 +453,5 @@ traceback from the *rewritten* code.
 
 ## License
 
-By contributing you agree that your contributions are licensed under the MIT
+By contributing you agree that your contributions are licensed under the BSD 3-Clause
 License, as in `LICENSE`.

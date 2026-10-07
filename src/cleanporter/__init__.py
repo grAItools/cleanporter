@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """cleanporter: enforce Google Python Style Guide 2.2 (import modules, not members).
 
 The library API: `run` is a whole run -- check, diff or fix, per `Mode` --

@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """The two checks `.github/workflows/release.yml` makes before anything is published.
 
 ``check-tag vX.Y.Z [PYPROJECT]`` exits 1 unless the tag names exactly

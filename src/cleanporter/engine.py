@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """One run, end to end, as a library call: `run` paths under a config in a `Mode`.
 
 `run` is everything the command line does except printing and choosing an

@@ -8,7 +8,7 @@
 [![CI](https://github.com/grAItools/cleanporter/actions/workflows/ci.yml/badge.svg)](https://github.com/grAItools/cleanporter/actions/workflows/ci.yml)
 [![Docs](https://github.com/grAItools/cleanporter/actions/workflows/docs.yml/badge.svg)](https://graitools.github.io/cleanporter/)
 [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/grAItools/cleanporter)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-green)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
 **cleanporter** enforces section [2.2 (Imports)](https://google.github.io/styleguide/pyguide.html#s2.2-imports)
@@ -45,8 +45,10 @@ alone — `C` might be a C-extension submodule, a lazily created module, a
 namespace package, or a re-exported class. A wrong guess is a nuisance for a
 checker but **emits broken code** for a fixer. So cleanporter resolves in
 layers — from the filesystem, then by asking a Python interpreter directly
-(your project's own, found from its `.venv` or `$VIRTUAL_ENV`, out of process
-when it is not the one running cleanporter; `--python` names another) — and
+(your project's own, found from `$UV_PROJECT_ENVIRONMENT` or `.venv` at the
+project root, or the workspace root for a uv workspace member, then
+`$VIRTUAL_ENV`; cleanporter's own interpreter is the fallback. A different
+environment is probed out of process; `--python` names another) — and
 **never guesses**: anything it cannot prove is reported and left alone.
 
 ## Installation
@@ -108,7 +110,7 @@ reason = "GT4Py re-parses these bodies; a module-qualified call is a DSLError"
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: v0.5.0  # a release tag
+    rev: v0.6.0  # a release tag
     hooks:
       - id: cleanporter        # or cleanporter-fix, to rewrite
 ```
@@ -175,4 +177,6 @@ coding agents read.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+BSD-3-Clause — see [LICENSE](LICENSE). The license changes from the BSD migration
+commit onward; earlier releases remain under MIT. Existing commits and release
+tags are preserved.

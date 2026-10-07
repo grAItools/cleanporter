@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """``--format json|sarif|github``: the machine-readable reports, end to end and unit."""
 
 from __future__ import annotations
@@ -316,10 +320,10 @@ def test_sarif_srcroot_of_the_filesystem_root_is_file_slash_slash_slash():
 def test_a_windows_drive_keeps_its_colon_in_a_file_uri():
     """``file:///C:/...``, as `pathlib` and every SARIF viewer spell it, not ``C%3A``."""
     path = pathlib.PureWindowsPath(r"C:\Users\me\odd name.py")
-    assert _report._file_uri(path) == path.as_uri() == "file:///C:/Users/me/odd%20name.py"
+    assert _report._file_uri(path) == "file:///C:/Users/me/odd%20name.py"
     assert _report._file_uri(pathlib.PureWindowsPath("D:/"), directory=True) == "file:///D:/"
     unc = pathlib.PureWindowsPath(r"\\server\share\x.py")
-    assert _report._file_uri(unc) == unc.as_uri() == "file://server/share/x.py"
+    assert _report._file_uri(unc) == "file://server/share/x.py"
     share = pathlib.PureWindowsPath("//server/share/")
     assert _report._file_uri(share, directory=True) == "file://server/share/"
     # An extended-length path keeps its drive, not the UNC branch's spelling.
@@ -329,9 +333,9 @@ def test_a_windows_drive_keeps_its_colon_in_a_file_uri():
     # POSIX keeps a leading `//` as written; it is a path there, not a server.
     doubled = pathlib.PurePosixPath("//srv/x.py")
     assert _report._file_uri(doubled) == "file:////srv/x.py"
-    # Only the drive's colon: one in a POSIX name is still encoded, as `as_uri` does.
+    # Only the drive's colon: one in a POSIX name is still encoded.
     posix = pathlib.PurePosixPath("/srv/a:b.py")
-    assert _report._file_uri(posix) == posix.as_uri() == "file:///srv/a%3Ab.py"
+    assert _report._file_uri(posix) == "file:///srv/a%3Ab.py"
 
 
 #: Windows filenames are UTF-16, so there is no undecodable one to carry, and

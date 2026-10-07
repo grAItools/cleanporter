@@ -6,7 +6,7 @@ and [prek](https://prek.j178.dev/), in its
 
 | Hook id | Runs | Fails the commit when |
 | --- | --- | --- |
-| `cleanporter` | `cleanporter --whole-project FILES` | a changed file has a `CP001` or `CP003` (or a `CP002` under `--strict`), or cannot be read or parsed. |
+| `cleanporter` | `cleanporter --whole-project FILES` | a changed file has a `CP001`, `CP003`, `CP005` or `CP006` (or a `CP002` under `--strict`), or cannot be read or parsed. |
 | `cleanporter-fix` | `cleanporter --whole-project --fix FILES` | it rewrote a file (the rewrite is left in your working tree to review and stage), or something it could not rewrite remains. |
 
 With a [baseline](usage.md#adopting-cleanporter-on-an-existing-codebase)
@@ -19,7 +19,7 @@ Add one of them to your project's `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: v0.5.0  # a release tag
+    rev: v0.6.0  # a release tag
     hooks:
       - id: cleanporter
       # or, to rewrite what is provably safe:
@@ -120,7 +120,7 @@ project's files:
 ```yaml
 repos:
   - repo: https://github.com/grAItools/cleanporter
-    rev: v0.5.0
+    rev: v0.6.0
     hooks:
       # The outer project, without the nested one.
       - id: cleanporter

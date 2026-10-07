@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """How the weekly gt4py check decides that the rewrite broke something.
 
 `corpus/gt4py_check.py` runs against a moving upstream, so it reports once a

@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Which imports sit behind ``if TYPE_CHECKING:`` and so do not exist at run time.
 
 The fixer needs this twice over. An ``ImportFrom`` inside such a block is only

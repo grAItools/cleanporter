@@ -3,6 +3,10 @@
 `cleanporter --fix` run over a pinned set of real third-party packages, with
 the rewritten code then imported and executed to check that nothing moved.
 
+The harness scripts carry the repository's canonical BSD-3-Clause header.
+Downloaded corpus packages retain their own licenses and notices; the header
+utility does not inspect or modify the ignored `.corpus/` scratch trees.
+
 ```bash
 uv run corpus/run.py                 # install, fix, check  (~30-45 min)
 uv run corpus/run.py --keep          # leave both trees for inspection

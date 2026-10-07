@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """The release workflow's checks, run against this repository's own files.
 
 `.github/workflows/release.yml` publishes only when the tag names

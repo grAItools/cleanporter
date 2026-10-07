@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """The library API: `project.build`, `engine.run` and what they return."""
 
 from __future__ import annotations

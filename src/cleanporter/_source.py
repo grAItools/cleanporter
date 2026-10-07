@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 r"""Source file I/O: bytes in, bytes out, and nothing translated on the way.
 
 A file is read as bytes and decoded the way CPython decodes it at import time

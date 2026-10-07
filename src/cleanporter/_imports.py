@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """Helpers for reading ``from ... import ...`` statements with libCST."""
 
 from __future__ import annotations

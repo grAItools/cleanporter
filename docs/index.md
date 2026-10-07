@@ -83,6 +83,11 @@ and reported with a reason. See [Safety and limitations](safety.md).
 
 ## Installation
 
+The project uses [BSD-3-Clause](https://github.com/grAItools/cleanporter/blob/main/LICENSE)
+from the license migration commit onward; earlier releases remain under MIT.
+Existing commits and release tags are preserved. Contributor header requirements
+are documented in [CONTRIBUTING.md](https://github.com/grAItools/cleanporter/blob/main/CONTRIBUTING.md#license-headers).
+
 Requires **Python 3.12 or newer**. The only runtime dependency is
 [libcst](https://github.com/Instagram/LibCST), used for the format-preserving
 rewrites.
@@ -117,8 +122,9 @@ cleanporter --help
 
 ## 60-second quickstart
 
-Check a tree. Nothing is written; the exit code is `1` if anything is
-reported.
+Check a tree. Nothing is written; `CP001`, `CP003`, `CP005` and `CP006` make
+the exit code `1`. Unresolved imports (`CP002`) fail only under `--strict`,
+and configured skips (`CP004`) never fail a run.
 
 ```bash
 cleanporter src/

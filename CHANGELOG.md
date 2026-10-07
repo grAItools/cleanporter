@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- License changed from MIT to BSD-3-Clause from the migration commit onward;
+  earlier releases remain MIT, with existing history and tags preserved.
+- Every repository-owned Python file carries a canonical SPDX header, enforced
+  by a check-only development hook with an explicit header application command.
+- Developer documentation now covers the header policy, all finding codes,
+  current hook and type-checker scopes, and interpreter detection order.
+
 ## [0.6.0] - 2026-10-07
 
 Breaking under the pre-1.0 policy above:

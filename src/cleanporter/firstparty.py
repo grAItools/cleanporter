@@ -1,3 +1,7 @@
+# Copyright (c) 2026 grAItools
+# SPDX-License-Identifier: BSD-3-Clause
+# See LICENSE for the full license text.
+
 """First-party module discovery from the filesystem (no imports, no side effects).
 
 Given the paths under analysis we infer the *import roots* (directories that sit
