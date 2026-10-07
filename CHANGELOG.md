@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The logo, wordmark and favicon use the Python blue and yellow instead of
+  amber; the navbar mark is now visible on the dark docs palette.
 - Adopt BSD-3-Clause, with existing history and tags preserved.
 - Every repository-owned Python file carries a canonical SPDX header, enforced
   by a check-only development hook with an explicit header application command.
